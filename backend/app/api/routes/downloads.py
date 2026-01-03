@@ -1,15 +1,20 @@
 """Download queue routes."""
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import FileResponse, StreamingResponse
 from starlette.requests import Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.database import get_db
+from app.database import get_db, DownloadQueue
 from app.services.download import DownloadService
 from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.roles import require_download_role, require_admin_role
 from app.api.routes.catalog import get_game_service
+from app.config import settings
 from typing import Optional
 import logging
+import os
+import asyncio
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +188,8 @@ async def request_download(
 async def report_progress(
     request: ProgressRequest,
     current_user: dict = Depends(require_auth_user),
-    download_service: DownloadService = Depends(get_download_service)
+    download_service: DownloadService = Depends(get_download_service),
+    db: Session = Depends(get_db)
 ):
     """Report download progress (for download_service.py)."""
     download_id = request.download_id
@@ -194,6 +200,17 @@ async def report_progress(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid download ID"
+        )
+    
+    # Check if download is paused before updating progress
+    from app.database import DownloadQueue
+    download = db.query(DownloadQueue).filter(DownloadQueue.id == download_id).first()
+    
+    if download and download.status == 'paused':
+        logger.info(f"Progress report received for paused download {download_id} - returning pause signal")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Download is paused"
         )
     
     success = download_service.update_progress(download_id, bytes_transferred, bytes_per_second)
@@ -280,6 +297,273 @@ async def resume_download(
         )
     
     return {"success": True}
+
+@router.get("/file")
+async def download_file(
+    request: Request,
+    system: str = Query(...),
+    game_id: str = Query(...),
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Download a game file. Requires authentication and the file must be in user's download queue.
+    Supports HTTP Range requests for resume functionality."""
+    try:
+        # Parse Range header if present
+        range_header = request.headers.get('Range')
+        start_byte = 0
+        end_byte = None
+        
+        if range_header:
+            # Parse Range header: "bytes=start-end" or "bytes=start-"
+            import re
+            match = re.match(r'bytes=(\d+)-(\d*)', range_header)
+            if match:
+                start_byte = int(match.group(1))
+                if match.group(2):
+                    end_byte = int(match.group(2))
+                logger.info(f"Range request: start={start_byte}, end={end_byte}")
+        # Get token_id from request state (set by API token middleware)
+        token_id = getattr(request.state, 'token_id', None) if request else None
+        
+        if token_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="API token authentication required"
+            )
+        
+        user_id = current_user['id']
+        
+        # Verify the file is in the user's download queue (or was recently completed)
+        # Check for active downloads or recently completed (within last hour)
+        from datetime import datetime, timezone, timedelta
+        from sqlalchemy import and_, or_
+        
+        recent_threshold = datetime.now(timezone.utc) - timedelta(hours=1)
+        
+        # Refresh the queue item from database to get latest status
+        queue_item = db.query(DownloadQueue).filter(
+            and_(
+                DownloadQueue.user_id == user_id,
+                DownloadQueue.token_id == token_id,
+                DownloadQueue.game_id == game_id,
+                or_(
+                    DownloadQueue.status.in_(['user_queue', 'pending', 'downloading', 'paused']),
+                    and_(
+                        DownloadQueue.status == 'completed',
+                        DownloadQueue.created_at >= recent_threshold
+                    )
+                )
+            )
+        ).first()
+        
+        if not queue_item:
+            # Also check if there's a download for this game (even if completed longer ago)
+            # This allows download service to access files it's currently downloading
+            queue_item = db.query(DownloadQueue).filter(
+                and_(
+                    DownloadQueue.user_id == user_id,
+                    DownloadQueue.token_id == token_id,
+                    DownloadQueue.game_id == game_id,
+                    DownloadQueue.status == 'downloading'
+                )
+            ).first()
+        
+        if not queue_item:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="File not found in your download queue or access denied"
+            )
+        
+        # Refresh the queue item to ensure we have the latest status
+        db.refresh(queue_item)
+        
+        # Build file path
+        if not settings.GAMES_PATH:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="GAMES_PATH not configured"
+            )
+        
+        file_path = os.path.join(settings.GAMES_PATH, system, game_id)
+        
+        # Check if it's a file or directory
+        if os.path.isfile(file_path):
+            # Single file download with server-side throttling
+            if not os.path.exists(file_path):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="File not found"
+                )
+            
+            # Get file size
+            file_size = os.path.getsize(file_path)
+            
+            # Validate range request
+            if range_header:
+                if start_byte >= file_size:
+                    raise HTTPException(
+                        status_code=status.HTTP_416_RANGE_NOT_SATISFIABLE,
+                        detail=f"Range start ({start_byte}) exceeds file size ({file_size})"
+                    )
+                if end_byte is None:
+                    end_byte = file_size - 1
+                elif end_byte >= file_size:
+                    end_byte = file_size - 1
+                content_length = end_byte - start_byte + 1
+            else:
+                content_length = file_size
+            
+            # Get allocated bandwidth from queue item (if available)
+            # Apply throttling for downloads in 'downloading' or 'pending' status
+            allocated_bandwidth = 0
+            logger.info(f"Queue item status: {queue_item.status}, queue_type: {queue_item.queue_type}")
+            
+            if queue_item.status in ['downloading', 'pending'] and queue_item.queue_type:
+                # Get allocated bandwidth from the bandwidth manager
+                from app.services.bandwidth import BandwidthManager
+                bandwidth_manager = BandwidthManager(db)
+                allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
+                logger.info(f"Allocated bandwidth for download: {allocated_bandwidth} bytes/s ({allocated_bandwidth / 125000:.2f} Mbits/s)")
+            else:
+                logger.warning(f"Not applying throttling: status={queue_item.status}, queue_type={queue_item.queue_type}")
+            
+            # If no bandwidth limit, use StreamingResponse without throttling (but with Range support)
+            if allocated_bandwidth <= 0:
+                logger.info("Using StreamingResponse (no throttling) - allocated_bandwidth is 0 or negative")
+                async def generate_file():
+                    """Generate file chunks without throttling."""
+                    with open(file_path, 'rb') as f:
+                        if start_byte > 0:
+                            f.seek(start_byte)
+                        remaining = content_length
+                        chunk_size = 1024 * 1024  # 1MB chunks
+                        while remaining > 0:
+                            chunk = f.read(min(chunk_size, remaining))
+                            if not chunk:
+                                break
+                            yield chunk
+                            remaining -= len(chunk)
+                
+                headers = {
+                    'Content-Length': str(content_length),
+                    'Content-Disposition': f'attachment; filename="{os.path.basename(game_id)}"',
+                    'Accept-Ranges': 'bytes'
+                }
+                
+                if range_header:
+                    headers['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
+                    return StreamingResponse(
+                        generate_file(),
+                        media_type='application/octet-stream',
+                        headers=headers,
+                        status_code=206  # Partial Content
+                    )
+                else:
+                    return StreamingResponse(
+                        generate_file(),
+                        media_type='application/octet-stream',
+                        headers=headers
+                    )
+            
+            # Create throttled streaming response with Range support
+            async def generate_throttled_file():
+                """Generate file chunks with bandwidth throttling and Range support."""
+                import time
+                chunk_size = 64 * 1024  # 64KB chunks
+                bytes_per_second = allocated_bandwidth
+                seconds_per_chunk = chunk_size / bytes_per_second
+                logger.info(f"Starting throttled stream: chunk_size={chunk_size}, bytes_per_second={bytes_per_second}, seconds_per_chunk={seconds_per_chunk:.3f}s, start_byte={start_byte}")
+                
+                chunk_count = 0
+                total_bytes = 0
+                start_time = time.time()
+                last_chunk_time = start_time
+                
+                with open(file_path, 'rb') as f:
+                    # Seek to start position if Range request
+                    if start_byte > 0:
+                        f.seek(start_byte)
+                    
+                    remaining = content_length
+                    while remaining > 0:
+                        # Read chunk (don't exceed remaining bytes)
+                        read_size = min(chunk_size, remaining)
+                        chunk = f.read(read_size)
+                        if not chunk:
+                            break
+                        
+                        # Calculate when this chunk should be sent (based on bandwidth limit)
+                        current_time = time.time()
+                        expected_time = last_chunk_time + seconds_per_chunk
+                        
+                        # If we're ahead of schedule, sleep to throttle
+                        if current_time < expected_time:
+                            sleep_time = expected_time - current_time
+                            # Cap sleep to prevent very long sleeps (max 0.5s)
+                            if sleep_time > 0.5:
+                                sleep_time = 0.5
+                            if sleep_time > 0:
+                                await asyncio.sleep(sleep_time)
+                        
+                        # Yield the chunk
+                        yield chunk
+                        
+                        # Update timing for next chunk
+                        last_chunk_time = time.time()
+                        chunk_count += 1
+                        total_bytes += len(chunk)
+                        remaining -= len(chunk)
+                        
+                        # Log progress every 100 chunks
+                        if chunk_count % 100 == 0:
+                            elapsed_total = time.time() - start_time
+                            current_rate = total_bytes / elapsed_total if elapsed_total > 0 else 0
+                            logger.debug(f"Streamed {total_bytes} bytes ({chunk_count} chunks), rate: {current_rate / 125000:.2f} Mbits/s (target: {bytes_per_second / 125000:.2f} Mbits/s)")
+                
+                logger.info(f"Completed throttled stream: {chunk_count} chunks, {total_bytes} bytes")
+            
+            headers = {
+                'Content-Length': str(content_length),
+                'Content-Disposition': f'attachment; filename="{os.path.basename(game_id)}"',
+                'Accept-Ranges': 'bytes'
+            }
+            
+            if range_header:
+                headers['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
+                return StreamingResponse(
+                    generate_throttled_file(),
+                    media_type='application/octet-stream',
+                    headers=headers,
+                    status_code=206  # Partial Content
+                )
+            else:
+                return StreamingResponse(
+                    generate_throttled_file(),
+                    media_type='application/octet-stream',
+                    headers=headers
+                )
+        elif os.path.isdir(file_path):
+            # Directory - return 400 as we don't support directory downloads via HTTP
+            # (download service should use local file copy)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Directory downloads must be done via download service (local file copy)"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File or directory not found"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving download file: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while serving the file"
+        )
 
 @router.get("/queues/all")
 async def get_all_queues(

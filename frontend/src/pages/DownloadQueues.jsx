@@ -41,8 +41,10 @@ const DownloadQueues = () => {
   }
 
   const formatBytesPerSecond = (bytesPerSecond) => {
-    if (!bytesPerSecond) return '0 B/s'
-    return formatBytes(bytesPerSecond) + '/s'
+    if (!bytesPerSecond || bytesPerSecond === 0) return '0 Mbits/s'
+    // Convert bytes/s to Mbits/s (1 Mbit = 125,000 bytes)
+    const mbitsPerSecond = bytesPerSecond / 125000
+    return `${mbitsPerSecond.toFixed(2)} Mbits/s`
   }
 
   const formatDuration = (startedAt) => {
@@ -303,8 +305,8 @@ const DownloadQueues = () => {
                         <span className="detail-value">{download.system_name || download.system}</span>
                       </div>
                       <div className="detail-row">
-                        <span className="detail-label">User ID:</span>
-                        <span className="detail-value">{download.user_id}</span>
+                        <span className="detail-label">User:</span>
+                        <span className="detail-value">{download.username || download.user_id}</span>
                       </div>
                       {download.assigned_to_service && (
                         <div className="detail-row">
@@ -372,8 +374,8 @@ const DownloadQueues = () => {
                         <span className="detail-value">{download.system_name || download.system}</span>
                       </div>
                       <div className="detail-row">
-                        <span className="detail-label">User ID:</span>
-                        <span className="detail-value">{download.user_id}</span>
+                        <span className="detail-label">User:</span>
+                        <span className="detail-value">{download.username || download.user_id}</span>
                       </div>
                       {download.assigned_to_service && (
                         <div className="detail-row">

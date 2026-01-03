@@ -1,6 +1,7 @@
 """Configuration management for the application."""
 import os
 import json
+from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -30,6 +31,8 @@ class Settings:
     DATABASE_URL: str = os.getenv('DATABASE_URL', 'sqlite:///./data/database.sqlite')
     SECRET_KEY: str = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
     FRONTEND_URL: str = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+    API_URL: str = os.getenv('API_URL', 'http://localhost:8000')  # Backend API URL for download service
+    DOWNLOAD_FILE_URL: str = os.getenv('DOWNLOAD_FILE_URL', '')  # Public URL for download file endpoint (defaults to API_URL if not set)
     
     # Bandwidth management settings
     # GLOBAL_BANDWIDTH_LIMIT is in Mbits/s, converted to bytes/s internally
@@ -37,6 +40,27 @@ class Settings:
     GLOBAL_BANDWIDTH_LIMIT_Mbits: float = float(os.getenv('GLOBAL_BANDWIDTH_LIMIT', '1000.0'))  # Mbits/s
     GLOBAL_BANDWIDTH_LIMIT: int = int(GLOBAL_BANDWIDTH_LIMIT_Mbits * 125000)  # Convert to bytes/s (1 Mbit = 125 KB)
     BANDWIDTH_UPDATE_INTERVAL: int = int(os.getenv('BANDWIDTH_UPDATE_INTERVAL', '5'))  # 5 seconds
+    
+    # Per-user bandwidth limits for testing (optional, in Mbits/s)
+    # If not set, no per-user limit is applied (users share available bandwidth equally)
+    # If set, each user is limited to this bandwidth regardless of available bandwidth
+    PER_USER_SLOW_QUEUE_LIMIT_Mbits: Optional[float] = None
+    PER_USER_FAST_QUEUE_LIMIT_Mbits: Optional[float] = None
+    
+    # Load per-user limits from environment if set
+    _per_user_slow = os.getenv('PER_USER_SLOW_QUEUE_LIMIT_Mbits', '')
+    if _per_user_slow:
+        PER_USER_SLOW_QUEUE_LIMIT_Mbits = float(_per_user_slow)
+        PER_USER_SLOW_QUEUE_LIMIT: int = int(PER_USER_SLOW_QUEUE_LIMIT_Mbits * 125000)  # Convert to bytes/s
+    else:
+        PER_USER_SLOW_QUEUE_LIMIT: Optional[int] = None
+    
+    _per_user_fast = os.getenv('PER_USER_FAST_QUEUE_LIMIT_Mbits', '')
+    if _per_user_fast:
+        PER_USER_FAST_QUEUE_LIMIT_Mbits = float(_per_user_fast)
+        PER_USER_FAST_QUEUE_LIMIT: int = int(PER_USER_FAST_QUEUE_LIMIT_Mbits * 125000)  # Convert to bytes/s
+    else:
+        PER_USER_FAST_QUEUE_LIMIT: Optional[int] = None
     
     # CORS settings
     CORS_ORIGINS: list = [

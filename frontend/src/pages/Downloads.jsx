@@ -9,6 +9,13 @@ const Downloads = () => {
 
   useEffect(() => {
     loadQueue()
+    
+    // Poll for updates every 2 seconds
+    const interval = setInterval(() => {
+      loadQueue()
+    }, 2000) // Poll every 2 seconds
+    
+    return () => clearInterval(interval)
   }, [])
 
   const loadQueue = async () => {
