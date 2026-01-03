@@ -92,6 +92,39 @@ class DiscordService:
                 logger.error(f"Response: {e.response.text}")
             return {}
     
+    async def get_user_by_id(self, user_id: str) -> Optional[Dict]:
+        """Get Discord user information by user ID using bot token."""
+        try:
+            if not self.bot_token:
+                logger.error("DISCORD_BOT_TOKEN is not set, cannot fetch user info")
+                return None
+            
+            bot_token = self.bot_token
+            if bot_token.startswith('Bot '):
+                bot_token = bot_token[4:]
+            
+            response = await self.client.get(
+                f"{self.api_base}/users/{user_id}",
+                headers={'Authorization': f"Bot {bot_token}"}
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            logger.debug(f"User info fetched for ID {user_id}: {result.get('username', 'unknown')}")
+            return result
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.warning(f"User {user_id} not found in Discord")
+            else:
+                logger.error(f"Error fetching user {user_id}: {e.response.status_code}")
+            return None
+        except httpx.HTTPError as e:
+            logger.error(f"Discord user fetch error for {user_id}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error fetching user {user_id}: {e}", exc_info=True)
+            return None
+    
     async def get_user_guilds(self, access_token: str) -> List[Dict]:
         """Get user's Discord guilds (servers)."""
         try:
@@ -210,9 +243,15 @@ class DiscordService:
                     member = response.json()
                     
                     if 'roles' in member and isinstance(member['roles'], list):
-                        roles_count = len(member['roles'])
-                        logger.info(f"Found {roles_count} roles for user: {member['roles']}")
-                        return member['roles']
+                        # Normalize role IDs to strings
+                        roles = [str(role_id) for role_id in member['roles']]
+                        roles_count = len(roles)
+                        logger.info(f"Found {roles_count} roles for user: {roles}")
+                        return roles
+                    elif 'roles' not in member:
+                        logger.warning(f"No 'roles' key in member data. Keys: {member.keys()}")
+                    else:
+                        logger.warning(f"Member 'roles' is not a list: {type(member['roles'])}")
                     
                     logger.warning("No roles found in member data")
                     return []
@@ -228,8 +267,17 @@ class DiscordService:
                             import asyncio
                             await asyncio.sleep(retry_after)
                             backoff_seconds *= 2
+                    elif e.response.status_code == 403:
+                        logger.error(f"Bot does not have permission to view guild members (403 Forbidden). Bot needs 'View Server Members' permission.")
+                        logger.error(f"Response: {e.response.text}")
+                        break
+                    elif e.response.status_code == 404:
+                        logger.error(f"User {user_id} not found in guild {guild_id} (404 Not Found)")
+                        logger.error(f"Response: {e.response.text}")
+                        break
                     else:
-                        logger.error(f"Discord member roles fetch error: {e}")
+                        logger.error(f"Discord member roles fetch error: {e.response.status_code}")
+                        logger.error(f"Response: {e.response.text}")
                         break
                 except httpx.HTTPError as e:
                     logger.error(f"Discord member roles fetch error: {e}")
@@ -266,26 +314,34 @@ class DiscordService:
             roles = response.json()
             logger.info(f"Retrieved {len(roles)} roles from guild")
             
+            # Log all available roles for debugging
+            available_role_names = [r['name'] for r in roles]
+            logger.info(f"Available roles in guild: {available_role_names}")
+            
             # Find the role ID for the given role name
             role_id = None
             for role in roles:
-                logger.info(f"Guild role: {role['id']} - {role['name']}")
+                logger.debug(f"Guild role: {role['id']} - {role['name']}")
                 if role['name'].lower() == role_name.lower():
-                    role_id = role['id']
-                    logger.info(f"Found role ID {role_id} for role '{role_name}'")
+                    role_id = str(role['id'])  # Normalize to string
+                    logger.info(f"Found role ID {role_id} for role '{role_name}' (case-insensitive match)")
                     break
             
             if not role_id:
-                logger.info(f"Role '{role_name}' not found in guild {guild_id}")
+                logger.warning(f"Role '{role_name}' not found in guild {guild_id}")
+                logger.warning(f"Available roles: {available_role_names}")
+                logger.warning(f"Note: Role name matching is case-insensitive. Looking for: '{role_name.lower()}'")
                 return False
             
-            # Get the user's roles
+            # Get the user's roles (already normalized to strings in get_member_roles)
             user_roles = await self.get_member_roles(user_id, guild_id)
             logger.info(f"User roles retrieved: {user_roles}")
             
-            # Check if the user has the role
+            # Check if the user has the role (both are already strings)
             has_role = role_id in user_roles
             logger.info(f"User {'HAS' if has_role else 'DOES NOT HAVE'} the '{role_name}' role (ID: {role_id})")
+            if not has_role:
+                logger.debug(f"Role ID {role_id} not found in user roles: {user_roles}")
             
             return has_role
         except httpx.HTTPError as e:
@@ -293,6 +349,9 @@ class DiscordService:
             if hasattr(e, 'response') and e.response:
                 logger.error(f"Response status: {e.response.status_code}")
                 logger.error(f"Response body: {e.response.text}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error in has_role: {e}", exc_info=True)
             return False
     
     def get_required_guild_id(self) -> str:

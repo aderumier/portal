@@ -96,13 +96,31 @@ async def get_game_details(
     game_service: GameService = Depends(get_game_service)
 ):
     """Get detailed information about a specific game."""
-    # Construct full game ID from system and game_id
-    full_game_id = f"{system}/{game_id}" if not game_id.startswith(system) else game_id
+    import urllib.parse
     
-    game = game_service.get_game_by_id(full_game_id)
+    # URL decode the game_id (FastAPI path parameters are already decoded, but double-check)
+    decoded_game_id = urllib.parse.unquote(game_id)
+    
+    # The game_id from gamelist.xml is the path relative to the system directory
+    # It might be like "./game.zip" or "subdir/game.zip" or just "game.zip"
+    # We need to pass just the rompath (without system prefix) to get_game_by_id
+    # because get_game_by_id searches across all systems
+    
+    # Remove system prefix if present
+    if decoded_game_id.startswith(f"{system}/"):
+        decoded_game_id = decoded_game_id[len(system) + 1:]
+    
+    # Remove leading ./ if present
+    decoded_game_id = decoded_game_id.lstrip('./')
+    
+    logger.info(f"Getting game details - system: {system}, game_id: {game_id}, decoded: {decoded_game_id}")
+    
+    # get_game_by_id expects just the rompath (relative to system directory)
+    game = game_service.get_game_by_id(decoded_game_id)
     
     if not game:
         from fastapi import HTTPException, status
+        logger.warning(f"Game not found - system: {system}, game_id: {decoded_game_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Game not found"

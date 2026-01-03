@@ -1,0 +1,15 @@
+{
+  "thumbnail": "thumbnails",
+  "boxart": "boxart",
+  "boxback": "boxback",
+  "marquee": "marquees",
+  "fanart": "fanarts",
+  "cartridge": "cartridges",
+  "titleshot": "titles",
+  "image": "images",
+  "screenshot": "screenshots",
+  "wheel": "wheels",
+  "mix": "mix",
+  "video": "videos"
+}
+

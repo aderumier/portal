@@ -2,8 +2,8 @@ import React from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 
-const ProtectedRoute = ({ children, requireCreator = false }) => {
-  const { isAuthenticated, isGuildMember, isCreator, loading } = useAuth()
+const ProtectedRoute = ({ children, requireDownload = false, requireAdmin = false }) => {
+  const { isAuthenticated, isGuildMember, isDownload, isAdmin, loading } = useAuth()
 
   if (loading) {
     return (
@@ -22,7 +22,11 @@ const ProtectedRoute = ({ children, requireCreator = false }) => {
     return <Navigate to="/login" replace />
   }
 
-  if (requireCreator && !isCreator) {
+  if (requireDownload && !isDownload) {
+    return <Navigate to="/unauthorized" replace />
+  }
+
+  if (requireAdmin && !isAdmin) {
     return <Navigate to="/unauthorized" replace />
   }
 

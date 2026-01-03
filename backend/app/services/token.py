@@ -35,8 +35,8 @@ class ApiTokenService:
         logger.info(f"Generated API token for user: {user_id}, name: {name}")
         return token
     
-    def validate_token(self, token: str) -> Optional[str]:
-        """Validate an API token and return the user ID if valid."""
+    def validate_token(self, token: str) -> Optional[Dict]:
+        """Validate an API token and return user ID and token ID if valid."""
         api_token = self.db.query(ApiToken).filter(
             and_(
                 ApiToken.token == token,
@@ -51,7 +51,10 @@ class ApiTokenService:
         api_token.last_used_at = datetime.utcnow()
         self.db.commit()
         
-        return api_token.user_id
+        return {
+            'user_id': api_token.user_id,
+            'token_id': api_token.id
+        }
     
     def get_token_by_id(self, user_id: str, token_id: int) -> Optional[Dict]:
         """Get a token by its ID."""

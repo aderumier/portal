@@ -22,14 +22,19 @@ async def get_current_user(
         token = token_service.extract_token_from_header(auth_header)
         
         if token:
-            user_id = token_service.validate_token(token)
-            if user_id:
+            token_info = token_service.validate_token(token)
+            if token_info:
                 # Set user info in request state
-                request.state.user = {'id': user_id}
+                request.state.user = {
+                    'id': token_info['user_id'],
+                    'is_guild_member': True,  # API tokens assume guild membership
+                    'is_download': True,  # API tokens have download access
+                    'is_fastdownload': True,  # API tokens have fastdownload access
+                    'is_admin': False  # API tokens don't have admin role by default
+                }
+                request.state.token_id = token_info['token_id']  # Store token_id for filtering
                 request.state.auth_method = 'api_token'
-                request.state.is_guild_member = True  # API tokens assume guild membership
-                request.state.is_creator = False  # API tokens don't have creator role by default
-                logger.info(f"API token authentication successful for user: {user_id}")
+                logger.info(f"API token authentication successful for user: {token_info['user_id']}, token_id: {token_info['token_id']}")
                 return request.state.user
     
     # Fall back to session authentication
@@ -37,8 +42,6 @@ async def get_current_user(
     if user:
         request.state.user = user
         request.state.auth_method = 'session'
-        request.state.is_guild_member = user.get('is_guild_member', False)
-        request.state.is_creator = user.get('is_creator', False)
         logger.info(f"Session authentication for user: {user.get('id')}")
         return user
     

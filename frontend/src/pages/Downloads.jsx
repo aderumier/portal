@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react'
+import { getMediaUrl } from '../utils/constants'
 import client from '../api/client'
 import './Downloads.css'
 
 const Downloads = () => {
   const [queue, setQueue] = useState([])
   const [loading, setLoading] = useState(true)
-  const [view, setView] = useState(localStorage.getItem('downloads-view') || 'grid')
 
   useEffect(() => {
     loadQueue()
@@ -48,10 +48,6 @@ const Downloads = () => {
     }
   }
 
-  const handleViewChange = (newView) => {
-    setView(newView)
-    localStorage.setItem('downloads-view', newView)
-  }
 
   if (loading) {
     return <div className="loading">Loading downloads...</div>
@@ -62,22 +58,6 @@ const Downloads = () => {
       <div className="downloads-header">
         <h1>My Downloads</h1>
         <div className="downloads-actions">
-          <div className="view-toggle">
-            <button
-              className={`view-btn ${view === 'grid' ? 'active' : ''}`}
-              onClick={() => handleViewChange('grid')}
-              title="Grid View"
-            >
-              Grid
-            </button>
-            <button
-              className={`view-btn ${view === 'table' ? 'active' : ''}`}
-              onClick={() => handleViewChange('table')}
-              title="Table View"
-            >
-              Table
-            </button>
-          </div>
           <button className="clear-queue-btn" onClick={handleClear}>
             Clear Queue
           </button>
@@ -87,88 +67,77 @@ const Downloads = () => {
       {queue.length === 0 ? (
         <div className="no-downloads">No games in your download queue</div>
       ) : (
-        <>
-          {view === 'grid' && (
-            <div className="downloads-grid">
-              {queue.map((item) => (
-                <div key={item.id} className="download-card">
-                  {item.image && (
-                    <div className="download-card-image">
+        <div className="downloads-table-container">
+          <table className="downloads-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Game</th>
+                <th>System</th>
+                <th>Token</th>
+                <th>Status</th>
+                <th>Progress</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {queue.map((item, index) => (
+                <tr key={item.id}>
+                  <td className="queue-number">{index + 1}</td>
+                  <td className="game-info-cell">
+                    {item.image && (
                       <img
-                        src={`/media/${item.image}`}
-                        alt={item.game_name}
+                        className="table-game-image"
+                        src={getMediaUrl(item.image)}
+                        alt={item.game_name || 'Game'}
                         loading="lazy"
                       />
-                    </div>
-                  )}
-                  <div className="download-card-content">
-                    <h3 className="game-title">{item.game_name}</h3>
-                    <div className="game-meta">
-                      <span className="system-tag">{item.system_name}</span>
-                      <span className={`status-tag ${item.status}`}>
-                        {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
-                      </span>
-                    </div>
-                    <div className="download-actions">
-                      <button
-                        className="remove-download-btn"
-                        onClick={() => handleRemove(item.game_id)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                    )}
+                    <span className="game-name">{item.game_name || 'Unknown Game'}</span>
+                  </td>
+                  <td className="system-cell">
+                    <span className="system-tag">{item.system_name || 'Unknown System'}</span>
+                  </td>
+                  <td className="token-cell">
+                    <span className="token-tag">{item.token_name || '-'}</span>
+                  </td>
+                  <td className="status-cell">
+                    <span className={`status-tag ${item.status}`}>
+                      {item.status === 'user_queue' ? 'Queued' : 
+                       item.status === 'pending' ? 'Pending' :
+                       item.status === 'downloading' ? 'Downloading' :
+                       item.status === 'completed' ? 'Completed' :
+                       item.status.charAt(0).toUpperCase() + item.status.slice(1)}
+                    </span>
+                  </td>
+                  <td className="progress-cell">
+                    {item.status === 'downloading' && item.progress_percent !== undefined ? (
+                      <div className="table-progress">
+                        <div className="progress-bar">
+                          <div 
+                            className="progress-fill" 
+                            style={{ width: `${item.progress_percent}%` }}
+                          ></div>
+                        </div>
+                        <span className="progress-text">{item.progress_percent}%</span>
+                      </div>
+                    ) : (
+                      <span className="no-progress">-</span>
+                    )}
+                  </td>
+                  <td className="actions-cell">
+                    <button
+                      className="remove-download-btn"
+                      onClick={() => handleRemove(item.game_id)}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
               ))}
-            </div>
-          )}
-
-          {view === 'table' && (
-            <div className="downloads-table">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Game</th>
-                    <th>System</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {queue.map((item) => (
-                    <tr key={item.id}>
-                      <td className="game-info">
-                        {item.image && (
-                          <img
-                            className="table-thumbnail"
-                            src={`/media/${item.image}`}
-                            alt={item.game_name}
-                            loading="lazy"
-                          />
-                        )}
-                        <span>{item.game_name}</span>
-                      </td>
-                      <td>{item.system_name}</td>
-                      <td>
-                        <span className={`status-tag ${item.status}`}>
-                          {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
-                        </span>
-                      </td>
-                      <td>
-                        <button
-                          className="remove-download-btn"
-                          onClick={() => handleRemove(item.game_id)}
-                        >
-                          Remove
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   )

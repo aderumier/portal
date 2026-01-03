@@ -1,17 +1,22 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { getMediaUrl } from '../utils/constants'
+import MediaUpload from '../components/Media/MediaUpload'
+import TokenSelectorDropdown from '../components/TokenSelector/TokenSelectorDropdown'
+import { useDownloadWithToken } from '../hooks/useDownloadWithToken'
 import client from '../api/client'
 import './GameDetails.css'
 
 const GameDetails = () => {
   const { system, gameId } = useParams()
   const navigate = useNavigate()
-  const { isCreator } = useAuth()
+  const { isAdmin, isDownload, isFastDownload } = useAuth()
   const [game, setGame] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selectedMedia, setSelectedMedia] = useState(null)
+  const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
 
   useEffect(() => {
     loadGameDetails()
@@ -28,11 +33,11 @@ const GameDetails = () => {
       
       // Set initial selected media (prefer boxart, then thumbnail, then image)
       if (response.data.boxart) {
-        setSelectedMedia({ type: 'boxart', url: `/media/${response.data.boxart}` })
+        setSelectedMedia({ type: 'boxart', url: getMediaUrl(response.data.boxart) })
       } else if (response.data.thumbnail) {
-        setSelectedMedia({ type: 'thumbnail', url: `/media/${response.data.thumbnail}` })
+        setSelectedMedia({ type: 'thumbnail', url: getMediaUrl(response.data.thumbnail) })
       } else if (response.data.image) {
-        setSelectedMedia({ type: 'image', url: `/media/${response.data.image}` })
+        setSelectedMedia({ type: 'image', url: getMediaUrl(response.data.image) })
       }
     } catch (err) {
       console.error('Error loading game details:', err)
@@ -44,11 +49,20 @@ const GameDetails = () => {
 
   const handleDownload = async () => {
     try {
-      await client.post('/api/download/queue', { game_id: game.id })
-      alert('Game added to download queue!')
+      const result = await addToQueue(game.id)
+      if (result && result.success) {
+        alert('Game added to download queue!')
+      }
+      // If requiresSelection is true, TokenSelector will be shown automatically (no error thrown)
     } catch (error) {
       console.error('Error adding to download queue:', error)
-      alert('Failed to add game to download queue. Please try again.')
+      // Only show alert if it's not a token selection requirement (that's handled by the hook)
+      const requiresSelection = error.response?.headers?.['x-requires-token-selection'] === 'true' ||
+                                error.response?.headers?.['X-Requires-Token-Selection'] === 'true'
+      if (!requiresSelection) {
+        const errorMsg = error.response?.data?.detail || 'Failed to add game to download queue. Please try again.'
+        alert(errorMsg)
+      }
     }
   }
 
@@ -77,15 +91,22 @@ const GameDetails = () => {
       { key: 'titleshot', label: 'Title Shot' },
       { key: 'image', label: 'Screenshot' },
       { key: 'screenshot', label: 'Screenshot' },
+      { key: 'wheel', label: 'Wheel' },
+      { key: 'mix', label: 'Mix' },
+      { key: 'video', label: 'Video' },
     ]
     
-    return mediaTypes
-      .filter(type => game[type.key])
-      .map(type => ({
-        type: type.key,
-        label: type.label,
-        url: `/media/${game[type.key]}`
-      }))
+    return mediaTypes.map(type => ({
+      type: type.key,
+      label: type.label,
+      hasMedia: !!game[type.key],
+      url: game[type.key] ? getMediaUrl(game[type.key]) : null
+    }))
+  }
+
+  const handleUploadSuccess = () => {
+    // Optionally reload game details or show a message
+    // For now, just show success in the upload component
   }
 
   if (loading) {
@@ -133,22 +154,48 @@ const GameDetails = () => {
 
             {mediaItems.length > 0 && (
               <div className="media-thumbnails">
-                {mediaItems.map((media) => (
-                  <div
-                    key={media.type}
-                    className={`media-thumbnail ${selectedMedia?.type === media.type ? 'active' : ''}`}
-                    onClick={() => setSelectedMedia(media)}
-                  >
-                    <img src={media.url} alt={media.label} />
-                    <span className="media-label">{media.label}</span>
-                  </div>
-                ))}
+                {mediaItems.map((media) => {
+                  if (media.hasMedia) {
+                    return (
+                      <div
+                        key={media.type}
+                        className={`media-thumbnail ${selectedMedia?.type === media.type ? 'active' : ''}`}
+                        onClick={() => setSelectedMedia({ type: media.type, url: media.url })}
+                      >
+                        <img src={media.url} alt={media.label} />
+                        <span className="media-label">{media.label}</span>
+                      </div>
+                    )
+                  } else if (isAdmin) {
+                    return (
+                      <MediaUpload
+                        key={media.type}
+                        system={game.system}
+                        gameId={game.id}
+                        mediaType={media.type}
+                        label={media.label}
+                        onUploadSuccess={handleUploadSuccess}
+                      />
+                    )
+                  }
+                  return null
+                })}
               </div>
             )}
           </div>
 
           <div className="game-details-info">
             <h1 className="game-title">{game.name}</h1>
+            
+            {game.marquee && (
+              <div className="game-marquee-logo">
+                <img 
+                  src={getMediaUrl(game.marquee)} 
+                  alt={`${game.name} marquee`}
+                  className="marquee-image"
+                />
+              </div>
+            )}
             
             <div className="game-meta-grid">
               {game.developer && (
@@ -208,7 +255,7 @@ const GameDetails = () => {
               </div>
             )}
 
-            {isCreator && (
+            {(isDownload || isFastDownload) && (
               <div className="game-actions">
                 <button className="download-btn" onClick={handleDownload}>
                   Add to Download Queue
@@ -218,6 +265,12 @@ const GameDetails = () => {
           </div>
         </div>
       </div>
+      <TokenSelectorDropdown
+        isOpen={showTokenSelector}
+        onClose={cancelTokenSelection}
+        onSelect={handleTokenSelected}
+        gameId={game?.id}
+      />
     </div>
   )
 }

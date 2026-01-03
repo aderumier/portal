@@ -1,11 +1,15 @@
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../../context/AuthContext'
+import { getMediaUrl } from '../../utils/constants'
 import './GameCard.css'
 
 const GameCard = ({ game, onDownload }) => {
   const navigate = useNavigate()
+  const { isDownload, isFastDownload } = useAuth()
+  
   const imageUrl = game.image 
-    ? `/media/${game.image}` 
+    ? getMediaUrl(game.image)
     : '/assets/images/no-image.png'
 
   const handleCardClick = (e) => {
@@ -31,20 +35,25 @@ const GameCard = ({ game, onDownload }) => {
   }
 
   return (
-    <div className="game-card" onClick={handleCardClick}>
+    <div 
+      className="game-card" 
+      onClick={handleCardClick}
+    >
       <div className="game-card-image">
         <img src={imageUrl} alt={game.name} loading="lazy" />
       </div>
       <div className="game-card-content">
         <h3 className="game-card-title">{game.name}</h3>
-        <div className="game-card-actions">
-          <button 
-            className="download-btn" 
-            onClick={handleDownloadClick}
-          >
-            Download
-          </button>
-        </div>
+        {(isDownload || isFastDownload) && (
+          <div className="game-card-actions">
+            <button 
+              className="download-btn" 
+              onClick={handleDownloadClick}
+            >
+              Download
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

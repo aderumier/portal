@@ -81,7 +81,8 @@ const Account = () => {
           <p><strong>Username:</strong> {user?.username}</p>
           <p><strong>User ID:</strong> {user?.id}</p>
           <p><strong>Guild Member:</strong> {user?.is_guild_member ? 'Yes' : 'No'}</p>
-          <p><strong>Creator Role:</strong> {user?.is_creator ? 'Yes' : 'No'}</p>
+          <p><strong>Download Role:</strong> {user?.is_download ? 'Yes' : 'No'}</p>
+          <p><strong>Admin Role:</strong> {user?.is_admin ? 'Yes' : 'No'}</p>
         </div>
       </div>
 
