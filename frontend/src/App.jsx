@@ -14,6 +14,7 @@ import Unauthorized from './components/Auth/Unauthorized'
 import ProtectedRoute from './components/Auth/ProtectedRoute'
 import MediaValidation from './pages/MediaValidation'
 import DownloadQueues from './pages/DownloadQueues'
+import UsersStats from './pages/UsersStats'
 
 function App() {
   return (
@@ -30,8 +31,9 @@ function App() {
             <Route path="search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
             <Route path="downloads" element={<ProtectedRoute requireDownload><Downloads /></ProtectedRoute>} />
             <Route path="account" element={<ProtectedRoute><Account /></ProtectedRoute>} />
-                    <Route path="media-validation" element={<ProtectedRoute requireAdmin><MediaValidation /></ProtectedRoute>} />
-                    <Route path="download-queues" element={<ProtectedRoute requireAdmin><DownloadQueues /></ProtectedRoute>} />
+            <Route path="users-stats" element={<ProtectedRoute requireAdmin><UsersStats /></ProtectedRoute>} />
+            <Route path="media-validation" element={<ProtectedRoute requireAdmin><MediaValidation /></ProtectedRoute>} />
+            <Route path="download-queues" element={<ProtectedRoute requireAdmin><DownloadQueues /></ProtectedRoute>} />
           </Route>
         </Routes>
       </Router>

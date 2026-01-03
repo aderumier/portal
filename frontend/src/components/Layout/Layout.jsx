@@ -64,6 +64,13 @@ const Layout = () => {
                       {isAdmin && (
                         <>
                           <Link 
+                            to="/users-stats" 
+                            className="account-menu-item"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Users Stats
+                          </Link>
+                          <Link 
                             to="/media-validation" 
                             className="account-menu-item"
                             onClick={() => setAccountMenuOpen(false)}

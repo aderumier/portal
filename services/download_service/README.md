@@ -27,7 +27,7 @@ sudo systemctl start pixel-nostalgia-download
 
 Edit the `.env` file with your settings:
 
-- `API_URL`: The URL of your Pixel Nostalgia API
+- `API_URL`: The URL of your Pixel Nostalgia **backend API** (typically `http://localhost:8000` or `http://your-server:8000`). **IMPORTANT**: This should point to the backend API, NOT the frontend (port 3000).
 - `API_TOKEN`: Your API token for authentication (required)
 - `DOWNLOAD_PATH`: Where downloaded games will be stored
 - `GAMES_PATH`: Where the source game files are located
