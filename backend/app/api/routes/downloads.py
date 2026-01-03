@@ -199,10 +199,10 @@ async def report_progress(
     success = download_service.update_progress(download_id, bytes_transferred, bytes_per_second)
     
     if not success:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Download not found"
-        )
+        # Download might already be completed/deleted - this is OK for final progress reports
+        # Log as warning but don't raise error to avoid breaking the download service
+        logger.warning(f"Progress update failed for download {download_id} - download may already be completed")
+        return {"success": True, "warning": "Download not found (may already be completed)"}
     
     return {"success": True}
 
@@ -227,6 +227,56 @@ async def mark_completed(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Download not found"
+        )
+    
+    return {"success": True}
+
+@router.post("/queue/{download_id}/pause")
+async def pause_download(
+    download_id: int,
+    current_user: dict = Depends(require_download_role),
+    download_service: DownloadService = Depends(get_download_service)
+):
+    """Pause a download in the queue."""
+    user_id = current_user['id']
+    
+    if download_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid download ID"
+        )
+    
+    success = download_service.pause_download(user_id, download_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Download not found or cannot be paused"
+        )
+    
+    return {"success": True}
+
+@router.post("/queue/{download_id}/resume")
+async def resume_download(
+    download_id: int,
+    current_user: dict = Depends(require_download_role),
+    download_service: DownloadService = Depends(get_download_service)
+):
+    """Resume a paused download."""
+    user_id = current_user['id']
+    
+    if download_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid download ID"
+        )
+    
+    success = download_service.resume_download(user_id, download_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Download not found or cannot be resumed"
         )
     
     return {"success": True}

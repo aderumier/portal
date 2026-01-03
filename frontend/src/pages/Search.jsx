@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import GameCard from '../components/Catalog/GameCard'
 import TokenSelectorDropdown from '../components/TokenSelector/TokenSelectorDropdown'
 import { useDownloadWithToken } from '../hooks/useDownloadWithToken'
+import client from '../api/client'
 import './Search.css'
 
 const Search = () => {
@@ -16,15 +17,7 @@ const Search = () => {
   const observerRef = useRef(null)
   const loadingRef = useRef(null)
   const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
-
-  // Update query when URL parameter changes
-  useEffect(() => {
-    const urlQuery = searchParams.get('q') || ''
-    if (urlQuery !== query) {
-      setQuery(urlQuery)
-      setPage(1)
-    }
-  }, [searchParams, query])
+  const hasSearchedRef = useRef(false)
 
   const searchGames = useCallback(async (searchQuery, pageNum, append = false) => {
     if (!searchQuery.trim()) {
@@ -60,20 +53,47 @@ const Search = () => {
     }
   }, [])
 
+  // Update query when URL parameter changes
   useEffect(() => {
-    if (!query.trim()) {
+    const urlQuery = searchParams.get('q') || ''
+    if (urlQuery !== query) {
+      setQuery(urlQuery)
+      setPage(1)
+    }
+  }, [searchParams, query])
+
+  // Trigger search when query changes
+  useEffect(() => {
+    const currentQuery = query.trim()
+    if (!currentQuery) {
       setGames([])
       setHasMore(false)
+      hasSearchedRef.current = false
       return
     }
 
+    // Trigger search with a small debounce
     const timeoutId = setTimeout(() => {
-      setPage(1)
-      searchGames(query, 1, false)
-    }, 500)
+      searchGames(currentQuery, 1, false)
+      hasSearchedRef.current = true
+    }, 300)
 
     return () => clearTimeout(timeoutId)
   }, [query, searchGames])
+
+  // Trigger initial search on mount if URL has query parameter
+  useEffect(() => {
+    const initialQuery = searchParams.get('q') || ''
+    if (initialQuery.trim() && !hasSearchedRef.current) {
+      // Small delay to ensure state is initialized
+      const timeoutId = setTimeout(() => {
+        searchGames(initialQuery, 1, false)
+        hasSearchedRef.current = true
+      }, 100)
+      return () => clearTimeout(timeoutId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // Only run on mount
 
   const handleQueryChange = (e) => {
     const newQuery = e.target.value

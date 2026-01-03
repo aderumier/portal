@@ -55,6 +55,7 @@ class DownloadService:
                 return False
             
             # Get file size if possible (game_id is rompath, need to prepend system)
+            # Handle both files and directories
             file_size = None
             if settings.GAMES_PATH:
                 system = game.get('system', '')
@@ -63,8 +64,19 @@ class DownloadService:
                 else:
                     game_path = os.path.join(settings.GAMES_PATH, game_id)
                 if os.path.exists(game_path):
-                    file_size = os.path.getsize(game_path)
-                    logger.info(f"File size: {file_size} bytes")
+                    if os.path.isfile(game_path):
+                        file_size = os.path.getsize(game_path)
+                        logger.info(f"File size: {file_size} bytes")
+                    elif os.path.isdir(game_path):
+                        # Calculate total size of directory recursively
+                        total_size = 0
+                        for dirpath, dirnames, filenames in os.walk(game_path):
+                            for filename in filenames:
+                                filepath = os.path.join(dirpath, filename)
+                                if os.path.isfile(filepath):
+                                    total_size += os.path.getsize(filepath)
+                        file_size = total_size
+                        logger.info(f"Directory size: {file_size} bytes ({len([f for r, d, files in os.walk(game_path) for f in files])} files)")
             
             # Add to user's FIFO queue (status: 'user_queue')
             queue_item = DownloadQueue(
@@ -93,8 +105,12 @@ class DownloadService:
         try:
             from app.database import ApiToken
             
+            # Filter out completed downloads - they should be deleted, but filter just in case
             queue_items = self.db.query(DownloadQueue).filter(
-                DownloadQueue.user_id == user_id
+                and_(
+                    DownloadQueue.user_id == user_id,
+                    DownloadQueue.status != 'completed'  # Exclude completed downloads (they should be deleted)
+                )
             ).order_by(DownloadQueue.created_at.asc()).all()  # FIFO: oldest first
             
             # Enrich queue items with game information
@@ -131,7 +147,8 @@ class DownloadService:
                         'bytes_transferred': item.bytes_transferred,
                         'file_size': item.file_size,
                         'bandwidth_used': item.bandwidth_used,
-                        'token_name': token_name
+                        'token_name': token_name,
+                        'download_id': item.id  # Include download_id for pause/resume actions
                     }
                     enriched_items.append(enriched_item)
             
@@ -285,6 +302,74 @@ class DownloadService:
             self.db.rollback()
             return False
     
+    def pause_download(self, user_id: str, download_id: int) -> bool:
+        """Pause a download (only if it's pending or downloading)."""
+        try:
+            download = self.db.query(DownloadQueue).filter(
+                and_(
+                    DownloadQueue.id == download_id,
+                    DownloadQueue.user_id == user_id
+                )
+            ).first()
+            
+            if not download:
+                logger.warning(f"Download {download_id} not found for user {user_id}")
+                return False
+            
+            # Only allow pausing if status is pending or downloading
+            if download.status not in ['pending', 'downloading']:
+                logger.warning(f"Cannot pause download {download_id} with status {download.status}")
+                return False
+            
+            # Set status to paused and clear active_download flag
+            download.status = 'paused'
+            download.active_download = False
+            download.assigned_to_service = None  # Release service assignment
+            
+            # Release bandwidth
+            if download.bandwidth_used > 0:
+                self.bandwidth_manager.update_usage(download.queue_type, -download.bandwidth_used)
+                download.bandwidth_used = 0
+            
+            self.db.commit()
+            logger.info(f"Paused download {download_id} for user {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error pausing download: {e}")
+            self.db.rollback()
+            return False
+    
+    def resume_download(self, user_id: str, download_id: int) -> bool:
+        """Resume a paused download (change status back to pending)."""
+        try:
+            download = self.db.query(DownloadQueue).filter(
+                and_(
+                    DownloadQueue.id == download_id,
+                    DownloadQueue.user_id == user_id
+                )
+            ).first()
+            
+            if not download:
+                logger.warning(f"Download {download_id} not found for user {user_id}")
+                return False
+            
+            # Only allow resuming if status is paused
+            if download.status != 'paused':
+                logger.warning(f"Cannot resume download {download_id} with status {download.status}")
+                return False
+            
+            # Change status back to pending (will be picked up by download service)
+            download.status = 'pending'
+            download.active_download = False
+            
+            self.db.commit()
+            logger.info(f"Resumed download {download_id} for user {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error resuming download: {e}")
+            self.db.rollback()
+            return False
+    
     def enrich_queue_items(self, queue_items: List[Dict]) -> List[Dict]:
         """Enrich queue items with game metadata."""
         enriched = []
@@ -379,7 +464,7 @@ class DownloadService:
             timeout_threshold = datetime.utcnow() - timedelta(minutes=5)
             
             # Check for resumable downloads (downloading status, same service or timed out)
-            # Only for the authenticated token
+            # Only for the authenticated token (exclude paused)
             resumable_query = self.db.query(DownloadQueue).filter(
                 DownloadQueue.status == 'downloading',
                 DownloadQueue.active_download == True,
@@ -387,6 +472,8 @@ class DownloadService:
                     DownloadQueue.assigned_to_service == service_id,
                     DownloadQueue.started_at < timeout_threshold
                 )
+            ).filter(
+                DownloadQueue.status != 'paused'  # Exclude paused downloads
             )
             
             if token_id is not None:
@@ -440,11 +527,13 @@ class DownloadService:
                 logger.info(f"Resuming download {resumable_download.id} from {resumable_download.bytes_transferred} bytes")
                 return download_info
             
-            # Build query for pending downloads
+            # Build query for pending downloads (exclude paused)
             # Only for the authenticated token
             query = self.db.query(DownloadQueue).filter(
-                DownloadQueue.status == 'pending',
+                DownloadQueue.status.in_(['pending', 'downloading']),  # Include downloading that can be resumed
                 DownloadQueue.active_download == False
+            ).filter(
+                DownloadQueue.status != 'paused'  # Exclude paused downloads
             )
             
             # Filter by token_id if specified (required for token-based downloads)

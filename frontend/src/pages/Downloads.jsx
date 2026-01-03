@@ -34,6 +34,26 @@ const Downloads = () => {
     }
   }
 
+  const handlePause = async (downloadId) => {
+    try {
+      await client.post(`/api/download/queue/${downloadId}/pause`)
+      await loadQueue()
+    } catch (error) {
+      console.error('Error pausing download:', error)
+      alert('Failed to pause download')
+    }
+  }
+
+  const handleResume = async (downloadId) => {
+    try {
+      await client.post(`/api/download/queue/${downloadId}/resume`)
+      await loadQueue()
+    } catch (error) {
+      console.error('Error resuming download:', error)
+      alert('Failed to resume download')
+    }
+  }
+
   const handleClear = async () => {
     if (!confirm('Are you sure you want to clear your entire download queue?')) {
       return
@@ -106,12 +126,13 @@ const Downloads = () => {
                       {item.status === 'user_queue' ? 'Queued' : 
                        item.status === 'pending' ? 'Pending' :
                        item.status === 'downloading' ? 'Downloading' :
+                       item.status === 'paused' ? 'Paused' :
                        item.status === 'completed' ? 'Completed' :
                        item.status.charAt(0).toUpperCase() + item.status.slice(1)}
                     </span>
                   </td>
                   <td className="progress-cell">
-                    {item.status === 'downloading' && item.progress_percent !== undefined ? (
+                    {(item.status === 'downloading' || item.status === 'paused') && item.progress_percent !== undefined ? (
                       <div className="table-progress">
                         <div className="progress-bar">
                           <div 
@@ -126,12 +147,32 @@ const Downloads = () => {
                     )}
                   </td>
                   <td className="actions-cell">
-                    <button
-                      className="remove-download-btn"
-                      onClick={() => handleRemove(item.game_id)}
-                    >
-                      Remove
-                    </button>
+                    <div className="action-buttons">
+                      {item.status === 'pending' || item.status === 'downloading' ? (
+                        <button
+                          className="pause-download-btn"
+                          onClick={() => handlePause(item.download_id || item.id)}
+                          title="Pause download"
+                        >
+                          ⏸ Pause
+                        </button>
+                      ) : item.status === 'paused' ? (
+                        <button
+                          className="resume-download-btn"
+                          onClick={() => handleResume(item.download_id || item.id)}
+                          title="Resume download"
+                        >
+                          ▶ Resume
+                        </button>
+                      ) : null}
+                      <button
+                        className="remove-download-btn"
+                        onClick={() => handleRemove(item.game_id)}
+                        title="Remove from queue"
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
