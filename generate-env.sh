@@ -44,6 +44,11 @@ GLOBAL_BANDWIDTH_LIMIT=1000
 # Interval in seconds between bandwidth progress updates
 BANDWIDTH_UPDATE_INTERVAL=5
 
+# Per-user bandwidth limits for testing (optional, in Mbits/s)
+# If not set, users share available bandwidth equally (no per-user limit)
+# PER_USER_SLOW_QUEUE_LIMIT_Mbits=1
+# PER_USER_FAST_QUEUE_LIMIT_Mbits=2
+
 # Application Configuration
 # Path to your Batocera games directory (where gamelist.xml files are located)
 GAMES_PATH=/path/to/your/batocera/games
@@ -53,6 +58,14 @@ USERS_MEDIA_PATH=/path/to/users/media
 
 # Frontend URL (where users are redirected after authentication)
 FRONTEND_URL=http://localhost:3000
+
+# Backend API URL (used for internal API calls)
+API_URL=http://localhost:8000
+
+# Public URL for download file endpoint (optional)
+# Use this if download service needs to access files from a different domain/port
+# If not set, defaults to API_URL
+# DOWNLOAD_FILE_URL=
 
 # Database Configuration
 DATABASE_URL=sqlite:///./data/database.sqlite

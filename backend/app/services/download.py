@@ -511,11 +511,21 @@ class DownloadService:
                 # Calculate available bandwidth
                 allocated_bandwidth = self.bandwidth_manager.allocate_bandwidth(resumable_download.queue_type)
                 
+                # Construct HTTP URL for the file
+                import urllib.parse
+                clean_game_id = resumable_download.game_id.lstrip('./')
+                encoded_game_id = urllib.parse.quote(clean_game_id, safe='/')
+                encoded_system = urllib.parse.quote(system, safe='')
+                # Use DOWNLOAD_FILE_URL if set, otherwise fall back to API_URL
+                base_url = settings.DOWNLOAD_FILE_URL if settings.DOWNLOAD_FILE_URL else settings.API_URL
+                http_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}"
+                
                 download_info = {
                     'download_id': resumable_download.id,
                     'game_id': resumable_download.game_id,
                     'user_id': resumable_download.user_id,
                     'file_path': file_path,
+                    'file_url': http_url,  # HTTP URL for downloading the file
                     'file_size': resumable_download.file_size,
                     'bytes_transferred': resumable_download.bytes_transferred,
                     'allocated_bandwidth': allocated_bandwidth,
@@ -588,11 +598,21 @@ class DownloadService:
                     logger.error(f"System is empty for game_id={pending_download.game_id}, cannot build file path")
                     return None
             
+            # Construct HTTP URL for the file
+            import urllib.parse
+            clean_game_id = pending_download.game_id.lstrip('./')
+            encoded_game_id = urllib.parse.quote(clean_game_id, safe='/')
+            encoded_system = urllib.parse.quote(system, safe='')
+            # Use DOWNLOAD_FILE_URL if set, otherwise fall back to API_URL
+            base_url = settings.DOWNLOAD_FILE_URL if settings.DOWNLOAD_FILE_URL else settings.API_URL
+            http_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}"
+            
             download_info = {
                 'download_id': pending_download.id,
                 'game_id': pending_download.game_id,
                 'user_id': pending_download.user_id,
                 'file_path': file_path,
+                'file_url': http_url,  # HTTP URL for downloading the file
                 'file_size': pending_download.file_size,
                 'bytes_transferred': pending_download.bytes_transferred or 0,
                 'allocated_bandwidth': allocated_bandwidth,

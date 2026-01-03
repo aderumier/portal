@@ -15,6 +15,8 @@ class BandwidthManager:
     def __init__(self, db: Session):
         self.db = db
         self.global_limit = settings.GLOBAL_BANDWIDTH_LIMIT
+        self.per_user_slow_limit = getattr(settings, 'PER_USER_SLOW_QUEUE_LIMIT', None)
+        self.per_user_fast_limit = getattr(settings, 'PER_USER_FAST_QUEUE_LIMIT', None)
     
     def get_fast_queue_bandwidth(self) -> int:
         """Get guaranteed bandwidth for fast queue (2/3 of global)."""
@@ -75,6 +77,19 @@ class BandwidthManager:
     
     def allocate_bandwidth(self, queue_type: str) -> int:
         """Allocate bandwidth per user for a queue type."""
+        # Check if per-user limit is set for this queue type
+        per_user_limit = None
+        if queue_type == 'slow' and self.per_user_slow_limit is not None:
+            per_user_limit = self.per_user_slow_limit
+        elif queue_type == 'fast' and self.per_user_fast_limit is not None:
+            per_user_limit = self.per_user_fast_limit
+        
+        # If per-user limit is set, use it (for testing)
+        if per_user_limit is not None:
+            logger.debug(f"Using per-user limit for {queue_type} queue: {per_user_limit} bytes/s ({per_user_limit / 125000:.2f} Mbits/s)")
+            return per_user_limit
+        
+        # Otherwise, share available bandwidth equally among active users
         available = self.get_available_bandwidth(queue_type)
         active_users = self.get_active_user_count(queue_type)
         
