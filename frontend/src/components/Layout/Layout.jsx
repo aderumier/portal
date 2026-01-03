@@ -17,7 +17,7 @@ const Layout = () => {
       <header className="header">
         <div className="header-content">
           <Link to="/" className="logo">
-            <h1>Batocera Games Catalog</h1>
+            <img src="/logo.png" alt="Team Pixel Nostalgia" className="logo-image" />
           </Link>
           {isAuthenticated && <HeaderSearch />}
           <nav className="nav">

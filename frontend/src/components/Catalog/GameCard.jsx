@@ -1,25 +1,46 @@
 import React from 'react'
+import { useNavigate } from 'react-router-dom'
 import './GameCard.css'
 
 const GameCard = ({ game, onDownload }) => {
+  const navigate = useNavigate()
   const imageUrl = game.image 
     ? `/media/${game.image}` 
     : '/assets/images/no-image.png'
 
+  const handleCardClick = (e) => {
+    // Don't navigate if clicking the download button
+    if (e.target.closest('.download-btn')) {
+      return
+    }
+    
+    // Navigate to game details page
+    // game.id is the path from gamelist.xml (e.g., "./game.zip" or "system/game.zip")
+    // We need just the filename/path part without the system prefix
+    let gameId = game.id.replace(/^\.\//, '')
+    // Remove system prefix if present
+    if (gameId.startsWith(`${game.system}/`)) {
+      gameId = gameId.substring(game.system.length + 1)
+    }
+    navigate(`/game/${game.system}/${encodeURIComponent(gameId)}`)
+  }
+
+  const handleDownloadClick = (e) => {
+    e.stopPropagation()
+    onDownload(game.id)
+  }
+
   return (
-    <div className="game-card">
+    <div className="game-card" onClick={handleCardClick}>
       <div className="game-card-image">
         <img src={imageUrl} alt={game.name} loading="lazy" />
       </div>
       <div className="game-card-content">
         <h3 className="game-card-title">{game.name}</h3>
-        {game.description && (
-          <p className="game-card-description">{game.description}</p>
-        )}
         <div className="game-card-actions">
           <button 
             className="download-btn" 
-            onClick={() => onDownload(game.id)}
+            onClick={handleDownloadClick}
           >
             Download
           </button>

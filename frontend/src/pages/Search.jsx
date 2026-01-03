@@ -1,16 +1,28 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import GameCard from '../components/Catalog/GameCard'
 import client from '../api/client'
 import './Search.css'
 
 const Search = () => {
-  const [query, setQuery] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const urlQuery = searchParams.get('q') || ''
+  const [query, setQuery] = useState(urlQuery)
   const [games, setGames] = useState([])
   const [loading, setLoading] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [page, setPage] = useState(1)
   const observerRef = useRef(null)
   const loadingRef = useRef(null)
+
+  // Update query when URL parameter changes
+  useEffect(() => {
+    const urlQuery = searchParams.get('q') || ''
+    if (urlQuery !== query) {
+      setQuery(urlQuery)
+      setPage(1)
+    }
+  }, [searchParams, query])
 
   const searchGames = useCallback(async (searchQuery, pageNum, append = false) => {
     if (!searchQuery.trim()) {
@@ -47,6 +59,12 @@ const Search = () => {
   }, [])
 
   useEffect(() => {
+    if (!query.trim()) {
+      setGames([])
+      setHasMore(false)
+      return
+    }
+
     const timeoutId = setTimeout(() => {
       setPage(1)
       searchGames(query, 1, false)
@@ -54,6 +72,17 @@ const Search = () => {
 
     return () => clearTimeout(timeoutId)
   }, [query, searchGames])
+
+  const handleQueryChange = (e) => {
+    const newQuery = e.target.value
+    setQuery(newQuery)
+    // Update URL parameter
+    if (newQuery.trim()) {
+      setSearchParams({ q: newQuery })
+    } else {
+      setSearchParams({})
+    }
+  }
 
   useEffect(() => {
     if (observerRef.current) {
@@ -101,7 +130,7 @@ const Search = () => {
           className="search-input"
           placeholder="Search for games..."
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={handleQueryChange}
         />
       </div>
 

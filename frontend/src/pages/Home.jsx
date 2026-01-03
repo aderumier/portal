@@ -1,73 +1,50 @@
 import React from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import './Home.css'
 
 const Home = () => {
   const { isAuthenticated } = useAuth()
 
   return (
-    <div style={{ 
-      textAlign: 'center', 
-      padding: '3rem 1rem',
-      maxWidth: '800px',
-      margin: '0 auto'
-    }}>
-      <h1>Welcome to Batocera Games Catalog</h1>
-      <p style={{ fontSize: '1.2rem', marginBottom: '2rem', color: '#666' }}>
-        Browse and download games from your Batocera system
-      </p>
-      
-      {!isAuthenticated ? (
-        <div>
-          <Link 
-            to="/login" 
-            style={{
-              display: 'inline-block',
-              padding: '1rem 2rem',
-              backgroundColor: '#5865F2',
-              color: 'white',
-              textDecoration: 'none',
-              borderRadius: '8px',
-              fontSize: '1.1rem'
-            }}
-          >
-            Login with Discord
-          </Link>
+    <>
+      <div className="hero">
+        <div className="hero-content">
+          <h1>Welcome to Pixel Nostalgia</h1>
+          <div className="hero-image">
+            <img 
+              src="https://pixelnostalgia.github.io/media/posts/4/responsive/background-xl.webp" 
+              alt="Pixel Nostalgia Background" 
+              loading="lazy"
+            />
+          </div>
+          <p>Your retro game library for Team Pixel Nostalgia members</p>
+          {!isAuthenticated ? (
+            <Link to="/login" className="hero-cta">Login with Discord</Link>
+          ) : (
+            <Link to="/systems" className="hero-cta">Browse Games</Link>
+          )}
         </div>
-      ) : (
-        <div>
-          <Link 
-            to="/systems" 
-            style={{
-              display: 'inline-block',
-              padding: '1rem 2rem',
-              backgroundColor: '#5865F2',
-              color: 'white',
-              textDecoration: 'none',
-              borderRadius: '8px',
-              fontSize: '1.1rem',
-              marginRight: '1rem'
-            }}
-          >
-            Browse Systems
-          </Link>
-          <Link 
-            to="/search" 
-            style={{
-              display: 'inline-block',
-              padding: '1rem 2rem',
-              backgroundColor: '#5865F2',
-              color: 'white',
-              textDecoration: 'none',
-              borderRadius: '8px',
-              fontSize: '1.1rem'
-            }}
-          >
-            Search Games
-          </Link>
+      </div>
+
+      <div className="home-features">
+        <div className="feature">
+          <i className="fas fa-gamepad"></i>
+          <h2>Extensive Collection</h2>
+          <p>Browse through our curated collection of retro games across multiple systems</p>
         </div>
-      )}
-    </div>
+        <div className="feature">
+          <i className="fas fa-download"></i>
+          <h2>Download Access</h2>
+          <p>Creators can download games directly through our secure download system</p>
+        </div>
+        <div className="feature">
+          <i className="fas fa-search"></i>
+          <h2>Advanced Search</h2>
+          <p>Find your favorite games quickly with our powerful search functionality</p>
+        </div>
+      </div>
+    </>
   )
 }
 
