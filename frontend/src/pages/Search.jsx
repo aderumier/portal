@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import GameCard from '../components/Catalog/GameCard'
-import client from '../api/client'
+import TokenSelectorDropdown from '../components/TokenSelector/TokenSelectorDropdown'
+import { useDownloadWithToken } from '../hooks/useDownloadWithToken'
 import './Search.css'
 
 const Search = () => {
@@ -14,6 +15,7 @@ const Search = () => {
   const [page, setPage] = useState(1)
   const observerRef = useRef(null)
   const loadingRef = useRef(null)
+  const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
 
   // Update query when URL parameter changes
   useEffect(() => {
@@ -113,11 +115,20 @@ const Search = () => {
 
   const handleDownload = async (gameId) => {
     try {
-      await client.post('/api/download/queue', { game_id: gameId })
-      alert('Game added to download queue!')
+      const result = await addToQueue(gameId)
+      if (result && result.success) {
+        alert('Game added to download queue!')
+      }
+      // If requiresSelection is true, TokenSelector will be shown automatically (no error thrown)
     } catch (error) {
       console.error('Error adding to download queue:', error)
-      alert('Failed to add game to download queue. Please try again.')
+      // Only show alert if it's not a token selection requirement (that's handled by the hook)
+      const requiresSelection = error.response?.headers?.['x-requires-token-selection'] === 'true' ||
+                                error.response?.headers?.['X-Requires-Token-Selection'] === 'true'
+      if (!requiresSelection) {
+        const errorMsg = error.response?.data?.detail || 'Failed to add game to download queue. Please try again.'
+        alert(errorMsg)
+      }
     }
   }
 
@@ -161,6 +172,11 @@ const Search = () => {
       {!loading && query.trim() && games.length === 0 && (
         <div className="no-results">No games found</div>
       )}
+      <TokenSelectorDropdown
+        isOpen={showTokenSelector}
+        onClose={cancelTokenSelection}
+        onSelect={handleTokenSelected}
+      />
     </div>
   )
 }

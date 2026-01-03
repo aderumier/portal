@@ -1,5 +1,5 @@
 """Database configuration and models."""
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, BigInteger, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import func
@@ -49,6 +49,16 @@ class DownloadQueue(Base):
     status = Column(String, default='pending')
     created_at = Column(DateTime, server_default=func.now())
     
+    # Bandwidth management fields
+    queue_type = Column(String, default='slow', index=True)  # 'fast' or 'slow'
+    active_download = Column(Boolean, default=False, index=True)
+    bandwidth_used = Column(Integer, default=0)  # Current bytes/second usage
+    bytes_transferred = Column(BigInteger, default=0)  # Total bytes transferred
+    file_size = Column(BigInteger, nullable=True)  # Total file size in bytes
+    started_at = Column(DateTime, nullable=True)  # When download started
+    assigned_to_service = Column(String, nullable=True)  # Service instance ID handling this download
+    token_id = Column(Integer, nullable=False, index=True)  # Associated API token ID (required)
+    
     __table_args__ = (
         {'sqlite_autoincrement': True},
     )
@@ -89,9 +99,55 @@ class System(Base):
     name = Column(String, nullable=False)
 
 
+class UserSession(Base):
+    """Session model for persistent user sessions."""
+    __tablename__ = "sessions"
+    
+    session_id = Column(String, primary_key=True, index=True)
+    data = Column(Text, nullable=False)  # JSON-encoded session data
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    __table_args__ = (
+        {'sqlite_autoincrement': False},
+    )
+
+
+class User(Base):
+    """User statistics model."""
+    __tablename__ = "users"
+    
+    user_id = Column(String, primary_key=True, index=True)
+    username = Column(String, nullable=True)  # Discord username
+    total_download_mb = Column(Float, default=0.0, nullable=False)  # Total downloaded MB
+    total_download_number = Column(Integer, default=0, nullable=False)  # Total number of games downloaded
+    last_login = Column(DateTime, nullable=True)  # Last login datetime
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    __table_args__ = (
+        {'sqlite_autoincrement': False},
+    )
+
+
 def init_db():
-    """Initialize database tables."""
+    """Initialize database tables and run migrations."""
     Base.metadata.create_all(bind=engine)
+    
+    # Run migrations to add any missing columns
+    try:
+        import sys
+        import os
+        # Add parent directory to path to import migrate_database
+        backend_dir = os.path.dirname(os.path.dirname(__file__))
+        if backend_dir not in sys.path:
+            sys.path.insert(0, backend_dir)
+        from migrate_database import migrate_database
+        migrate_database()
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Migration check failed (this is OK if tables don't exist yet): {e}")
 
 
 def get_db():

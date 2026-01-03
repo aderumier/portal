@@ -344,44 +344,29 @@ class GameService:
         return self.system_names.get(system_id.lower(), system_id.capitalize())
     
     def get_game_by_id(self, game_id: str) -> Optional[Dict]:
-        """Get a specific game by its ID (path)."""
+        """Get a specific game by its ID (path from gamelist.xml).
+        
+        The game_id is the path as stored in gamelist.xml, which is relative to the system directory.
+        Full path is always: GAMES_PATH/<systemid>/<rompath>
+        """
         logger.info(f"Getting game by ID: {game_id}")
         
-        # Clean up the game ID
+        # Clean up the game ID (remove leading ./ if present)
         clean_game_id = game_id.lstrip('./')
         logger.info(f"Cleaned game ID: {clean_game_id}")
-        
-        # Extract system ID from game path
-        parts = clean_game_id.split('/')
-        if not parts:
-            logger.warning(f"Invalid game ID format: {game_id}")
-            return None
-        
-        system_id = parts[0]
-        logger.info(f"System ID extracted: {system_id}")
-        
-        # Check if system exists
-        if not self.get_system(system_id):
-            logger.warning(f"System not found for ID: {system_id}")
-            return None
         
         # Ensure gamelists are loaded
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
         
-        if system_id not in self.gamelists:
-            logger.warning(f"Gamelist not found in memory for system: {system_id}")
-            return None
+        # Search all systems for a game with matching path
+        # The path in gamelist.xml is relative to the system directory
+        system_id = None
+        found_game = None
         
-        try:
-            root = self.gamelists[system_id]
+        for loaded_system_id in self.gamelists.keys():
+            root = self.gamelists[loaded_system_id]
             
-            # Get the path portion without the system ID
-            path_without_system = '/'.join(parts[1:]) if len(parts) > 1 else clean_game_id
-            logger.info(f"Looking for game with path: {path_without_system}")
-            
-            # Search for the game by path
-            found = None
             for game in root.findall('.//game'):
                 game_path = game.findtext('path', '')
                 clean_game_path = game_path.lstrip('./')
@@ -391,22 +376,31 @@ class GameService:
                 if hidden.lower() in ['true', '1']:
                     continue
                 
-                # Try multiple possible matches
-                if (clean_game_path == path_without_system or
-                    clean_game_path == clean_game_id or
-                    game_path == f'./{path_without_system}' or
-                    game_path == path_without_system):
-                    found = game
-                    logger.info(f"Game found with path: {game_path}")
+                # Match the path exactly (with or without ./ prefix)
+                if (clean_game_path == clean_game_id or
+                    game_path == f'./{clean_game_id}' or
+                    game_path == clean_game_id):
+                    system_id = loaded_system_id
+                    found_game = game
+                    logger.info(f"Game found in system {system_id} with path: {game_path}")
                     break
             
-            if not found:
-                logger.warning(f"Game not found with ID: {game_id}")
-                return None
+            if found_game:
+                break
+        
+        if not found_game:
+            logger.warning(f"Game not found in any system with path: {clean_game_id}")
+            return None
+        
+        if not system_id or system_id not in self.gamelists:
+            logger.warning(f"System ID not determined or gamelist not found: {system_id}")
+            return None
+        
+        try:
             
             # Get all media types
             def get_media_path(media_type):
-                path = found.findtext(media_type, '')
+                path = found_game.findtext(media_type, '')
                 if path:
                     path = path.lstrip('./')
                     if not path.startswith(f"{system_id}/"):
@@ -415,21 +409,21 @@ class GameService:
             
             # Get all game information
             game_data = {
-                'id': found.findtext('path', ''),
-                'name': found.findtext('name', ''),
-                'description': found.findtext('desc', ''),
+                'id': found_game.findtext('path', ''),
+                'name': found_game.findtext('name', ''),
+                'description': found_game.findtext('desc', ''),
                 'system': system_id,
                 'systemName': self.get_system_name(system_id),
                 
                 # Metadata
-                'developer': found.findtext('developer', ''),
-                'publisher': found.findtext('publisher', ''),
-                'genre': found.findtext('genre', ''),
-                'releaseDate': found.findtext('releasedate', ''),
-                'players': found.findtext('players', ''),
-                'rating': found.findtext('rating', ''),
-                'region': found.findtext('region', ''),
-                'lang': found.findtext('lang', ''),
+                'developer': found_game.findtext('developer', ''),
+                'publisher': found_game.findtext('publisher', ''),
+                'genre': found_game.findtext('genre', ''),
+                'releaseDate': found_game.findtext('releasedate', ''),
+                'players': found_game.findtext('players', ''),
+                'rating': found_game.findtext('rating', ''),
+                'region': found_game.findtext('region', ''),
+                'lang': found_game.findtext('lang', ''),
                 
                 # Media types
                 'thumbnail': get_media_path('thumbnail'),
@@ -689,26 +683,40 @@ class GameService:
         # Search in all partitions
         for first_letter, games_dict in self.search_index.items():
             for normalized_name, games in games_dict.items():
+                normalized_name_lower = normalized_name.lower()
+                
                 # Check if normalized query matches normalized name
-                if query_lower in normalized_name.lower() or normalized_name.lower().startswith(query_lower):
-                    # Add all games with this normalized name
-                    results.extend(games)
+                if query_lower in normalized_name_lower:
+                    # Calculate relevance: 0=exact match, 1=starts with, 2=contains
+                    if normalized_name_lower == query_lower:
+                        relevance = 0  # Exact match
+                    elif normalized_name_lower.startswith(query_lower):
+                        relevance = 1  # Starts with
+                    else:
+                        relevance = 2  # Contains
+                    
+                    # Add all games with this normalized name, with relevance score
+                    for game in games:
+                        results.append((relevance, game))
         
         # Remove duplicates (same game might appear multiple times if indexed multiple ways)
-        seen = set()
-        unique_results = []
-        for game in results:
+        # Keep the one with the best relevance score
+        seen = {}
+        for relevance, game in results:
             game_key = (game['system'], game['id'])
-            if game_key not in seen:
-                seen.add(game_key)
-                unique_results.append(game)
+            if game_key not in seen or seen[game_key][0] > relevance:
+                seen[game_key] = (relevance, game)
         
-        # Sort results: exact matches first, then by name
-        unique_results.sort(key=lambda x: (
-            0 if normalized_query.lower() == normalize_game_name(x['name'], remove_paranthesis=True, remove_articles=True).lower() else 1,
-            x['name'].lower()
+        # Convert back to list of games with their relevance scores
+        scored_results = [(relevance, game) for game_key, (relevance, game) in seen.items()]
+        
+        # Sort results: exact matches first, then starts-with, then contains, then by name
+        scored_results.sort(key=lambda x: (
+            x[0],  # Relevance score (0=exact, 1=starts with, 2=contains)
+            normalize_game_name(x[1]['name'], remove_paranthesis=True, remove_articles=True).lower()
         ))
         
-        # Limit results
+        # Extract games and limit results
+        unique_results = [game for relevance, game in scored_results]
         return unique_results[:limit]
 

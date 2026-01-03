@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import GameCard from './GameCard'
+import TokenSelectorDropdown from '../TokenSelector/TokenSelectorDropdown'
+import { useDownloadWithToken } from '../../hooks/useDownloadWithToken'
+import { useAuth } from '../../context/AuthContext'
+import { getMediaUrl } from '../../utils/constants'
 import client from '../../api/client'
 import './SystemGames.css'
 
@@ -9,8 +14,26 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
   const [hasMore, setHasMore] = useState(true)
   const [page, setPage] = useState(1)
   const [error, setError] = useState(null)
+  const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
   const observerRef = useRef(null)
   const loadingRef = useRef(null)
+  const navigate = useNavigate()
+  const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
+  const { isDownload, isFastDownload } = useAuth()
+
+  // Load view preference from localStorage
+  useEffect(() => {
+    const savedView = localStorage.getItem('systemGamesViewMode')
+    if (savedView === 'table' || savedView === 'grid') {
+      setViewMode(savedView)
+    }
+  }, [])
+
+  // Save view preference to localStorage
+  const handleViewChange = (mode) => {
+    setViewMode(mode)
+    localStorage.setItem('systemGamesViewMode', mode)
+  }
 
   const loadGames = useCallback(async (pageNum, append = false) => {
     try {
@@ -79,11 +102,20 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
 
   const handleDownload = async (gameId) => {
     try {
-      await client.post('/api/download/queue', { game_id: gameId })
-      alert('Game added to download queue!')
+      const result = await addToQueue(gameId)
+      if (result && result.success) {
+        alert('Game added to download queue!')
+      }
+      // If requiresSelection is true, TokenSelector will be shown automatically (no error thrown)
     } catch (error) {
       console.error('Error adding to download queue:', error)
-      alert('Failed to add game to download queue. Please try again.')
+      // Only show alert if it's not a token selection requirement (that's handled by the hook)
+      const requiresSelection = error.response?.headers?.['x-requires-token-selection'] === 'true' ||
+                                error.response?.headers?.['X-Requires-Token-Selection'] === 'true'
+      if (!requiresSelection) {
+        const errorMsg = error.response?.data?.detail || 'Failed to add game to download queue. Please try again.'
+        alert(errorMsg)
+      }
     }
   }
 
@@ -95,24 +127,116 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
     return <div className="error">{error}</div>
   }
 
+  const handleGameClick = (game) => {
+    let gameId = game.id.replace(/^\.\//, '')
+    if (gameId.startsWith(`${game.system}/`)) {
+      gameId = gameId.substring(game.system.length + 1)
+    }
+    navigate(`/game/${game.system}/${encodeURIComponent(gameId)}`)
+  }
+
   return (
     <div className="system-games">
-      <h1>{systemName}</h1>
-      {searchQuery && <p>Search results for: "{searchQuery}"</p>}
+      <div className="system-games-header">
+        <div>
+          <h1>{systemName}</h1>
+          {searchQuery && <p>Search results for: "{searchQuery}"</p>}
+        </div>
+        <div className="view-toggle">
+          <button
+            className={`view-toggle-btn ${viewMode === 'grid' ? 'active' : ''}`}
+            onClick={() => handleViewChange('grid')}
+            title="Grid View"
+            aria-label="Grid View"
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="2" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+              <rect x="12" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+              <rect x="2" y="12" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+              <rect x="12" y="12" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+            </svg>
+          </button>
+          <button
+            className={`view-toggle-btn ${viewMode === 'table' ? 'active' : ''}`}
+            onClick={() => handleViewChange('table')}
+            title="Table View"
+            aria-label="Table View"
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M2 4H18M2 8H18M2 12H18M2 16H18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M2 4V16M6 4V16M10 4V16M14 4V16M18 4V16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
       
       {games.length === 0 ? (
         <div className="no-games">No games found</div>
       ) : (
         <>
-          <div className="games-grid">
-            {games.map((game) => (
-              <GameCard 
-                key={game.id} 
-                game={game} 
-                onDownload={handleDownload}
-              />
-            ))}
-          </div>
+          {viewMode === 'grid' ? (
+            <div className="games-grid">
+              {games.map((game) => (
+                <GameCard 
+                  key={game.id} 
+                  game={game} 
+                  onDownload={handleDownload}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="games-table-container">
+              <table className="games-table">
+                <thead>
+                  <tr>
+                    <th>Image</th>
+                    <th>Game Name</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {games.map((game) => {
+                    const imageUrl = game.image 
+                      ? getMediaUrl(game.image)
+                      : '/assets/images/no-image.png'
+                    let gameId = game.id.replace(/^\.\//, '')
+                    if (gameId.startsWith(`${game.system}/`)) {
+                      gameId = gameId.substring(game.system.length + 1)
+                    }
+                    
+                    return (
+                      <tr key={game.id} onClick={() => handleGameClick(game)} className="game-table-row">
+                        <td className="game-image-cell">
+                          <img 
+                            src={imageUrl} 
+                            alt={game.name}
+                            className="table-game-image"
+                            loading="lazy"
+                          />
+                        </td>
+                        <td className="game-name-cell">
+                          <span className="game-name">{game.name}</span>
+                        </td>
+                        <td className="game-actions-cell" onClick={(e) => e.stopPropagation()}>
+                          {(isDownload || isFastDownload) && (
+                            <button
+                              className="download-btn"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleDownload(game.id)
+                              }}
+                            >
+                              Download
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
           
           {hasMore && (
             <div ref={loadingRef} className="load-more-trigger">
@@ -121,6 +245,11 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
           )}
         </>
       )}
+      <TokenSelectorDropdown
+        isOpen={showTokenSelector}
+        onClose={cancelTokenSelection}
+        onSelect={handleTokenSelected}
+      />
     </div>
   )
 }

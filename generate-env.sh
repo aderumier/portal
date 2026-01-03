@@ -30,9 +30,26 @@ DISCORD_REDIRECT_URI=http://localhost:8000/api/auth/callback
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
 DISCORD_GUILD_ID=1006854943157788722
 
+# Discord Role Mappings
+# Role name required for download queue access
+DISCORD_DOWNLOAD_ROLE=download
+# Role name required for fast download queue access
+DISCORD_FASTDOWNLOAD_ROLE=fastdownload
+# Role name required for media validation access
+DISCORD_ADMIN_ROLE=admin
+
+# Bandwidth Management
+# Global bandwidth limit in Mbits/s (e.g., 1000 for 1 Gbits/s, 100 for 100 Mbits/s)
+GLOBAL_BANDWIDTH_LIMIT=1000
+# Interval in seconds between bandwidth progress updates
+BANDWIDTH_UPDATE_INTERVAL=5
+
 # Application Configuration
 # Path to your Batocera games directory (where gamelist.xml files are located)
 GAMES_PATH=/path/to/your/batocera/games
+
+# Path to user-uploaded media (pending validation)
+USERS_MEDIA_PATH=/path/to/users/media
 
 # Frontend URL (where users are redirected after authentication)
 FRONTEND_URL=http://localhost:3000

@@ -2,14 +2,54 @@
   padding: 2rem 0;
 }
 
-.systems-list h1 {
+.systems-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 2.5rem;
+  gap: 1rem;
+}
+
+.systems-list h1 {
+  margin: 0;
   font-size: 2.5rem;
   font-weight: 700;
   background: linear-gradient(135deg, #ffffff 0%, #b0b0b0 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+.view-toggle {
+  display: flex;
+  gap: 0.5rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.25rem;
+}
+
+.view-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all 0.2s ease;
+}
+
+.view-toggle-btn:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.view-toggle-btn.active {
+  background: var(--accent);
+  color: white;
 }
 
 .systems-grid {
@@ -68,7 +108,105 @@
   font-weight: 500;
 }
 
+/* Table View Styles */
+.systems-table-container {
+  background: var(--bg-card);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px var(--shadow);
+  border: 1px solid var(--border);
+}
+
+.systems-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.systems-table thead {
+  background: var(--bg-secondary);
+  border-bottom: 2px solid var(--border);
+}
+
+.systems-table th {
+  padding: 1rem 1.5rem;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.systems-table tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: background-color 0.2s ease;
+}
+
+.systems-table tbody tr:hover {
+  background-color: var(--bg-hover);
+}
+
+.systems-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.systems-table td {
+  padding: 1rem 1.5rem;
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+
+.system-name-cell {
+  font-weight: 600;
+}
+
+.system-link {
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: color 0.2s ease;
+  font-size: 1.1rem;
+}
+
+.system-link:hover {
+  color: var(--accent);
+}
+
+.system-games-cell {
+  color: var(--text-secondary);
+}
+
+.games-count {
+  font-weight: 500;
+}
+
+.system-actions-cell {
+  text-align: right;
+}
+
+.view-system-btn {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  background: var(--accent);
+  color: white;
+  text-decoration: none;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.view-system-btn:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px var(--shadow);
+}
+
 @media (max-width: 768px) {
+  .systems-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
   .systems-grid {
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
     gap: 1rem;
@@ -76,6 +214,19 @@
   
   .system-card {
     padding: 1.5rem;
+  }
+
+  .systems-table-container {
+    overflow-x: auto;
+  }
+
+  .systems-table {
+    min-width: 500px;
+  }
+
+  .systems-table th,
+  .systems-table td {
+    padding: 0.8rem 1rem;
   }
 }
 

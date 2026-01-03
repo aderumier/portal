@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
+import { getMediaUrl } from '../../utils/constants'
 import client from '../../api/client'
 import './HeaderSearch.css'
 
@@ -160,7 +161,7 @@ const HeaderSearch = () => {
             >
               {game.image && (
                 <img
-                  src={`/media/${game.image}`}
+                  src={getMediaUrl(game.image)}
                   alt={game.name}
                   className="search-result-image"
                 />

@@ -5,25 +5,34 @@
 
 .account-page h1 {
   margin-bottom: 2rem;
-  color: #333;
+  color: var(--text-primary);
+  background: linear-gradient(135deg, #ffffff 0%, #b0b0b0 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .account-section {
-  background: white;
-  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
   padding: 2rem;
   margin-bottom: 2rem;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 12px var(--shadow);
 }
 
 .account-section h2 {
   margin: 0 0 1rem 0;
-  color: #333;
+  color: var(--text-primary);
   font-size: 1.5rem;
+  background: linear-gradient(135deg, #ffffff 0%, #e0e0e0 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .section-description {
-  color: #666;
+  color: var(--text-secondary);
   margin-bottom: 1.5rem;
 }
 
@@ -35,20 +44,20 @@
 
 .user-info p {
   margin: 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .new-token-alert {
-  background-color: #d4edda;
-  border: 1px solid #c3e6cb;
-  border-radius: 4px;
+  background-color: rgba(88, 101, 242, 0.1);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
   padding: 1rem;
   margin-bottom: 1.5rem;
 }
 
 .new-token-alert p {
   margin: 0 0 0.5rem 0;
-  color: #155724;
+  color: var(--text-primary);
 }
 
 .token-display {
@@ -59,29 +68,42 @@
 
 .token-display code {
   flex: 1;
-  background-color: white;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
   padding: 0.5rem;
   border-radius: 4px;
   font-family: monospace;
   word-break: break-all;
+  border: 1px solid var(--border);
 }
 
 .token-display button {
   padding: 0.5rem 1rem;
-  background-color: #5865F2;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
   color: white;
   border: none;
   border-radius: 4px;
   cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.token-display button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(88, 101, 242, 0.3);
 }
 
 .dismiss-btn {
   padding: 0.5rem 1rem;
-  background-color: #6c757d;
-  color: white;
-  border: none;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.dismiss-btn:hover {
+  background-color: var(--bg-primary);
 }
 
 .token-form {
@@ -93,38 +115,55 @@
 .token-input {
   flex: 1;
   padding: 0.75rem;
-  border: 2px solid #ddd;
-  border-radius: 4px;
+  border: 2px solid var(--border);
+  border-radius: 8px;
   font-size: 1rem;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  transition: all 0.3s ease;
+}
+
+.token-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(88, 101, 242, 0.1);
+}
+
+.token-input::placeholder {
+  color: var(--text-secondary);
 }
 
 .generate-btn {
   padding: 0.75rem 1.5rem;
-  background-color: #5865F2;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 8px;
   cursor: pointer;
   font-size: 1rem;
-  transition: background-color 0.2s;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(88, 101, 242, 0.2);
 }
 
 .generate-btn:hover:not(:disabled) {
-  background-color: #4752C4;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3);
 }
 
 .generate-btn:disabled {
-  background-color: #ccc;
+  background-color: var(--bg-secondary);
+  color: var(--text-secondary);
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .tokens-list h3 {
   margin: 0 0 1rem 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .no-tokens {
-  color: #666;
+  color: var(--text-secondary);
   text-align: center;
   padding: 2rem;
 }
@@ -135,32 +174,35 @@
 }
 
 .tokens-table thead {
-  background-color: #f8f9fa;
+  background-color: var(--bg-secondary);
 }
 
 .tokens-table th {
   padding: 1rem;
   text-align: left;
   font-weight: 600;
-  color: #333;
-  border-bottom: 2px solid #dee2e6;
+  color: var(--text-primary);
+  border-bottom: 2px solid var(--border);
 }
 
 .tokens-table td {
   padding: 1rem;
-  border-bottom: 1px solid #dee2e6;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
 }
 
 .tokens-table tbody tr:hover {
-  background-color: #f8f9fa;
+  background-color: var(--bg-secondary);
 }
 
 .tokens-table code {
-  background-color: #f8f9fa;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-family: monospace;
   font-size: 0.9rem;
+  border: 1px solid var(--border);
 }
 
 .status-badge {
@@ -171,13 +213,15 @@
 }
 
 .status-badge.active {
-  background-color: #d4edda;
-  color: #155724;
+  background-color: rgba(88, 101, 242, 0.2);
+  color: var(--accent);
+  border: 1px solid var(--accent);
 }
 
 .status-badge.revoked {
-  background-color: #f8d7da;
-  color: #721c24;
+  background-color: rgba(220, 53, 69, 0.2);
+  color: #ff6b6b;
+  border: 1px solid #ff6b6b;
 }
 
 .revoke-btn {
@@ -187,16 +231,18 @@
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: all 0.3s ease;
 }
 
 .revoke-btn:hover {
   background-color: #c82333;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(220, 53, 69, 0.3);
 }
 
 .loading {
   text-align: center;
   padding: 3rem;
-  color: #666;
+  color: var(--text-secondary);
 }
 

@@ -58,7 +58,11 @@ export const AuthProvider = ({ children }) => {
     loading,
     isAuthenticated: !!user,
     isGuildMember: user?.is_guild_member || false,
-    isCreator: user?.is_creator || false,
+    isDownload: user?.is_download || false,
+    isFastDownload: user?.is_fastdownload || false,
+    isAdmin: user?.is_admin || false,
+    // Legacy support - keep isCreator for backward compatibility
+    isCreator: user?.is_admin || false,
     login,
     logout,
     refreshAuth: checkAuth,

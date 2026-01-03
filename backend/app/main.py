@@ -1,12 +1,14 @@
 """FastAPI application entry point."""
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.database import init_db
-from app.api.routes import auth, catalog, downloads, users
+from app.api.routes import auth, catalog, downloads, users, media
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,7 @@ async def preload_game_data():
         import traceback
         logger.error(traceback.format_exc())
 
-# Add session middleware
+# Add session middleware (in-memory sessions)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.SECRET_KEY,
@@ -64,6 +66,21 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(catalog.router, prefix="/api", tags=["catalog"])
 app.include_router(downloads.router, prefix="/api/download", tags=["downloads"])
 app.include_router(users.router, prefix="/api", tags=["users"])
+
+# Include media router
+app.include_router(media.router, prefix="/api/media", tags=["media"])
+
+# Mount static files for media (games images, videos, etc.)
+# This serves files from GAMES_PATH at /media endpoint
+# IMPORTANT: Mount this BEFORE routers to ensure it takes precedence
+if settings.GAMES_PATH and os.path.exists(settings.GAMES_PATH):
+    try:
+        app.mount("/media", StaticFiles(directory=settings.GAMES_PATH), name="media")
+        logger.info(f"Mounted media files from {settings.GAMES_PATH} at /media")
+    except Exception as e:
+        logger.error(f"Failed to mount media files: {e}")
+else:
+    logger.warning(f"GAMES_PATH not set or does not exist: {settings.GAMES_PATH}. Media files will not be served.")
 
 
 @app.get("/")

@@ -11,7 +11,7 @@
 
 .downloads-header h1 {
   margin: 0;
-  color: #333;
+  color: var(--text-primary, #e0e0e0);
 }
 
 .downloads-actions {
@@ -20,25 +20,6 @@
   align-items: center;
 }
 
-.view-toggle {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.view-btn {
-  padding: 0.5rem 1rem;
-  border: 2px solid #ddd;
-  background: white;
-  cursor: pointer;
-  border-radius: 4px;
-  transition: all 0.2s;
-}
-
-.view-btn.active {
-  background-color: #5865F2;
-  color: white;
-  border-color: #5865F2;
-}
 
 .clear-queue-btn {
   padding: 0.5rem 1rem;
@@ -57,35 +38,197 @@
 .no-downloads {
   text-align: center;
   padding: 3rem;
-  color: #666;
+  color: var(--text-secondary, #999);
 }
 
-.downloads-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 1.5rem;
+.downloads-table-container {
+  background: var(--card-bg, rgba(255, 255, 255, 0.05));
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+}
+
+.downloads-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.downloads-table thead {
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.2));
+  border-bottom: 2px solid var(--border-color, rgba(255, 255, 255, 0.1));
+}
+
+.downloads-table th {
+  padding: 1rem;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-primary, #e0e0e0);
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.downloads-table tbody tr {
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  transition: background-color 0.2s;
+}
+
+.downloads-table tbody tr:hover {
+  background-color: var(--bg-secondary, rgba(255, 255, 255, 0.05));
+}
+
+.downloads-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.downloads-table td {
+  padding: 1rem;
+  color: var(--text-primary, #e0e0e0);
+  vertical-align: middle;
+}
+
+.queue-number {
+  text-align: center;
+  font-weight: 600;
+  color: var(--text-secondary, #999);
+  width: 50px;
+}
+
+.game-info-cell {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 300px;
+}
+
+.table-game-image {
+  width: 80px;
+  height: 80px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.2));
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  flex-shrink: 0;
+}
+
+.game-name {
+  font-weight: 500;
+  color: var(--text-primary, #e0e0e0);
+  line-height: 1.4;
+}
+
+.system-cell {
+  min-width: 120px;
+}
+
+.token-cell {
+  min-width: 150px;
+}
+
+.status-cell {
+  min-width: 120px;
+}
+
+.progress-cell {
+  min-width: 150px;
+}
+
+.table-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.table-progress .progress-bar {
+  width: 100%;
+  height: 8px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.table-progress .progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-color, #5865F2) 0%, var(--accent-color-light, #7289da) 100%);
+  transition: width 0.3s ease;
+  border-radius: 4px;
+}
+
+.table-progress .progress-text {
+  font-size: 0.85rem;
+  color: var(--text-secondary, #999);
+  font-weight: 500;
+}
+
+.no-progress {
+  color: var(--text-secondary, #999);
+  font-style: italic;
+}
+
+.actions-cell {
+  width: 120px;
+}
+
+.remove-download-btn {
+  padding: 0.5rem 1rem;
+  background-color: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  font-size: 0.9rem;
+}
+
+.remove-download-btn:hover {
+  background-color: #c82333;
+}
+
+@media (max-width: 768px) {
+  .downloads-table-container {
+    overflow-x: auto;
+  }
+  
+  .downloads-table {
+    min-width: 800px;
+  }
+  
+  .game-info-cell {
+    min-width: 200px;
+  }
 }
 
 .download-card {
-  background: white;
+  background: var(--card-bg, rgba(255, 255, 255, 0.05));
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   display: flex;
   flex-direction: column;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.download-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
 .download-card-image {
   width: 100%;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  background-color: #f0f0f0;
+  background-color: var(--bg-secondary, #1a1a1a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .download-card-image img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .download-card-content {
@@ -96,10 +239,16 @@
 }
 
 .game-title {
-  margin: 0 0 0.5rem 0;
+  margin: 0 0 0.75rem 0;
   font-size: 1.1rem;
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary, #e0e0e0);
+  line-height: 1.3;
+  min-height: 2.6em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .game-meta {
@@ -110,28 +259,56 @@
 }
 
 .system-tag {
-  padding: 0.25rem 0.5rem;
-  background-color: #e9ecef;
-  border-radius: 4px;
+  padding: 0.35rem 0.75rem;
+  background: linear-gradient(135deg, var(--accent-color, #5865F2) 0%, var(--accent-color-dark, #4752C4) 100%);
+  border-radius: 6px;
   font-size: 0.85rem;
-  color: #666;
+  font-weight: 500;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.token-tag {
+  padding: 0.35rem 0.75rem;
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.2));
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary, #e0e0e0);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  display: inline-block;
 }
 
 .status-tag {
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
   font-size: 0.85rem;
   font-weight: 500;
 }
 
+.status-tag.user_queue {
+  background-color: rgba(108, 117, 125, 0.3);
+  color: var(--text-secondary, #999);
+  border: 1px solid rgba(108, 117, 125, 0.5);
+}
+
 .status-tag.pending {
-  background-color: #ffc107;
-  color: #000;
+  background-color: rgba(255, 193, 7, 0.3);
+  color: #ffc107;
+  border: 1px solid rgba(255, 193, 7, 0.5);
+}
+
+.status-tag.downloading {
+  background-color: rgba(0, 123, 255, 0.3);
+  color: #007bff;
+  border: 1px solid rgba(0, 123, 255, 0.5);
 }
 
 .status-tag.completed {
-  background-color: #28a745;
-  color: white;
+  background-color: rgba(40, 167, 69, 0.3);
+  color: #28a745;
+  border: 1px solid rgba(40, 167, 69, 0.5);
 }
 
 .download-actions {
@@ -153,55 +330,35 @@
   background-color: #c82333;
 }
 
-.downloads-table {
-  background: white;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+.download-progress {
+  margin: 0.75rem 0;
 }
 
-.downloads-table table {
+.progress-bar {
   width: 100%;
-  border-collapse: collapse;
-}
-
-.downloads-table thead {
-  background-color: #f8f9fa;
-}
-
-.downloads-table th {
-  padding: 1rem;
-  text-align: left;
-  font-weight: 600;
-  color: #333;
-  border-bottom: 2px solid #dee2e6;
-}
-
-.downloads-table td {
-  padding: 1rem;
-  border-bottom: 1px solid #dee2e6;
-}
-
-.downloads-table tbody tr:hover {
-  background-color: #f8f9fa;
-}
-
-.game-info {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.table-thumbnail {
-  width: 60px;
-  height: 60px;
-  object-fit: cover;
+  height: 8px;
+  background-color: rgba(255, 255, 255, 0.1);
   border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-color, #5865F2) 0%, var(--accent-color-light, #7289da) 100%);
+  transition: width 0.3s ease;
+  border-radius: 4px;
+}
+
+.progress-text {
+  font-size: 0.85rem;
+  color: var(--text-secondary, #999);
+  font-weight: 500;
 }
 
 .loading {
   text-align: center;
   padding: 3rem;
-  color: #666;
+  color: var(--text-secondary, #999);
 }
 
