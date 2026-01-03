@@ -78,19 +78,41 @@ const HeaderSearch = () => {
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setSelectedIndex(prev => prev > 0 ? prev - 1 : -1)
-    } else if (e.key === 'Enter' && selectedIndex >= 0 && results[selectedIndex]) {
-      e.preventDefault()
-      handleGameClick(results[selectedIndex])
+    } else if (e.key === 'Enter') {
+      if (selectedIndex >= 0 && results[selectedIndex]) {
+        // If a result is selected, navigate to that game
+        e.preventDefault()
+        handleGameClick(results[selectedIndex])
+      }
+      // Otherwise, let the form handle the submission naturally
+      // (don't prevent default, so form onSubmit will be called)
     } else if (e.key === 'Escape') {
+      e.preventDefault()
       setShowResults(false)
       setQuery('')
+    }
+  }
+
+  const handleFormSubmit = (e) => {
+    e.preventDefault()
+    if (query.trim()) {
+      setShowResults(false)
+      navigate(`/search?q=${encodeURIComponent(query.trim())}`)
     }
   }
 
   const handleGameClick = (game) => {
     setShowResults(false)
     setQuery('')
-    navigate(`/system/${game.system}`, { state: { highlightGame: game.id } })
+    // Navigate to game details page
+    // game.id is the path from gamelist.xml (e.g., "./game.zip" or "system/game.zip")
+    // We need just the filename/path part without the system prefix
+    let gameId = game.id.replace(/^\.\//, '')
+    // Remove system prefix if present
+    if (gameId.startsWith(`${game.system}/`)) {
+      gameId = gameId.substring(game.system.length + 1)
+    }
+    navigate(`/game/${game.system}/${encodeURIComponent(gameId)}`)
   }
 
   const handleInputFocus = () => {
@@ -101,7 +123,7 @@ const HeaderSearch = () => {
 
   return (
     <div className="header-search" ref={searchRef}>
-      <div className="search-input-wrapper">
+      <form onSubmit={handleFormSubmit} className="search-input-wrapper">
         <input
           type="text"
           className="search-input"
@@ -114,6 +136,7 @@ const HeaderSearch = () => {
         {loading && <span className="search-loading">⏳</span>}
         {query && !loading && (
           <button
+            type="button"
             className="search-clear"
             onClick={() => {
               setQuery('')
@@ -124,7 +147,7 @@ const HeaderSearch = () => {
             ×
           </button>
         )}
-      </div>
+      </form>
       
       {showResults && results.length > 0 && (
         <div className="search-results" ref={resultsRef}>

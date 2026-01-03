@@ -6,6 +6,7 @@ import Home from './pages/Home'
 import Systems from './pages/Systems'
 import System from './pages/System'
 import Search from './pages/Search'
+import GameDetails from './pages/GameDetails'
 import Downloads from './pages/Downloads'
 import Account from './pages/Account'
 import Login from './components/Auth/Login'
@@ -23,6 +24,7 @@ function App() {
             <Route index element={<Home />} />
             <Route path="systems" element={<ProtectedRoute><Systems /></ProtectedRoute>} />
             <Route path="system/:id" element={<ProtectedRoute><System /></ProtectedRoute>} />
+            <Route path="game/:system/:gameId" element={<ProtectedRoute><GameDetails /></ProtectedRoute>} />
             <Route path="search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
             <Route path="downloads" element={<ProtectedRoute requireCreator><Downloads /></ProtectedRoute>} />
             <Route path="account" element={<ProtectedRoute><Account /></ProtectedRoute>} />

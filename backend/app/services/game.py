@@ -404,24 +404,58 @@ class GameService:
                 logger.warning(f"Game not found with ID: {game_id}")
                 return None
             
-            thumbnail_path = found.findtext('thumbnail', '')
-            image_path = found.findtext('image', '')
+            # Get all media types
+            def get_media_path(media_type):
+                path = found.findtext(media_type, '')
+                if path:
+                    path = path.lstrip('./')
+                    if not path.startswith(f"{system_id}/"):
+                        path = f"{system_id}/{path}"
+                return path
             
-            display_image = thumbnail_path if thumbnail_path else image_path
-            display_image = display_image.lstrip('./')
-            
-            if display_image and not display_image.startswith(f"{system_id}/"):
-                display_image = f"{system_id}/{display_image}"
-            
-            logger.info(f"Final display image path: {display_image}")
-            
-            return {
+            # Get all game information
+            game_data = {
                 'id': found.findtext('path', ''),
                 'name': found.findtext('name', ''),
                 'description': found.findtext('desc', ''),
-                'image': display_image,
-                'system': system_id
+                'system': system_id,
+                'systemName': self.get_system_name(system_id),
+                
+                # Metadata
+                'developer': found.findtext('developer', ''),
+                'publisher': found.findtext('publisher', ''),
+                'genre': found.findtext('genre', ''),
+                'releaseDate': found.findtext('releasedate', ''),
+                'players': found.findtext('players', ''),
+                'rating': found.findtext('rating', ''),
+                'region': found.findtext('region', ''),
+                'lang': found.findtext('lang', ''),
+                
+                # Media types
+                'thumbnail': get_media_path('thumbnail'),
+                'image': get_media_path('image'),
+                'boxart': get_media_path('boxart'),
+                'boxback': get_media_path('boxback'),
+                'marquee': get_media_path('marquee'),
+                'fanart': get_media_path('fanart'),
+                'cartridge': get_media_path('cartridge'),
+                'titleshot': get_media_path('titleshot'),
+                'video': get_media_path('video'),
+                'screenshot': get_media_path('screenshot'),
+                'wheel': get_media_path('wheel'),
+                'mix': get_media_path('mix'),
             }
+            
+            # Set default display image (prefer thumbnail, then image)
+            if game_data['thumbnail']:
+                game_data['image'] = game_data['thumbnail']
+            elif game_data['image']:
+                pass  # Already set
+            else:
+                game_data['image'] = ''
+            
+            logger.info(f"Game data retrieved: {game_data['name']}")
+            return game_data
         except Exception as e:
             logger.error(f"Failed to get game by ID: {e}")
             return None

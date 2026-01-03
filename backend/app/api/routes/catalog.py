@@ -88,3 +88,25 @@ async def quick_search(
         "count": len(games)
     }
 
+@router.get("/game/{system}/{game_id:path}")
+async def get_game_details(
+    system: str,
+    game_id: str,
+    current_user: dict = Depends(require_guild_member),
+    game_service: GameService = Depends(get_game_service)
+):
+    """Get detailed information about a specific game."""
+    # Construct full game ID from system and game_id
+    full_game_id = f"{system}/{game_id}" if not game_id.startswith(system) else game_id
+    
+    game = game_service.get_game_by_id(full_game_id)
+    
+    if not game:
+        from fastapi import HTTPException, status
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Game not found"
+        )
+    
+    return game
+

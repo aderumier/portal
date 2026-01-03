@@ -1,0 +1,226 @@
+import React, { useState, useEffect } from 'react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
+import client from '../api/client'
+import './GameDetails.css'
+
+const GameDetails = () => {
+  const { system, gameId } = useParams()
+  const navigate = useNavigate()
+  const { isCreator } = useAuth()
+  const [game, setGame] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [selectedMedia, setSelectedMedia] = useState(null)
+
+  useEffect(() => {
+    loadGameDetails()
+  }, [system, gameId])
+
+  const loadGameDetails = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      // gameId is already URL encoded from the route parameter
+      // The backend expects: system/game_path
+      const response = await client.get(`/api/game/${system}/${encodeURIComponent(gameId)}`)
+      setGame(response.data)
+      
+      // Set initial selected media (prefer boxart, then thumbnail, then image)
+      if (response.data.boxart) {
+        setSelectedMedia({ type: 'boxart', url: `/media/${response.data.boxart}` })
+      } else if (response.data.thumbnail) {
+        setSelectedMedia({ type: 'thumbnail', url: `/media/${response.data.thumbnail}` })
+      } else if (response.data.image) {
+        setSelectedMedia({ type: 'image', url: `/media/${response.data.image}` })
+      }
+    } catch (err) {
+      console.error('Error loading game details:', err)
+      setError('Failed to load game details')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDownload = async () => {
+    try {
+      await client.post('/api/download/queue', { game_id: game.id })
+      alert('Game added to download queue!')
+    } catch (error) {
+      console.error('Error adding to download queue:', error)
+      alert('Failed to add game to download queue. Please try again.')
+    }
+  }
+
+  const formatReleaseDate = (dateStr) => {
+    if (!dateStr) return ''
+    // Format: YYYYMMDDTHHMMSS -> YYYY-MM-DD
+    if (dateStr.length >= 8) {
+      const year = dateStr.substring(0, 4)
+      const month = dateStr.substring(4, 6)
+      const day = dateStr.substring(6, 8)
+      return `${year}-${month}-${day}`
+    }
+    return dateStr
+  }
+
+  const getMediaItems = () => {
+    if (!game) return []
+    
+    const mediaTypes = [
+      { key: 'boxart', label: 'Box Art' },
+      { key: 'boxback', label: 'Box Back' },
+      { key: 'thumbnail', label: 'Thumbnail' },
+      { key: 'marquee', label: 'Marquee' },
+      { key: 'fanart', label: 'Fan Art' },
+      { key: 'cartridge', label: 'Cartridge' },
+      { key: 'titleshot', label: 'Title Shot' },
+      { key: 'image', label: 'Screenshot' },
+      { key: 'screenshot', label: 'Screenshot' },
+    ]
+    
+    return mediaTypes
+      .filter(type => game[type.key])
+      .map(type => ({
+        type: type.key,
+        label: type.label,
+        url: `/media/${game[type.key]}`
+      }))
+  }
+
+  if (loading) {
+    return <div className="game-details-loading">Loading game details...</div>
+  }
+
+  if (error || !game) {
+    return (
+      <div className="game-details-error">
+        <p>{error || 'Game not found'}</p>
+        <Link to="/systems">Back to Systems</Link>
+      </div>
+    )
+  }
+
+  const mediaItems = getMediaItems()
+
+  return (
+    <div className="game-details">
+      <div className="game-details-header">
+        <button className="back-btn" onClick={() => navigate(-1)}>
+          ← Back
+        </button>
+        <Link to={`/system/${game.system}`} className="back-to-system">
+          Back to {game.systemName}
+        </Link>
+      </div>
+
+      <div className="game-details-content">
+        <div className="game-details-main">
+          <div className="game-details-media">
+            {selectedMedia ? (
+              <div className="main-media">
+                <img 
+                  src={selectedMedia.url} 
+                  alt={game.name}
+                  className="main-media-image"
+                />
+              </div>
+            ) : (
+              <div className="main-media no-image">
+                <span>No image available</span>
+              </div>
+            )}
+
+            {mediaItems.length > 0 && (
+              <div className="media-thumbnails">
+                {mediaItems.map((media) => (
+                  <div
+                    key={media.type}
+                    className={`media-thumbnail ${selectedMedia?.type === media.type ? 'active' : ''}`}
+                    onClick={() => setSelectedMedia(media)}
+                  >
+                    <img src={media.url} alt={media.label} />
+                    <span className="media-label">{media.label}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="game-details-info">
+            <h1 className="game-title">{game.name}</h1>
+            
+            <div className="game-meta-grid">
+              {game.developer && (
+                <div className="meta-item">
+                  <span className="meta-label">Developer:</span>
+                  <span className="meta-value">{game.developer}</span>
+                </div>
+              )}
+              {game.publisher && (
+                <div className="meta-item">
+                  <span className="meta-label">Publisher:</span>
+                  <span className="meta-value">{game.publisher}</span>
+                </div>
+              )}
+              {game.releaseDate && (
+                <div className="meta-item">
+                  <span className="meta-label">Release Date:</span>
+                  <span className="meta-value">{formatReleaseDate(game.releaseDate)}</span>
+                </div>
+              )}
+              {game.genre && (
+                <div className="meta-item">
+                  <span className="meta-label">Genre:</span>
+                  <span className="meta-value">{game.genre}</span>
+                </div>
+              )}
+              {game.players && (
+                <div className="meta-item">
+                  <span className="meta-label">Players:</span>
+                  <span className="meta-value">{game.players}</span>
+                </div>
+              )}
+              {game.rating && (
+                <div className="meta-item">
+                  <span className="meta-label">Rating:</span>
+                  <span className="meta-value">{parseFloat(game.rating) * 5} / 5</span>
+                </div>
+              )}
+              {game.region && (
+                <div className="meta-item">
+                  <span className="meta-label">Region:</span>
+                  <span className="meta-value">{game.region.toUpperCase()}</span>
+                </div>
+              )}
+              {game.lang && (
+                <div className="meta-item">
+                  <span className="meta-label">Language:</span>
+                  <span className="meta-value">{game.lang}</span>
+                </div>
+              )}
+            </div>
+
+            {game.description && (
+              <div className="game-description">
+                <h2>Description</h2>
+                <p>{game.description}</p>
+              </div>
+            )}
+
+            {isCreator && (
+              <div className="game-actions">
+                <button className="download-btn" onClick={handleDownload}>
+                  Add to Download Queue
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default GameDetails
+
