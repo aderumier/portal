@@ -213,13 +213,21 @@ async def report_progress(
             detail="Download is paused"
         )
     
+    # Check if download exists before updating progress
+    if not download:
+        # Download was removed from queue - return 410 Gone to signal the download service to stop
+        logger.info(f"Progress report received for removed download {download_id} - returning 410 Gone")
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Download was removed from queue"
+        )
+    
     success = download_service.update_progress(download_id, bytes_transferred, bytes_per_second)
     
     if not success:
-        # Download might already be completed/deleted - this is OK for final progress reports
-        # Log as warning but don't raise error to avoid breaking the download service
-        logger.warning(f"Progress update failed for download {download_id} - download may already be completed")
-        return {"success": True, "warning": "Download not found (may already be completed)"}
+        # This shouldn't happen if download exists, but handle it gracefully
+        logger.warning(f"Progress update failed for download {download_id}")
+        return {"success": True}
     
     return {"success": True}
 
@@ -303,11 +311,13 @@ async def download_file(
     request: Request,
     system: str = Query(...),
     game_id: str = Query(...),
+    relative_path: Optional[str] = Query(None),  # For directory downloads: relative path to file within directory
     current_user: dict = Depends(require_auth_user),
     db: Session = Depends(get_db)
 ):
     """Download a game file. Requires authentication and the file must be in user's download queue.
-    Supports HTTP Range requests for resume functionality."""
+    Supports HTTP Range requests for resume functionality.
+    For directory downloads, use relative_path parameter to download individual files."""
     try:
         # Parse Range header if present
         range_header = request.headers.get('Range')
@@ -378,16 +388,66 @@ async def download_file(
         # Refresh the queue item to ensure we have the latest status
         db.refresh(queue_item)
         
-        # Build file path
+        # Build base path
         if not settings.GAMES_PATH:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="GAMES_PATH not configured"
             )
         
-        file_path = os.path.join(settings.GAMES_PATH, system, game_id)
+        base_path = os.path.join(settings.GAMES_PATH, system, game_id)
         
-        # Check if it's a file or directory
+        # Check if base_path is a directory first (when relative_path is not provided)
+        if relative_path is None and os.path.isdir(base_path):
+            # Directory downloads - return list of files to download
+            # The download service will download each file individually
+            files_list = []
+            for root, dirs, files in os.walk(base_path):
+                for filename in files:
+                    file_full_path = os.path.join(root, filename)
+                    # Get relative path from the directory root
+                    rel_path = os.path.relpath(file_full_path, base_path)
+                    file_size = os.path.getsize(file_full_path)
+                    files_list.append({
+                        'relative_path': rel_path.replace('\\', '/'),  # Normalize path separators
+                        'size': file_size
+                    })
+            
+            from fastapi.responses import JSONResponse
+            return JSONResponse({
+                'is_directory': True,
+                'files': files_list,
+                'total_files': len(files_list),
+                'total_size': sum(f['size'] for f in files_list)
+            })
+        
+        # If relative_path is provided, this is a file within a directory
+        if relative_path:
+            # Sanitize relative_path to prevent directory traversal
+            relative_path = relative_path.lstrip('/').lstrip('\\')
+            if '..' in relative_path or relative_path.startswith('/'):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid relative path"
+                )
+            file_path = os.path.join(base_path, relative_path)
+            # Ensure the file is actually within the base_path (prevent directory traversal)
+            try:
+                if not os.path.commonpath([os.path.abspath(base_path), os.path.abspath(file_path)]) == os.path.abspath(base_path):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Invalid relative path (directory traversal detected)"
+                    )
+            except ValueError:
+                # Paths don't share a common base
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid relative path"
+                )
+        else:
+            file_path = base_path
+        
+        # Check if it's a file
         if os.path.isfile(file_path):
             # Single file download with server-side throttling
             if not os.path.exists(file_path):
@@ -543,13 +603,6 @@ async def download_file(
                     media_type='application/octet-stream',
                     headers=headers
                 )
-        elif os.path.isdir(file_path):
-            # Directory - return 400 as we don't support directory downloads via HTTP
-            # (download service should use local file copy)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Directory downloads must be done via download service (local file copy)"
-            )
         else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

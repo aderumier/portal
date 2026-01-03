@@ -143,7 +143,12 @@ def check_download_status(download_id):
         return None
 
 def report_progress(download_id, bytes_transferred, bytes_per_second):
-    """Report download progress to the API. Returns False if download is paused."""
+    """Report download progress to the API. 
+    Returns:
+        True: Progress reported successfully
+        False: Download is paused
+        None: Download was removed from queue (should stop downloading)
+    """
     try:
         headers = {
             'Authorization': f'Bearer {API_TOKEN}',
@@ -163,13 +168,17 @@ def report_progress(download_id, bytes_transferred, bytes_per_second):
         response.raise_for_status()
         return True
     except requests.exceptions.HTTPError as e:
+        # If it's a 410 Gone, the download was removed from queue - stop downloading
+        if e.response and e.response.status_code == 410:
+            logger.info(f"Progress report returned 410 Gone - download {download_id} was removed from queue, stopping download")
+            return None  # Return None to indicate download was removed
         # If it's a 404, the download might already be completed/deleted - this is OK
         if e.response and e.response.status_code == 404:
             logger.debug(f"Progress report returned 404 (download may already be completed): {e}")
             return True  # Return True to avoid error spam
-        # If it's a 403, the download might be paused
+        # If it's a 403, the download is paused
         if e.response and e.response.status_code == 403:
-            logger.info(f"Progress report returned 403 - download {download_id} may be paused")
+            logger.info(f"Progress report returned 403 - download {download_id} is paused")
             return False  # Return False to indicate pause
         logger.error(f"Failed to report progress: {e}")
         return False
@@ -340,6 +349,137 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
         logger.error(f"Unexpected error during HTTP download: {e}", exc_info=True)
         return False
 
+def download_directory_recursive(download_id, system, game_id, base_url, dest_base_path, files_list, bytes_already_transferred, paused_ref):
+    """Download all files in a directory recursively."""
+    import urllib.parse
+    
+    total_bytes_downloaded = bytes_already_transferred
+    bytes_transferred_this_session = [0]
+    start_time = time.time()
+    last_report_time = start_time
+    progress_thread_running = True
+    
+    def progress_reporter():
+        """Background thread to report progress periodically and check for pause."""
+        nonlocal last_report_time, progress_thread_running, total_bytes_downloaded
+        while progress_thread_running:
+            time.sleep(BANDWIDTH_UPDATE_INTERVAL)
+            elapsed = time.time() - last_report_time
+            if elapsed > 0:
+                total_bytes_downloaded = bytes_already_transferred + bytes_transferred_this_session[0]
+                
+                if bytes_transferred_this_session[0] > 0:
+                    bytes_per_second = int(bytes_transferred_this_session[0] / elapsed)
+                else:
+                    bytes_per_second = 0
+                
+                # Report progress - check return value
+                progress_result = report_progress(download_id, total_bytes_downloaded, bytes_per_second)
+                if progress_result is None:
+                    # Download was removed from queue - stop downloading
+                    logger.info(f"Download {download_id} was removed from queue, stopping download")
+                    paused_ref[0] = True
+                    progress_thread_running = False
+                    break
+                elif progress_result is False:
+                    # Download is paused
+                    logger.info(f"Download {download_id} is paused - checking status...")
+                    paused_ref[0] = True
+                    progress_thread_running = False
+                    break
+                
+                last_report_time = time.time()
+                bytes_transferred_this_session[0] = 0
+    
+    progress_thread = threading.Thread(target=progress_reporter, daemon=True)
+    progress_thread.start()
+    
+    try:
+        # Download each file in the directory
+        for file_info in files_list:
+            if paused_ref[0]:
+                logger.info(f"Download {download_id} was paused")
+                progress_thread_running = False
+                progress_thread.join(timeout=1)
+                return False
+            
+            relative_path = file_info['relative_path']
+            file_size = file_info['size']
+            
+            # Construct URL for this file
+            encoded_game_id = urllib.parse.quote(game_id.lstrip('./'), safe='/')
+            encoded_system = urllib.parse.quote(system, safe='')
+            encoded_rel_path = urllib.parse.quote(relative_path, safe='/')
+            file_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}&relative_path={encoded_rel_path}"
+            
+            # Destination path preserving directory structure
+            dest_file_path = os.path.join(dest_base_path, relative_path)
+            dest_file_dir = os.path.dirname(dest_file_path)
+            os.makedirs(dest_file_dir, exist_ok=True)
+            
+            # Check if file already exists (for resume)
+            resume_from = 0
+            if os.path.exists(dest_file_path):
+                existing_size = os.path.getsize(dest_file_path)
+                if existing_size < file_size:
+                    resume_from = existing_size
+                    logger.info(f"Resuming file {relative_path} from byte {resume_from}")
+                elif existing_size == file_size:
+                    logger.info(f"File already complete: {relative_path}")
+                    total_bytes_downloaded += file_size
+                    continue
+            
+            logger.info(f"Downloading file: {relative_path} ({file_size} bytes)")
+            
+            # Download this file
+            success = download_file_via_http(
+                file_url,
+                dest_file_path,
+                resume_from=resume_from,
+                expected_size=file_size,
+                bytes_transferred_ref=bytes_transferred_this_session,
+                chunk_size=1024 * 1024,
+                paused_ref=paused_ref
+            )
+            
+            if not success:
+                if paused_ref[0]:
+                    logger.info(f"Download {download_id} was paused")
+                    progress_thread_running = False
+                    progress_thread.join(timeout=1)
+                    return False
+                logger.error(f"Failed to download file: {relative_path}")
+                return False
+            
+            # Verify file size
+            final_size = os.path.getsize(dest_file_path)
+            if final_size != file_size:
+                logger.error(f"File size mismatch for {relative_path}: {final_size} != {file_size}")
+                return False
+        
+        progress_thread_running = False
+        progress_thread.join(timeout=1)
+        
+        # Final progress report
+        total_time = time.time() - start_time
+        final_bytes_per_second = int(bytes_transferred_this_session[0] / total_time) if total_time > 0 else 0
+        try:
+            report_progress(download_id, total_bytes_downloaded, final_bytes_per_second)
+        except Exception as e:
+            logger.debug(f"Final progress report failed: {e}")
+        
+        logger.info(f"Successfully downloaded directory: {game_id}")
+        logger.info(f"  Total files: {len(files_list)}")
+        logger.info(f"  Total size: {total_bytes_downloaded} bytes ({total_bytes_downloaded / (1024*1024):.2f} MB)")
+        logger.info(f"  Time: {total_time:.2f}s")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error downloading directory: {e}", exc_info=True)
+        progress_thread_running = False
+        progress_thread.join(timeout=1)
+        return False
+
 def download_game(download_info):
     """Download a game file or directory via HTTP with progress reporting and resume support."""
     try:
@@ -359,34 +499,82 @@ def download_game(download_info):
             logger.error(f"Missing system or game_id: system={system}, game_id={game_id}")
             return False
         
-        logger.info(f"Downloading file via HTTP")
+        logger.info(f"Downloading via HTTP")
         logger.info(f"  HTTP URL: {http_url}")
         logger.info(f"  Download ID: {download_id}")
         logger.info(f"  Game ID: {game_id}")
         logger.info(f"  System: {system}")
         
-        # Determine destination path: DOWNLOAD_PATH/system/rompath
+        # Determine destination base path: DOWNLOAD_PATH/system/rompath
         if system:
-            dest_path = os.path.join(DOWNLOAD_PATH, system, game_id)
-            logger.info(f"Destination path: {dest_path}")
+            dest_base_path = os.path.join(DOWNLOAD_PATH, system, game_id)
+            logger.info(f"Destination base path: {dest_base_path}")
         else:
             logger.warning(f"System not provided in download_info, using game_id only: {game_id}")
-            dest_path = os.path.join(DOWNLOAD_PATH, game_id)
-            logger.info(f"Destination path: {dest_path}")
+            dest_base_path = os.path.join(DOWNLOAD_PATH, game_id)
+            logger.info(f"Destination base path: {dest_base_path}")
         
-        # Ensure destination directory exists
+        # First, check if it's a directory by requesting the base URL
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+        }
+        
+        try:
+            response = requests.get(http_url, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            # Check if response is JSON (directory listing)
+            content_type = response.headers.get('Content-Type', '')
+            if 'application/json' in content_type:
+                # It's a directory listing
+                dir_info = response.json()
+                if dir_info.get('is_directory'):
+                    files_list = dir_info.get('files', [])
+                    logger.info(f"Directory download detected: {len(files_list)} files, {dir_info.get('total_size', 0)} bytes")
+                    
+                    # Calculate already downloaded bytes by checking existing files
+                    bytes_already_downloaded = 0
+                    for file_info in files_list:
+                        rel_path = file_info['relative_path']
+                        dest_file_path = os.path.join(dest_base_path, rel_path)
+                        if os.path.exists(dest_file_path):
+                            existing_size = os.path.getsize(dest_file_path)
+                            if existing_size == file_info['size']:
+                                bytes_already_downloaded += existing_size
+                            elif existing_size < file_info['size']:
+                                bytes_already_downloaded += existing_size
+                    
+                    # Use the larger of bytes_already_transferred or bytes_already_downloaded
+                    if bytes_already_downloaded > bytes_already_transferred:
+                        bytes_already_transferred = bytes_already_downloaded
+                    
+                    # Extract base URL from http_url
+                    from urllib.parse import urlparse, urlunparse
+                    parsed = urlparse(http_url)
+                    base_url = f"{parsed.scheme}://{parsed.netloc}"
+                    
+                    paused = [False]
+                    return download_directory_recursive(
+                        download_id, system, game_id, base_url, dest_base_path,
+                        files_list, bytes_already_transferred, paused
+                    )
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error checking if directory: {e}")
+            # Continue with single file download
+        
+        # Single file download (existing logic)
+        dest_path = dest_base_path
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         
         # Check if file already exists (for resume)
         resume_from = 0
-        if os.path.exists(dest_path):
+        if os.path.exists(dest_path) and os.path.isfile(dest_path):
             existing_size = os.path.getsize(dest_path)
             if expected_file_size and existing_size < expected_file_size:
                 resume_from = existing_size
                 logger.info(f"Resuming download from byte {resume_from} (existing file: {existing_size} bytes)")
             elif expected_file_size and existing_size == expected_file_size:
                 logger.info(f"File already complete: {dest_path} ({existing_size} bytes)")
-                # Report completion and return success
                 report_progress(download_id, existing_size, 0)
                 return True
         
@@ -400,45 +588,46 @@ def download_game(download_info):
         else:
             logger.info(f"Starting new download: {game_id} ({expected_file_size or 'unknown'} bytes), throttling handled server-side")
         
-        bytes_transferred_this_session = [0]  # Use list to allow modification in nested function
+        bytes_transferred_this_session = [0]
         total_bytes_transferred = resume_from
         start_time = time.time()
         last_report_time = start_time
         progress_thread_running = True
         
-        paused = [False]  # Use list to allow modification in nested function
+        paused = [False]
         
         def progress_reporter():
             """Background thread to report progress periodically and check for pause."""
             nonlocal last_report_time, progress_thread_running, total_bytes_transferred
             while progress_thread_running:
                 time.sleep(BANDWIDTH_UPDATE_INTERVAL)
-                # Always report progress, even if no new bytes (to keep UI updated)
                 elapsed = time.time() - last_report_time
                 if elapsed > 0:
-                    # Calculate current total bytes transferred
                     total_bytes_transferred = resume_from + bytes_transferred_this_session[0]
                     
-                    # Calculate bytes per second (use actual bytes transferred in this interval)
                     if bytes_transferred_this_session[0] > 0:
                         bytes_per_second = int(bytes_transferred_this_session[0] / elapsed)
                     else:
-                        # If no new bytes, use 0 but still report current progress
                         bytes_per_second = 0
                     
-                    # Report progress - if it returns False, download might be paused
-                    if not report_progress(download_id, total_bytes_transferred, bytes_per_second):
-                        # Check if download is paused by trying to get queue status
-                        # For now, we'll check by attempting to get the download info
-                        logger.info(f"Download {download_id} may be paused - checking status...")
+                    # Report progress - check return value
+                    progress_result = report_progress(download_id, total_bytes_transferred, bytes_per_second)
+                    if progress_result is None:
+                        # Download was removed from queue - stop downloading
+                        logger.info(f"Download {download_id} was removed from queue, stopping download")
+                        paused[0] = True
+                        progress_thread_running = False
+                        break
+                    elif progress_result is False:
+                        # Download is paused
+                        logger.info(f"Download {download_id} is paused - checking status...")
                         paused[0] = True
                         progress_thread_running = False
                         break
                     
                     last_report_time = time.time()
-                    bytes_transferred_this_session[0] = 0  # Reset for next interval
+                    bytes_transferred_this_session[0] = 0
         
-        # Start progress reporting thread
         progress_thread = threading.Thread(target=progress_reporter, daemon=True)
         progress_thread.start()
         
@@ -460,10 +649,9 @@ def download_game(download_info):
                 progress_thread.join(timeout=1)
                 if paused[0]:
                     logger.info(f"Download {download_id} was paused at {total_bytes_transferred} bytes")
-                    # Report final progress before pausing
                     if total_bytes_transferred > 0:
                         report_progress(download_id, total_bytes_transferred, 0)
-                    return False  # Return False to indicate pause (not error)
+                    return False
                 if total_bytes_transferred > 0:
                     report_progress(download_id, total_bytes_transferred, 0)
                 return False
@@ -472,7 +660,6 @@ def download_game(download_info):
             logger.error(f"Error during HTTP download, partial file kept for resume: {e}")
             progress_thread_running = False
             progress_thread.join(timeout=1)
-            # Report current progress before failing
             if total_bytes_transferred > 0:
                 report_progress(download_id, total_bytes_transferred, 0)
             return False
@@ -481,29 +668,32 @@ def download_game(download_info):
         progress_thread.join(timeout=1)
         
         # Verify file size
-        final_size = os.path.getsize(dest_path)
-        if expected_file_size and final_size != expected_file_size:
-            logger.error(f"File size mismatch after download: {final_size} != {expected_file_size}")
-            # Keep partial file for resume
-            report_progress(download_id, final_size, 0)
+        if os.path.exists(dest_path) and os.path.isfile(dest_path):
+            final_size = os.path.getsize(dest_path)
+            if expected_file_size and final_size != expected_file_size:
+                logger.error(f"File size mismatch after download: {final_size} != {expected_file_size}")
+                report_progress(download_id, final_size, 0)
+                return False
+            
+            # Final progress report
+            total_time = time.time() - start_time
+            final_bytes_per_second = int(bytes_transferred_this_session[0] / total_time) if total_time > 0 else 0
+            try:
+                report_progress(download_id, final_size, final_bytes_per_second)
+            except Exception as e:
+                logger.debug(f"Final progress report failed (download may already be completed): {e}")
+            
+            logger.info(f"Successfully downloaded: {game_id}")
+            logger.info(f"  HTTP URL: {http_url}")
+            logger.info(f"  Destination: {dest_path}")
+            logger.info(f"  Size: {final_size} bytes ({final_size / (1024*1024):.2f} MB)")
+            logger.info(f"  Time: {total_time:.2f}s")
+            logger.info(f"  Resumed from: {resume_from} bytes")
+            return True
+        else:
+            logger.error(f"Downloaded file not found: {dest_path}")
             return False
-        
-        # Final progress report (before marking as completed)
-        total_time = time.time() - start_time
-        final_bytes_per_second = int(bytes_transferred_this_session[0] / total_time) if total_time > 0 else 0
-        # Report final progress - if it fails (download already deleted), that's OK
-        try:
-            report_progress(download_id, final_size, final_bytes_per_second)
-        except Exception as e:
-            logger.debug(f"Final progress report failed (download may already be completed): {e}")
-        
-        logger.info(f"Successfully downloaded: {game_id}")
-        logger.info(f"  HTTP URL: {http_url}")
-        logger.info(f"  Destination: {dest_path}")
-        logger.info(f"  Size: {final_size} bytes ({final_size / (1024*1024):.2f} MB)")
-        logger.info(f"  Time: {total_time:.2f}s")
-        logger.info(f"  Resumed from: {resume_from} bytes")
-        return True
+            
     except Exception as e:
         logger.error(f"Failed to download {game_id}: {e}", exc_info=True)
         return False
