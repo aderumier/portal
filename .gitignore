@@ -1,0 +1,43 @@
+# Service management
+.services.pid
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+backend/venv/
+backend/env/
+backend/.env
+*.egg-info/
+dist/
+build/
+
+# Node
+frontend/node_modules/
+frontend/.env
+frontend/dist/
+frontend/.vite/
+
+# Database
+data/*.sqlite
+data/*.db
+data/*.pkl
+data/*.hash
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
