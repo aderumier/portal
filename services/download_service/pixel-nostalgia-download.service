@@ -1,0 +1,16 @@
+[Unit]
+Description=Pixel Nostalgia Download Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/services/download_service
+Environment=PYTHONPATH=/var/www/services/download_service
+ExecStart=/usr/bin/python3 download_service.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target 

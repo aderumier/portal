@@ -1,0 +1,47 @@
+.search-page {
+  padding: 2rem 0;
+}
+
+.search-page h1 {
+  margin-bottom: 2rem;
+  color: #333;
+}
+
+.search-input-container {
+  margin-bottom: 2rem;
+}
+
+.search-input {
+  width: 100%;
+  max-width: 600px;
+  padding: 1rem;
+  font-size: 1.1rem;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.search-input:focus {
+  border-color: #5865F2;
+}
+
+.games-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.loading,
+.no-results {
+  text-align: center;
+  padding: 3rem;
+  color: #666;
+}
+
+.load-more-trigger {
+  text-align: center;
+  padding: 2rem;
+}
+
