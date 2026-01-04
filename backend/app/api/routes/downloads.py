@@ -256,6 +256,31 @@ async def mark_completed(
     
     return {"success": True}
 
+@router.post("/remove")
+async def remove_download(
+    request: MarkCompletedRequest,
+    current_user: dict = Depends(require_auth_user),
+    download_service: DownloadService = Depends(get_download_service)
+):
+    """Remove a download from queue without updating statistics (e.g., when file doesn't exist)."""
+    download_id = request.download_id
+    
+    if download_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid download ID"
+        )
+    
+    success = download_service.remove_download(download_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Download not found"
+        )
+    
+    return {"success": True}
+
 @router.post("/queue/{download_id}/pause")
 async def pause_download(
     download_id: int,
@@ -539,6 +564,9 @@ async def download_file(
                 total_bytes = 0
                 start_time = time.time()
                 last_chunk_time = start_time
+                last_user_count_check = start_time
+                user_count_check_interval = 2.0  # Check every 2 seconds for user count changes
+                last_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
                 
                 with open(file_path, 'rb') as f:
                     # Seek to start position if Range request
@@ -547,13 +575,31 @@ async def download_file(
                     
                     remaining = content_length
                     while remaining > 0:
+                        # Check if user count changed (users joined or left)
+                        current_time = time.time()
+                        if current_time - last_user_count_check >= user_count_check_interval:
+                            current_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
+                            
+                            # If user count changed, recompute bandwidth allocation
+                            if current_active_user_count != last_active_user_count:
+                                new_allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
+                                if new_allocated_bandwidth > 0:
+                                    bytes_per_second = new_allocated_bandwidth
+                                    seconds_per_chunk = chunk_size / bytes_per_second
+                                    logger.info(f"User count changed ({last_active_user_count} -> {current_active_user_count}), recomputed bandwidth: {bytes_per_second} bytes/s ({bytes_per_second / 125000:.2f} Mbits/s), seconds_per_chunk={seconds_per_chunk:.3f}s")
+                                    last_active_user_count = current_active_user_count
+                                else:
+                                    logger.warning(f"Recomputed bandwidth is 0 or negative, keeping previous allocation")
+                            
+                            last_user_count_check = current_time
+                        
                         # Read chunk (don't exceed remaining bytes)
                         read_size = min(chunk_size, remaining)
                         chunk = f.read(read_size)
                         if not chunk:
                             break
                         
-                        # Calculate when this chunk should be sent (based on bandwidth limit)
+                        # Calculate when this chunk should be sent (based on current bandwidth limit)
                         current_time = time.time()
                         expected_time = last_chunk_time + seconds_per_chunk
                         

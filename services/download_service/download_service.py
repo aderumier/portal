@@ -48,6 +48,25 @@ logger.add(
     level=os.getenv('LOG_LEVEL', 'INFO')
 )
 
+# Create a global HTTP session with keep-alive enabled
+# This reuses TCP connections, improving performance for frequent API calls
+http_session = requests.Session()
+# Configure connection pool settings
+adapter = requests.adapters.HTTPAdapter(
+    pool_connections=10,  # Number of connection pools to cache
+    pool_maxsize=20,      # Maximum number of connections to save in the pool
+    max_retries=3,        # Number of retries for failed requests
+    pool_block=False      # Don't block if pool is full
+)
+http_session.mount('http://', adapter)
+http_session.mount('https://', adapter)
+# Set default headers for all requests
+http_session.headers.update({
+    'Authorization': f'Bearer {API_TOKEN}',
+    'Connection': 'keep-alive'  # Explicitly enable keep-alive
+})
+logger.info("HTTP session with keep-alive enabled")
+
 def ensure_directories():
     """Ensure all required directories exist."""
     Path(DOWNLOAD_PATH).mkdir(parents=True, exist_ok=True)
@@ -57,7 +76,7 @@ def test_api_connection():
     """Test connection to the API and verify it's accessible."""
     try:
         logger.info(f"Testing API connection to {API_URL}...")
-        response = requests.get(
+        response = http_session.get(
             f"{API_URL}/health",
             timeout=5
         )
@@ -65,34 +84,33 @@ def test_api_connection():
         logger.info(f"✓ Successfully connected to API at {API_URL}")
         return True
     except requests.exceptions.ConnectionError as e:
-        logger.error(f"✗ Failed to connect to API at {API_URL}")
-        logger.error(f"  Connection error: {e}")
-        logger.error(f"  Please verify:")
-        logger.error(f"    1. The backend API is running")
-        logger.error(f"    2. API_URL in .env is correct (should be backend URL, typically http://localhost:8000)")
-        logger.error(f"    3. The backend is accessible from this machine")
+        logger.warning(f"⚠ Cannot connect to API at {API_URL}")
+        logger.debug(f"  Connection error: {e}")
+        logger.debug(f"  Will retry in main loop. Please verify:")
+        logger.debug(f"    1. The backend API is running")
+        logger.debug(f"    2. API_URL in .env is correct (should be backend URL, typically http://localhost:8000)")
+        logger.debug(f"    3. The backend is accessible from this machine")
         return False
     except requests.exceptions.Timeout:
-        logger.error(f"✗ Connection to API at {API_URL} timed out")
-        logger.error(f"  Please verify the backend is running and accessible")
+        logger.warning(f"⚠ Connection to API at {API_URL} timed out")
+        logger.debug(f"  Will retry in main loop. Please verify the backend is running and accessible")
         return False
     except requests.exceptions.RequestException as e:
         logger.warning(f"API health check returned error: {e}")
         logger.warning(f"  This might be OK if the /health endpoint doesn't exist")
         # Try a simple request to see if API is reachable
         try:
-            response = requests.get(f"{API_URL}/", timeout=5)
+            response = http_session.get(f"{API_URL}/", timeout=5)
             logger.info(f"✓ API is reachable at {API_URL} (health endpoint may not exist)")
             return True
         except:
-            logger.error(f"✗ API at {API_URL} is not reachable")
+            logger.warning(f"⚠ API at {API_URL} is not reachable, will retry in main loop")
             return False
 
 def request_download(queue_type=None):
     """Request next available download from the API."""
     try:
         headers = {
-            'Authorization': f'Bearer {API_TOKEN}',
             'Content-Type': 'application/json'
         }
         data = {
@@ -101,7 +119,7 @@ def request_download(queue_type=None):
         if queue_type:
             data['queue_type'] = queue_type
         
-        response = requests.post(
+        response = http_session.post(
             f"{API_URL}/api/download/request",
             json=data,
             headers=headers,
@@ -151,7 +169,6 @@ def report_progress(download_id, bytes_transferred, bytes_per_second):
     """
     try:
         headers = {
-            'Authorization': f'Bearer {API_TOKEN}',
             'Content-Type': 'application/json'
         }
         data = {
@@ -159,7 +176,7 @@ def report_progress(download_id, bytes_transferred, bytes_per_second):
             'bytes_transferred': bytes_transferred,
             'bytes_per_second': bytes_per_second
         }
-        response = requests.post(
+        response = http_session.post(
             f"{API_URL}/api/download/progress",
             json=data,
             headers=headers,
@@ -214,7 +231,7 @@ def get_all_files(path):
                     rel_path = os.path.relpath(filepath, path)
                     files.append((filepath, rel_path))
         return files
-    return []
+        return []
 
 def copy_file_with_progress(src_path, dst_path, bytes_transferred_this_session_ref, chunk_size=1024*1024):
     """Copy a single file with progress tracking."""
@@ -258,6 +275,9 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
     
     Args:
         paused_ref: Optional list to check if download should be paused. If [False] becomes [True], download stops.
+    
+    Note: For streaming downloads, we use a separate requests.get() call instead of the session
+    to avoid connection pool issues with long-lived streaming connections.
     """
     headers = {
         'Authorization': f'Bearer {API_TOKEN}',
@@ -270,8 +290,32 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
     try:
         # Use a longer timeout for large files with throttling
         # Timeout is per read operation, not total download time
+        # For streaming downloads, use requests.get() directly instead of session
+        # to avoid connection pool issues with long-lived connections
         response = requests.get(http_url, headers=headers, stream=True, timeout=300)
         response.raise_for_status()
+        
+        # Check if response is JSON (directory listing) - this shouldn't happen but handle it gracefully
+        # This can happen if the initial directory check failed or if Range request returns JSON
+        content_type = response.headers.get('Content-Type', '').lower()
+        if 'application/json' in content_type or 'text/json' in content_type:
+            logger.error(f"Received JSON response when expecting file - this is likely a directory. URL: {http_url}")
+            # Try to read a small chunk to confirm it's JSON
+            try:
+                peek = next(response.iter_content(chunk_size=1024))
+                response.close()
+                # Try to parse as JSON
+                import json
+                parsed_json = json.loads(peek.decode('utf-8'))
+                if isinstance(parsed_json, dict) and parsed_json.get('is_directory'):
+                    logger.error(f"Confirmed JSON directory response - directory download should have been detected earlier!")
+                    logger.error(f"Directory has {len(parsed_json.get('files', []))} files")
+                    logger.error(f"This indicates the initial directory check failed. Aborting file download.")
+                return False
+            except (UnicodeDecodeError, json.JSONDecodeError, StopIteration) as e:
+                # Not JSON, continue
+                logger.debug(f"Not JSON after all: {e}")
+                pass
         
         # Check if server supports range requests
         if resume_from > 0 and response.status_code != 206:
@@ -335,6 +379,9 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
         
         logger.info(f"Download completed: {chunk_count} chunks, {total_bytes_downloaded} bytes")
         
+        # Explicitly close the response to free the connection
+        response.close()
+        
         # Verify file size
         final_size = os.path.getsize(dest_path)
         if expected_size and final_size != expected_size:
@@ -342,6 +389,15 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
             return False
         
         return True
+    except requests.exceptions.HTTPError as e:
+        # Handle 404 errors - file doesn't exist, remove from queue
+        if e.response and e.response.status_code == 404:
+            logger.error(f"File not found (404) for URL: {http_url}")
+            logger.error(f"This indicates the file doesn't exist on the server. The download should be removed from queue.")
+            # Return a special value to indicate file not found
+            return None  # None indicates file not found (different from False which indicates pause/failure)
+        logger.error(f"HTTP download error: {e}", exc_info=True)
+        return False
     except requests.exceptions.RequestException as e:
         logger.error(f"HTTP download error: {e}", exc_info=True)
         return False
@@ -442,6 +498,15 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
                 paused_ref=paused_ref
             )
             
+            # Check if file not found (404)
+            if success is None:
+                logger.error(f"File not found (404) for {relative_path} in download {download_id}, removing from queue")
+                progress_thread_running = False
+                progress_thread.join(timeout=1)
+                # Remove download from queue
+                remove_download_from_queue(download_id)
+                return False
+            
             if not success:
                 if paused_ref[0]:
                     logger.info(f"Download {download_id} was paused")
@@ -515,22 +580,30 @@ def download_game(download_info):
             logger.info(f"Destination base path: {dest_base_path}")
         
         # First, check if it's a directory by requesting the base URL
-        headers = {
-            'Authorization': f'Bearer {API_TOKEN}',
-        }
+        headers = {}
         
         try:
-            response = requests.get(http_url, headers=headers, timeout=30)
+            # Make a GET request to check if it's a directory (JSON response) or a file
+            # Don't use stream=True initially so we can check the response type
+            # Use http_session for keep-alive support
+            response = http_session.get(http_url, headers=headers, timeout=30)
             response.raise_for_status()
             
-            # Check if response is JSON (directory listing)
-            content_type = response.headers.get('Content-Type', '')
-            if 'application/json' in content_type:
-                # It's a directory listing
+            content_type = response.headers.get('Content-Type', '').lower()
+            logger.info(f"Initial request Content-Type: {content_type}, Status: {response.status_code}")
+            
+            # Try to parse as JSON - directories return JSON, files return binary/octet-stream
+            # First check the response text to see if it looks like JSON
+            response_text = response.text
+            logger.debug(f"Response preview (first 200 chars): {response_text[:200]}")
+            
+            try:
                 dir_info = response.json()
-                if dir_info.get('is_directory'):
+                logger.debug(f"Successfully parsed as JSON. Keys: {list(dir_info.keys()) if isinstance(dir_info, dict) else 'Not a dict'}")
+                if isinstance(dir_info, dict) and dir_info.get('is_directory'):
+                    # It's a directory listing
                     files_list = dir_info.get('files', [])
-                    logger.info(f"Directory download detected: {len(files_list)} files, {dir_info.get('total_size', 0)} bytes")
+                    logger.info(f"✓ Directory download detected: {len(files_list)} files, {dir_info.get('total_size', 0)} bytes")
                     
                     # Calculate already downloaded bytes by checking existing files
                     bytes_already_downloaded = 0
@@ -549,7 +622,7 @@ def download_game(download_info):
                         bytes_already_transferred = bytes_already_downloaded
                     
                     # Extract base URL from http_url
-                    from urllib.parse import urlparse, urlunparse
+                    from urllib.parse import urlparse
                     parsed = urlparse(http_url)
                     base_url = f"{parsed.scheme}://{parsed.netloc}"
                     
@@ -558,6 +631,15 @@ def download_game(download_info):
                         download_id, system, game_id, base_url, dest_base_path,
                         files_list, bytes_already_transferred, paused
                     )
+            except (ValueError, requests.exceptions.JSONDecodeError, AttributeError) as json_err:
+                # Not JSON, it's a file - but we've already consumed the response
+                # We need to re-download it as a stream for the actual file download
+                logger.debug(f"Response is not JSON, treating as single file. Content-Type: {content_type}, Error: {json_err}")
+                # The response body has been consumed, so we'll need to download again
+                # This will happen in the single file download section below
+                # Close the response to free resources
+                response.close()
+                pass
         except requests.exceptions.RequestException as e:
             logger.error(f"Error checking if directory: {e}")
             # Continue with single file download
@@ -565,7 +647,7 @@ def download_game(download_info):
         # Single file download (existing logic)
         dest_path = dest_base_path
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        
+
         # Check if file already exists (for resume)
         resume_from = 0
         if os.path.exists(dest_path) and os.path.isfile(dest_path):
@@ -644,6 +726,15 @@ def download_game(download_info):
                 paused_ref=paused
             )
             
+            # Check if file not found (404)
+            if success is None:
+                logger.error(f"File not found (404) for download {download_id}, removing from queue")
+                progress_thread_running = False
+                progress_thread.join(timeout=1)
+                # Remove download from queue
+                remove_download_from_queue(download_id)
+                return False
+            
             if not success:
                 progress_thread_running = False
                 progress_thread.join(timeout=1)
@@ -698,14 +789,36 @@ def download_game(download_info):
         logger.error(f"Failed to download {game_id}: {e}", exc_info=True)
         return False
 
+def remove_download_from_queue(download_id):
+    """Remove a download from the queue (e.g., when file doesn't exist)."""
+    try:
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        # Use the remove endpoint which doesn't update statistics
+        response = http_session.post(
+            f"{API_URL}/api/download/remove",
+            json={'download_id': download_id},
+            headers=headers
+        )
+        # Even if it fails (already deleted), log it
+        if response.status_code == 404:
+            logger.warning(f"Download {download_id} already removed from queue")
+        else:
+            response.raise_for_status()
+        logger.info(f"Removed download {download_id} from queue (file not found)")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to remove download from queue: {e}")
+        return False
+
 def mark_completed(download_id):
     """Mark a download as completed in the queue."""
     try:
         headers = {
-            'Authorization': f'Bearer {API_TOKEN}',
             'Content-Type': 'application/json'
         }
-        response = requests.post(
+        response = http_session.post(
             f"{API_URL}/api/download/complete",
             json={'download_id': download_id},
             headers=headers
@@ -729,7 +842,7 @@ def process_queue():
     if not download_info:
         logger.debug("No downloads available")
         return
-    
+
     logger.info(f"Got download: {download_info.get('game_name', 'Unknown')} (ID: {download_info['download_id']})")
     
     if download_game(download_info):
@@ -746,17 +859,37 @@ def main():
 
     logger.info(f"Starting download service (Service ID: {SERVICE_ID})...")
     ensure_directories()
-    
-    # Test API connection before starting
-    if not test_api_connection():
-        logger.error("Cannot start download service: API connection failed")
-        logger.error("Please fix the API_URL in your .env file and ensure the backend is running")
-        return
 
+    # Test API connection before starting (but don't exit if it fails)
+    api_connected = test_api_connection()
+    if not api_connected:
+        logger.warning("API connection failed on startup, but continuing. Will retry in main loop.")
+    
     # Main loop: poll for downloads
+    last_connection_check = time.time()
+    connection_check_interval = 60  # Check connection every 60 seconds
+    
     while True:
         try:
-            process_queue()
+            # Periodically check API connection
+            current_time = time.time()
+            if current_time - last_connection_check >= connection_check_interval:
+                if test_api_connection():
+                    if not api_connected:
+                        logger.info("✓ API connection restored!")
+                        api_connected = True
+                else:
+                    if api_connected:
+                        logger.warning("⚠ API connection lost, will retry...")
+                        api_connected = False
+                last_connection_check = current_time
+            
+            # Only try to process queue if API is connected
+            if api_connected:
+                process_queue()
+            else:
+                logger.debug("Skipping queue processing - API not connected")
+            
             time.sleep(POLLING_INTERVAL)
         except KeyboardInterrupt:
             logger.info("Shutting down download service...")
