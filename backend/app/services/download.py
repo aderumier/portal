@@ -494,6 +494,9 @@ class DownloadService:
                 game = self.game_service.get_game_by_id(resumable_download.game_id)
                 if not game:
                     logger.warning(f"Game not found: {resumable_download.game_id}")
+                    # Remove from queue since game doesn't exist
+                    self.db.delete(resumable_download)
+                    self.db.commit()
                     return None
                 
                 # Build file path (game_id is rompath, need to prepend system)
@@ -506,7 +509,19 @@ class DownloadService:
                         logger.info(f"File path with system: {file_path}")
                     else:
                         logger.error(f"System is empty for game_id={resumable_download.game_id}, cannot build file path")
+                        # Remove from queue since system is missing
+                        self.db.delete(resumable_download)
+                        self.db.commit()
                         return None
+                
+                # Verify file or directory exists before resuming download
+                if not os.path.exists(file_path):
+                    logger.error(f"File or directory does not exist: {file_path} for game_id={resumable_download.game_id}")
+                    # Remove from queue since file doesn't exist
+                    self.db.delete(resumable_download)
+                    self.db.commit()
+                    logger.info(f"Removed download {resumable_download.id} from queue - file not found")
+                    return None
                 
                 # Calculate available bandwidth
                 allocated_bandwidth = self.bandwidth_manager.allocate_bandwidth(resumable_download.queue_type)
@@ -577,14 +592,10 @@ class DownloadService:
             game = self.game_service.get_game_by_id(pending_download.game_id)
             if not game:
                 logger.warning(f"Game not found: {pending_download.game_id}")
+                # Remove from queue since game doesn't exist
+                self.db.delete(pending_download)
+                self.db.commit()
                 return None
-            
-            # Mark as active
-            pending_download.active_download = True
-            pending_download.status = 'downloading'
-            pending_download.started_at = datetime.utcnow()
-            pending_download.assigned_to_service = service_id
-            self.db.commit()
             
             # Build file path (game_id is rompath, need to prepend system)
             file_path = None
@@ -596,7 +607,26 @@ class DownloadService:
                     logger.info(f"File path with system: {file_path}")
                 else:
                     logger.error(f"System is empty for game_id={pending_download.game_id}, cannot build file path")
+                    # Remove from queue since system is missing
+                    self.db.delete(pending_download)
+                    self.db.commit()
                     return None
+            
+            # Verify file or directory exists before assigning download
+            if not os.path.exists(file_path):
+                logger.error(f"File or directory does not exist: {file_path} for game_id={pending_download.game_id}")
+                # Remove from queue since file doesn't exist
+                self.db.delete(pending_download)
+                self.db.commit()
+                logger.info(f"Removed download {pending_download.id} from queue - file not found")
+                return None
+            
+            # Mark as active
+            pending_download.active_download = True
+            pending_download.status = 'downloading'
+            pending_download.started_at = datetime.utcnow()
+            pending_download.assigned_to_service = service_id
+            self.db.commit()
             
             # Construct HTTP URL for the file
             import urllib.parse
@@ -651,6 +681,28 @@ class DownloadService:
             return True
         except Exception as e:
             logger.error(f"Error updating progress: {e}")
+            self.db.rollback()
+            return False
+    
+    def remove_download(self, download_id: int) -> bool:
+        """Remove download from queue without updating statistics (e.g., when file doesn't exist)."""
+        try:
+            download = self.db.query(DownloadQueue).filter(
+                DownloadQueue.id == download_id
+            ).first()
+            
+            if not download:
+                logger.warning(f"Download {download_id} not found")
+                return False
+            
+            # Delete the download without updating statistics
+            self.db.delete(download)
+            self.db.commit()
+            
+            logger.info(f"Removed download {download_id} from queue (file not found or invalid)")
+            return True
+        except Exception as e:
+            logger.error(f"Error removing download: {e}")
             self.db.rollback()
             return False
     
