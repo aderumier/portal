@@ -557,34 +557,28 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
         progress_thread.join(timeout=1)
         return False
 
-def get_game_details_from_api(system, game_id):
-    """Fetch game details from the backend API.
+def get_game_details_from_api(download_id):
+    """Fetch game details from the download endpoint (requires game to be in queue with associated token).
     
     Args:
-        system: System ID (e.g., "atari2600")
-        game_id: Game ID (rompath, e.g., "apshai.zip")
+        download_id: Download ID from the download request
     
     Returns:
         dict: Game details including all media paths, or None if failed
     """
     try:
-        # URL encode the game_id for the API
-        import urllib.parse
-        encoded_game_id = urllib.parse.quote(game_id, safe='/')
-        encoded_system = urllib.parse.quote(system, safe='')
-        
-        url = f"{API_URL}/api/game/{encoded_system}/{encoded_game_id}"
-        logger.info(f"Fetching game details from API: {url}")
+        url = f"{API_URL}/api/download/game-details/{download_id}"
+        logger.info(f"Fetching game details from download endpoint: {url}")
         
         response = http_session.get(url, timeout=30)
         response.raise_for_status()
         
         game_data = response.json()
-        logger.info(f"Successfully fetched game details for {game_id}")
+        logger.info(f"Successfully fetched game details for download {download_id}")
         return game_data
     except requests.exceptions.HTTPError as e:
         if e.response and e.response.status_code == 404:
-            logger.warning(f"Game not found in API: system={system}, game_id={game_id}")
+            logger.warning(f"Game details not found for download {download_id}")
         else:
             logger.error(f"HTTP error fetching game details: {e}")
         return None
@@ -637,8 +631,8 @@ def download_game_media(system, game_id, download_id):
     downloaded_media = []
     
     try:
-        # Fetch game details from API
-        game_data = get_game_details_from_api(system, game_id)
+        # Fetch game details from download endpoint (requires game to be in queue)
+        game_data = get_game_details_from_api(download_id)
         if not game_data:
             logger.warning(f"Could not fetch game details for {game_id}, skipping media download")
             return downloaded_media
@@ -959,13 +953,13 @@ def download_game(download_info):
                                 logger.info(f"Download completed successfully, downloading media files for {game_id}")
                                 downloaded_media = download_game_media(system, game_id, download_id)
                                 
-                                # Get full game details for gamelist.xml update
-                                game_data = get_game_details_from_api(system, game_id)
+                                # Get full game details for gamelist.xml update (use same endpoint)
+                                game_data = get_game_details_from_api(download_id)
                                 if game_data:
                                     # Update gamelist.xml with game entry
                                     update_gamelist_xml(system, game_id, game_data, downloaded_media)
                                 else:
-                                    logger.warning(f"Could not fetch game details for gamelist.xml update: {game_id}")
+                                    logger.warning(f"Could not fetch game details for gamelist.xml update: download {download_id}")
                             except Exception as e:
                                 logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
                         return success
@@ -1006,13 +1000,13 @@ def download_game(download_info):
                     logger.info(f"File already complete, downloading media files for {game_id}")
                     downloaded_media = download_game_media(system, game_id, download_id)
                     
-                    # Get full game details for gamelist.xml update
-                    game_data = get_game_details_from_api(system, game_id)
+                    # Get full game details for gamelist.xml update (use same endpoint)
+                    game_data = get_game_details_from_api(download_id)
                     if game_data:
                         # Update gamelist.xml with game entry
                         update_gamelist_xml(system, game_id, game_data, downloaded_media)
                     else:
-                        logger.warning(f"Could not fetch game details for gamelist.xml update: {game_id}")
+                        logger.warning(f"Could not fetch game details for gamelist.xml update: download {download_id}")
                 except Exception as e:
                     logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
                 
@@ -1153,13 +1147,13 @@ def download_game(download_info):
                 logger.info(f"Download completed successfully, downloading media files for {game_id}")
                 downloaded_media = download_game_media(system, game_id, download_id)
                 
-                # Get full game details for gamelist.xml update
-                game_data = get_game_details_from_api(system, game_id)
+                # Get full game details for gamelist.xml update (use same endpoint)
+                game_data = get_game_details_from_api(download_id)
                 if game_data:
                     # Update gamelist.xml with game entry
                     update_gamelist_xml(system, game_id, game_data, downloaded_media)
                 else:
-                    logger.warning(f"Could not fetch game details for gamelist.xml update: {game_id}")
+                    logger.warning(f"Could not fetch game details for gamelist.xml update: download {download_id}")
             except Exception as e:
                 logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
             

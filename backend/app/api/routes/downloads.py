@@ -331,6 +331,48 @@ async def resume_download(
     
     return {"success": True}
 
+@router.get("/game-details/{download_id}")
+async def get_download_game_details(
+    download_id: int,
+    request: Request,
+    current_user: dict = Depends(require_auth_user),
+    download_service: DownloadService = Depends(get_download_service),
+    db: Session = Depends(get_db)
+):
+    """Get game details for a download. Only works if the game is in queue with the associated token."""
+    # Get token_id from request state (set by API token middleware)
+    token_id = getattr(request.state, 'token_id', None)
+    
+    if token_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API token authentication required"
+        )
+    
+    # Verify the download exists and is associated with this token
+    from app.database import DownloadQueue
+    download = db.query(DownloadQueue).filter(
+        DownloadQueue.id == download_id,
+        DownloadQueue.token_id == token_id
+    ).first()
+    
+    if not download:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Download not found or not associated with this token"
+        )
+    
+    # Get game details
+    game = download_service.game_service.get_game_by_id(download.game_id)
+    
+    if not game:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Game not found"
+        )
+    
+    return game
+
 @router.get("/file")
 async def download_file(
     request: Request,
