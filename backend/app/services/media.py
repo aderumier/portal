@@ -178,3 +178,4 @@ class MediaService:
         """Get media field name to directory mapping."""
         return self.media_mapping.copy()
 
+

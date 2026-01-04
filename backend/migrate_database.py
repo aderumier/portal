@@ -54,6 +54,7 @@ def migrate_database():
         ("bytes_transferred", "INTEGER DEFAULT 0"),
         ("file_size", "INTEGER"),
         ("started_at", "TEXT"),
+        ("last_progress_at", "TEXT"),
         ("assigned_to_service", "TEXT"),
         ("token_id", "INTEGER NOT NULL DEFAULT 0"),  # Will be updated to actual token IDs
     ]
@@ -143,6 +144,38 @@ def migrate_database():
         print("  ✓ Created/verified index idx_users_user_id")
     except sqlite3.OperationalError as e:
         print(f"  ✗ Error creating index idx_users_user_id: {e}")
+    
+    # Create download_archive table if it doesn't exist
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS download_archive (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            download_id INTEGER NOT NULL,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            user_id TEXT NOT NULL,
+            username TEXT,
+            game_name TEXT NOT NULL,
+            system TEXT,
+            rompath TEXT NOT NULL,
+            download_status TEXT NOT NULL,
+            bytes_transferred INTEGER DEFAULT 0,
+            file_size INTEGER
+        )
+    """)
+    print("  ✓ Created/verified download_archive table")
+    
+    # Create indexes for download_archive
+    indexes_to_create = [
+        ("idx_download_archive_download_id", "download_archive(download_id)"),
+        ("idx_download_archive_timestamp", "download_archive(timestamp)"),
+        ("idx_download_archive_user_id", "download_archive(user_id)"),
+    ]
+    
+    for idx_name, idx_def in indexes_to_create:
+        try:
+            cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_def}")
+            print(f"  ✓ Created/verified index {idx_name}")
+        except sqlite3.OperationalError as e:
+            print(f"  ✗ Error creating index {idx_name}: {e}")
     
     conn.commit()
     conn.close()
