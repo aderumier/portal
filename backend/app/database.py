@@ -56,8 +56,30 @@ class DownloadQueue(Base):
     bytes_transferred = Column(BigInteger, default=0)  # Total bytes transferred
     file_size = Column(BigInteger, nullable=True)  # Total file size in bytes
     started_at = Column(DateTime, nullable=True)  # When download started
+    last_progress_at = Column(DateTime, nullable=True)  # When progress was last reported
     assigned_to_service = Column(String, nullable=True)  # Service instance ID handling this download
     token_id = Column(Integer, nullable=False, index=True)  # Associated API token ID (required)
+    
+    __table_args__ = (
+        {'sqlite_autoincrement': True},
+    )
+
+
+class DownloadArchive(Base):
+    """Download archive model for storing completed/cancelled/error downloads."""
+    __tablename__ = "download_archive"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    download_id = Column(Integer, nullable=False, index=True)  # Original download queue ID
+    timestamp = Column(DateTime, server_default=func.now(), nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    username = Column(String, nullable=True)  # Discord username at time of archive
+    game_name = Column(String, nullable=False)
+    system = Column(String, nullable=True)
+    rompath = Column(String, nullable=False)  # game_id from download queue
+    download_status = Column(String, nullable=False)  # 'completed', 'error', 'cancelled', 'stuck', etc.
+    bytes_transferred = Column(BigInteger, default=0)  # Bytes transferred before removal
+    file_size = Column(BigInteger, nullable=True)  # Total file size if known
     
     __table_args__ = (
         {'sqlite_autoincrement': True},

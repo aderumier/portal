@@ -131,3 +131,4 @@ const MediaUpload = ({ system, gameId, mediaType, label, onUploadSuccess }) => {
 
 export default MediaUpload
 
+

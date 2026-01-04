@@ -4,6 +4,7 @@ import json
 import requests
 import threading
 import socket
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
@@ -185,9 +186,9 @@ def report_progress(download_id, bytes_transferred, bytes_per_second):
         response.raise_for_status()
         return True
     except requests.exceptions.HTTPError as e:
-        # If it's a 410 Gone, the download was removed from queue - stop downloading
+        # If it's a 410 Gone, the download was removed from queue (likely completed) - this is expected
         if e.response and e.response.status_code == 410:
-            logger.info(f"Progress report returned 410 Gone - download {download_id} was removed from queue, stopping download")
+            logger.debug(f"Progress report returned 410 Gone - download {download_id} was removed from queue (likely completed)")
             return None  # Return None to indicate download was removed
         # If it's a 404, the download might already be completed/deleted - this is OK
         if e.response and e.response.status_code == 404:
@@ -270,11 +271,12 @@ def copy_file_with_progress(src_path, dst_path, bytes_transferred_this_session_r
     
     return bytes_copied + resume_from
 
-def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=None, bytes_transferred_ref=None, chunk_size=1024*1024, paused_ref=None):
+def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=None, bytes_transferred_ref=None, chunk_size=1024*1024, paused_ref=None, existing_response=None):
     """Download a file via HTTP with resume support. Throttling is handled server-side.
     
     Args:
         paused_ref: Optional list to check if download should be paused. If [False] becomes [True], download stops.
+        existing_response: Optional existing response object to reuse (avoids duplicate request for single file downloads)
     
     Note: For streaming downloads, we use a separate requests.get() call instead of the session
     to avoid connection pool issues with long-lived streaming connections.
@@ -283,16 +285,26 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
         'Authorization': f'Bearer {API_TOKEN}',
     }
     
-    # Add Range header for resume
-    if resume_from > 0:
+    # Add Range header for resume (only if we need to make a new request)
+    if resume_from > 0 and existing_response is None:
         headers['Range'] = f'bytes={resume_from}-'
     
     try:
-        # Use a longer timeout for large files with throttling
-        # Timeout is per read operation, not total download time
-        # For streaming downloads, use requests.get() directly instead of session
-        # to avoid connection pool issues with long-lived connections
-        response = requests.get(http_url, headers=headers, stream=True, timeout=300)
+        # Reuse existing response if provided (avoids duplicate request for single file downloads)
+        if existing_response is not None:
+            response = existing_response
+            # If we need to resume, we can't reuse the existing response
+            if resume_from > 0:
+                logger.warning(f"Cannot reuse existing response for resume, making new request")
+                existing_response.close()
+                headers['Range'] = f'bytes={resume_from}-'
+                response = requests.get(http_url, headers=headers, stream=True, timeout=300)
+        else:
+            # Use a longer timeout for large files with throttling
+            # Timeout is per read operation, not total download time
+            # For streaming downloads, use requests.get() directly instead of session
+            # to avoid connection pool issues with long-lived connections
+            response = requests.get(http_url, headers=headers, stream=True, timeout=300)
         response.raise_for_status()
         
         # Check if response is JSON (directory listing) - this shouldn't happen but handle it gracefully
@@ -545,6 +557,307 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
         progress_thread.join(timeout=1)
         return False
 
+def get_game_details_from_api(system, game_id):
+    """Fetch game details from the backend API.
+    
+    Args:
+        system: System ID (e.g., "atari2600")
+        game_id: Game ID (rompath, e.g., "apshai.zip")
+    
+    Returns:
+        dict: Game details including all media paths, or None if failed
+    """
+    try:
+        # URL encode the game_id for the API
+        import urllib.parse
+        encoded_game_id = urllib.parse.quote(game_id, safe='/')
+        encoded_system = urllib.parse.quote(system, safe='')
+        
+        url = f"{API_URL}/api/game/{encoded_system}/{encoded_game_id}"
+        logger.info(f"Fetching game details from API: {url}")
+        
+        response = http_session.get(url, timeout=30)
+        response.raise_for_status()
+        
+        game_data = response.json()
+        logger.info(f"Successfully fetched game details for {game_id}")
+        return game_data
+    except requests.exceptions.HTTPError as e:
+        if e.response and e.response.status_code == 404:
+            logger.warning(f"Game not found in API: system={system}, game_id={game_id}")
+        else:
+            logger.error(f"HTTP error fetching game details: {e}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch game details from API: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching game details: {e}", exc_info=True)
+        return None
+
+def ensure_directory_exists(path):
+    """Create directory structure if it doesn't exist.
+    
+    Args:
+        path: Directory path to create
+    """
+    try:
+        os.makedirs(path, exist_ok=True)
+        logger.debug(f"Ensured directory exists: {path}")
+    except Exception as e:
+        logger.error(f"Failed to create directory {path}: {e}")
+        raise
+
+def normalize_media_path(path):
+    """Normalize media paths from gamelist.xml (remove `./`, handle relative paths).
+    
+    Args:
+        path: Media path from gamelist.xml (e.g., "./media/thumbnails/game.png" or "media/thumbnails/game.png")
+    
+    Returns:
+        str: Normalized path without leading `./`
+    """
+    if not path:
+        return ''
+    # Remove leading ./
+    normalized = path.lstrip('./')
+    return normalized
+
+def download_game_media(system, game_id, download_id):
+    """Download all media files for a game.
+    
+    Args:
+        system: System ID (e.g., "atari2600")
+        game_id: Game ID (rompath, e.g., "apshai.zip")
+        download_id: Download ID for logging
+    
+    Returns:
+        list: List of successfully downloaded media file paths (relative to system directory)
+    """
+    downloaded_media = []
+    
+    try:
+        # Fetch game details from API
+        game_data = get_game_details_from_api(system, game_id)
+        if not game_data:
+            logger.warning(f"Could not fetch game details for {game_id}, skipping media download")
+            return downloaded_media
+        
+        # List of media types to download
+        media_types = [
+            'thumbnail', 'image', 'boxart', 'boxback', 'marquee', 
+            'fanart', 'cartridge', 'titleshot', 'video', 'screenshot', 
+            'wheel', 'mix'
+        ]
+        
+        # Download each media type
+        for media_type in media_types:
+            media_path = game_data.get(media_type, '')
+            if not media_path:
+                continue  # Skip missing media
+            
+            # Normalize the media path
+            normalized_path = normalize_media_path(media_path)
+            if not normalized_path:
+                continue
+            
+            # Construct HTTP URL for media file
+            # Media files are served at /media endpoint
+            # The path from API is like "system/media/thumbnails/game.png"
+            # We need to construct: {API_URL}/media/system/media/thumbnails/game.png
+            # Use the original media_path for the URL (it already has the system prefix)
+            media_url = f"{API_URL}/media/{media_path}"
+            
+            # Remove system prefix from normalized_path for local storage
+            # We need just the relative path from the system directory for local storage
+            if normalized_path.startswith(f"{system}/"):
+                normalized_path = normalized_path[len(system) + 1:]
+            
+            # Destination path: DOWNLOAD_PATH/system/{normalized_path}
+            dest_path = os.path.join(DOWNLOAD_PATH, system, normalized_path)
+            
+            # Ensure destination directory exists
+            dest_dir = os.path.dirname(dest_path)
+            try:
+                ensure_directory_exists(dest_dir)
+            except Exception as e:
+                logger.warning(f"Failed to create directory for {media_type}: {e}")
+                continue
+            
+            # Skip if file already exists
+            if os.path.exists(dest_path):
+                logger.debug(f"Media file already exists: {dest_path}")
+                downloaded_media.append(normalized_path)
+                continue
+            
+            # Download media file
+            logger.info(f"Downloading {media_type} from {media_url} to {dest_path}")
+            try:
+                success = download_file_via_http(
+                    media_url,
+                    dest_path,
+                    resume_from=0,
+                    expected_size=None,
+                    bytes_transferred_ref=None,
+                    chunk_size=1024 * 1024,  # 1MB chunks
+                    paused_ref=None,
+                    existing_response=None
+                )
+                
+                if success:
+                    logger.info(f"Successfully downloaded {media_type}: {normalized_path}")
+                    downloaded_media.append(normalized_path)
+                else:
+                    logger.warning(f"Failed to download {media_type} from {media_url}")
+            except Exception as e:
+                logger.warning(f"Error downloading {media_type}: {e}")
+                continue
+        
+        logger.info(f"Downloaded {len(downloaded_media)} media files for {game_id}")
+        return downloaded_media
+        
+    except Exception as e:
+        logger.error(f"Error in download_game_media: {e}", exc_info=True)
+        return downloaded_media
+
+def update_gamelist_xml(system, game_id, game_data, media_paths):
+    """Update or create gamelist.xml with the downloaded game entry.
+    
+    Args:
+        system: System ID (e.g., "atari2600")
+        game_id: Game ID (rompath, e.g., "apshai.zip")
+        game_data: Full game data from API (dict)
+        media_paths: Dict mapping media types to downloaded paths (relative to system directory)
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        gamelist_path = os.path.join(DOWNLOAD_PATH, system, 'gamelist.xml')
+        
+        # Parse existing XML or create new
+        if os.path.exists(gamelist_path):
+            try:
+                tree = ET.parse(gamelist_path)
+                root = tree.getroot()
+            except ET.ParseError as e:
+                logger.warning(f"Failed to parse existing gamelist.xml: {e}, creating new one")
+                root = ET.Element('gameList')
+                tree = ET.ElementTree(root)
+        else:
+            # Create new XML structure
+            root = ET.Element('gameList')
+            tree = ET.ElementTree(root)
+            logger.info(f"Creating new gamelist.xml at {gamelist_path}")
+        
+        # Find existing game entry by path
+        game_element = None
+        for game in root.findall('.//game'):
+            path_text = game.findtext('path', '')
+            # Normalize paths for comparison
+            normalized_path = normalize_media_path(path_text)
+            normalized_game_id = normalize_media_path(game_id)
+            if normalized_path == normalized_game_id or path_text == game_id or path_text == f'./{normalized_game_id}':
+                game_element = game
+                logger.info(f"Found existing game entry in gamelist.xml: {game_id}")
+                break
+        
+        # Create new game element if not found
+        if game_element is None:
+            game_element = ET.SubElement(root, 'game')
+            logger.info(f"Creating new game entry in gamelist.xml: {game_id}")
+        
+        # Update game path (use normalized form without leading ./)
+        normalized_game_id = normalize_media_path(game_id)
+        path_elem = game_element.find('path')
+        if path_elem is None:
+            path_elem = ET.SubElement(game_element, 'path')
+        path_elem.text = normalized_game_id
+        
+        # Update name
+        name_elem = game_element.find('name')
+        if name_elem is None:
+            name_elem = ET.SubElement(game_element, 'name')
+        name_elem.text = game_data.get('name', '')
+        
+        # Update description
+        desc_elem = game_element.find('desc')
+        if desc_elem is None:
+            desc_elem = ET.SubElement(game_element, 'desc')
+        desc_elem.text = game_data.get('description', '')
+        
+        # Update metadata fields
+        metadata_fields = {
+            'developer': 'developer',
+            'publisher': 'publisher',
+            'genre': 'genre',
+            'releaseDate': 'releasedate',
+            'players': 'players',
+            'rating': 'rating',
+            'region': 'region',
+            'lang': 'lang'
+        }
+        
+        for api_field, xml_field in metadata_fields.items():
+            value = game_data.get(api_field, '')
+            if value:
+                elem = game_element.find(xml_field)
+                if elem is None:
+                    elem = ET.SubElement(game_element, xml_field)
+                elem.text = value
+        
+        # Update media paths
+        # Use the paths from game_data, but normalize them
+        media_fields = {
+            'thumbnail': 'thumbnail',
+            'image': 'image',
+            'boxart': 'boxart',
+            'boxback': 'boxback',
+            'marquee': 'marquee',
+            'fanart': 'fanart',
+            'cartridge': 'cartridge',
+            'titleshot': 'titleshot',
+            'video': 'video',
+            'screenshot': 'screenshot',
+            'wheel': 'wheel',
+            'mix': 'mix'
+        }
+        
+        for api_field, xml_field in media_fields.items():
+            # Get path from game_data
+            media_path = game_data.get(api_field, '')
+            if media_path:
+                # Normalize the path (remove system prefix and leading ./)
+                normalized = normalize_media_path(media_path)
+                if normalized.startswith(f"{system}/"):
+                    normalized = normalized[len(system) + 1:]
+                
+                # Use normalized path in XML (relative to system directory)
+                elem = game_element.find(xml_field)
+                if elem is None:
+                    elem = ET.SubElement(game_element, xml_field)
+                elem.text = normalized
+        
+        # Ensure directory exists
+        ensure_directory_exists(os.path.dirname(gamelist_path))
+        
+        # Write XML back to file with proper formatting
+        # Use UTF-8 encoding
+        try:
+            # ET.indent is available in Python 3.9+
+            ET.indent(tree, space='  ')  # Pretty print with 2-space indent
+        except AttributeError:
+            # Python < 3.9 doesn't have ET.indent, skip pretty printing
+            logger.debug("ET.indent not available (Python < 3.9), writing XML without indentation")
+        tree.write(gamelist_path, encoding='utf-8', xml_declaration=True)
+        
+        logger.info(f"Successfully updated gamelist.xml at {gamelist_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error updating gamelist.xml: {e}", exc_info=True)
+        return False
+
 def download_game(download_info):
     """Download a game file or directory via HTTP with progress reporting and resume support."""
     try:
@@ -579,67 +892,92 @@ def download_game(download_info):
             dest_base_path = os.path.join(DOWNLOAD_PATH, game_id)
             logger.info(f"Destination base path: {dest_base_path}")
         
-        # First, check if it's a directory by requesting the base URL
-        headers = {}
+        # First, check if it's a directory by checking Content-Type header
+        # Use stream=True from the start to avoid downloading the entire file just to check headers
+        # For files, we can reuse this streamed response directly
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+        }
+        
+        # Add Range header for resume if needed (will be handled in download_file_via_http if it's a file)
+        file_response = None
+        is_directory = False
         
         try:
-            # Make a GET request to check if it's a directory (JSON response) or a file
-            # Don't use stream=True initially so we can check the response type
-            # Use http_session for keep-alive support
-            response = http_session.get(http_url, headers=headers, timeout=30)
+            # Make a GET request with stream=True to check Content-Type header
+            # This allows us to check headers without downloading the entire body
+            response = http_session.get(http_url, headers=headers, stream=True, timeout=30)
             response.raise_for_status()
             
             content_type = response.headers.get('Content-Type', '').lower()
-            logger.info(f"Initial request Content-Type: {content_type}, Status: {response.status_code}")
+            logger.debug(f"Initial request Content-Type: {content_type}, Status: {response.status_code}")
             
-            # Try to parse as JSON - directories return JSON, files return binary/octet-stream
-            # First check the response text to see if it looks like JSON
-            response_text = response.text
-            logger.debug(f"Response preview (first 200 chars): {response_text[:200]}")
-            
-            try:
-                dir_info = response.json()
-                logger.debug(f"Successfully parsed as JSON. Keys: {list(dir_info.keys()) if isinstance(dir_info, dict) else 'Not a dict'}")
-                if isinstance(dir_info, dict) and dir_info.get('is_directory'):
-                    # It's a directory listing
-                    files_list = dir_info.get('files', [])
-                    logger.info(f"✓ Directory download detected: {len(files_list)} files, {dir_info.get('total_size', 0)} bytes")
+            # Check Content-Type to determine if it's a directory (JSON) or file (octet-stream)
+            if 'application/json' in content_type:
+                # It's a directory listing - read the JSON response
+                is_directory = True
+                try:
+                    # Read the response content (should be small JSON)
+                    dir_info = response.json()
+                    response.close()  # Close the connection
                     
-                    # Calculate already downloaded bytes by checking existing files
-                    bytes_already_downloaded = 0
-                    for file_info in files_list:
-                        rel_path = file_info['relative_path']
-                        dest_file_path = os.path.join(dest_base_path, rel_path)
-                        if os.path.exists(dest_file_path):
-                            existing_size = os.path.getsize(dest_file_path)
-                            if existing_size == file_info['size']:
-                                bytes_already_downloaded += existing_size
-                            elif existing_size < file_info['size']:
-                                bytes_already_downloaded += existing_size
-                    
-                    # Use the larger of bytes_already_transferred or bytes_already_downloaded
-                    if bytes_already_downloaded > bytes_already_transferred:
-                        bytes_already_transferred = bytes_already_downloaded
-                    
-                    # Extract base URL from http_url
-                    from urllib.parse import urlparse
-                    parsed = urlparse(http_url)
-                    base_url = f"{parsed.scheme}://{parsed.netloc}"
-                    
-                    paused = [False]
-                    return download_directory_recursive(
-                        download_id, system, game_id, base_url, dest_base_path,
-                        files_list, bytes_already_transferred, paused
-                    )
-            except (ValueError, requests.exceptions.JSONDecodeError, AttributeError) as json_err:
-                # Not JSON, it's a file - but we've already consumed the response
-                # We need to re-download it as a stream for the actual file download
-                logger.debug(f"Response is not JSON, treating as single file. Content-Type: {content_type}, Error: {json_err}")
-                # The response body has been consumed, so we'll need to download again
-                # This will happen in the single file download section below
-                # Close the response to free resources
-                response.close()
-                pass
+                    logger.debug(f"Successfully parsed as JSON. Keys: {list(dir_info.keys()) if isinstance(dir_info, dict) else 'Not a dict'}")
+                    if isinstance(dir_info, dict) and dir_info.get('is_directory'):
+                        # It's a directory listing
+                        files_list = dir_info.get('files', [])
+                        logger.info(f"✓ Directory download detected: {len(files_list)} files, {dir_info.get('total_size', 0)} bytes")
+                        
+                        # Calculate already downloaded bytes by checking existing files
+                        bytes_already_downloaded = 0
+                        for file_info in files_list:
+                            rel_path = file_info['relative_path']
+                            dest_file_path = os.path.join(dest_base_path, rel_path)
+                            if os.path.exists(dest_file_path):
+                                existing_size = os.path.getsize(dest_file_path)
+                                if existing_size == file_info['size']:
+                                    bytes_already_downloaded += existing_size
+                                elif existing_size < file_info['size']:
+                                    bytes_already_downloaded += existing_size
+                        
+                        # Use the larger of bytes_already_transferred or bytes_already_downloaded
+                        if bytes_already_downloaded > bytes_already_transferred:
+                            bytes_already_transferred = bytes_already_downloaded
+                        
+                        # Extract base URL from http_url
+                        from urllib.parse import urlparse
+                        parsed = urlparse(http_url)
+                        base_url = f"{parsed.scheme}://{parsed.netloc}"
+                        
+                        paused = [False]
+                        success = download_directory_recursive(
+                            download_id, system, game_id, base_url, dest_base_path,
+                            files_list, bytes_already_transferred, paused
+                        )
+                        if success:
+                            # Download media files and update gamelist.xml after successful game download
+                            try:
+                                logger.info(f"Download completed successfully, downloading media files for {game_id}")
+                                downloaded_media = download_game_media(system, game_id, download_id)
+                                
+                                # Get full game details for gamelist.xml update
+                                game_data = get_game_details_from_api(system, game_id)
+                                if game_data:
+                                    # Update gamelist.xml with game entry
+                                    update_gamelist_xml(system, game_id, game_data, downloaded_media)
+                                else:
+                                    logger.warning(f"Could not fetch game details for gamelist.xml update: {game_id}")
+                            except Exception as e:
+                                logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
+                        return success
+                except (ValueError, requests.exceptions.JSONDecodeError) as json_err:
+                    # Failed to parse as JSON, treat as file
+                    logger.debug(f"Failed to parse as JSON despite Content-Type: {content_type}, Error: {json_err}")
+                    response.close()
+                    is_directory = False
+            else:
+                # It's a file (application/octet-stream or other) - keep the response for reuse
+                logger.debug(f"Content-Type indicates file (not directory): {content_type}")
+                file_response = response  # Save for reuse in download_file_via_http
         except requests.exceptions.RequestException as e:
             logger.error(f"Error checking if directory: {e}")
             # Continue with single file download
@@ -658,12 +996,37 @@ def download_game(download_info):
             elif expected_file_size and existing_size == expected_file_size:
                 logger.info(f"File already complete: {dest_path} ({existing_size} bytes)")
                 report_progress(download_id, existing_size, 0)
+                # Close file_response if we have one
+                if file_response:
+                    file_response.close()
+                
+                # Download media files and update gamelist.xml even if file already exists
+                # (media might not be downloaded yet)
+                try:
+                    logger.info(f"File already complete, downloading media files for {game_id}")
+                    downloaded_media = download_game_media(system, game_id, download_id)
+                    
+                    # Get full game details for gamelist.xml update
+                    game_data = get_game_details_from_api(system, game_id)
+                    if game_data:
+                        # Update gamelist.xml with game entry
+                        update_gamelist_xml(system, game_id, game_data, downloaded_media)
+                    else:
+                        logger.warning(f"Could not fetch game details for gamelist.xml update: {game_id}")
+                except Exception as e:
+                    logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
+                
                 return True
         
         # Use bytes_already_transferred from API if available and larger
         if bytes_already_transferred > resume_from:
             resume_from = bytes_already_transferred
             logger.info(f"Using progress from API: resuming from byte {resume_from}")
+        
+        # If we need to resume, we can't reuse the existing response (need Range header)
+        if resume_from > 0 and file_response:
+            file_response.close()
+            file_response = None
         
         if resume_from > 0:
             logger.info(f"Resuming download: {game_id} from {resume_from} bytes")
@@ -695,8 +1058,8 @@ def download_game(download_info):
                     # Report progress - check return value
                     progress_result = report_progress(download_id, total_bytes_transferred, bytes_per_second)
                     if progress_result is None:
-                        # Download was removed from queue - stop downloading
-                        logger.info(f"Download {download_id} was removed from queue, stopping download")
+                        # Download was removed from queue (likely completed) - stop reporting
+                        logger.debug(f"Download {download_id} was removed from queue (likely completed), stopping progress reporter")
                         paused[0] = True
                         progress_thread_running = False
                         break
@@ -723,7 +1086,8 @@ def download_game(download_info):
                 expected_size=expected_file_size,
                 bytes_transferred_ref=bytes_transferred_this_session,
                 chunk_size=chunk_size,
-                paused_ref=paused
+                paused_ref=paused,
+                existing_response=file_response  # Reuse the response we already have
             )
             
             # Check if file not found (404)
@@ -755,24 +1119,27 @@ def download_game(download_info):
                 report_progress(download_id, total_bytes_transferred, 0)
             return False
         
+        # Stop progress reporter thread before marking as completed
         progress_thread_running = False
-        progress_thread.join(timeout=1)
+        # Wait a bit longer to ensure the thread has time to exit its sleep and check the flag
+        progress_thread.join(timeout=BANDWIDTH_UPDATE_INTERVAL + 1)
         
         # Verify file size
         if os.path.exists(dest_path) and os.path.isfile(dest_path):
             final_size = os.path.getsize(dest_path)
             if expected_file_size and final_size != expected_file_size:
                 logger.error(f"File size mismatch after download: {final_size} != {expected_file_size}")
-                report_progress(download_id, final_size, 0)
+                # Don't report progress if we're about to mark as completed
+                try:
+                    report_progress(download_id, final_size, 0)
+                except Exception:
+                    pass  # Ignore errors if download is already removed
                 return False
             
-            # Final progress report
+            # Skip final progress report - mark_completed will handle completion
+            # This avoids 410 errors when the download is removed from queue
             total_time = time.time() - start_time
-            final_bytes_per_second = int(bytes_transferred_this_session[0] / total_time) if total_time > 0 else 0
-            try:
-                report_progress(download_id, final_size, final_bytes_per_second)
-            except Exception as e:
-                logger.debug(f"Final progress report failed (download may already be completed): {e}")
+            logger.debug(f"Download completed, skipping final progress report (will be handled by mark_completed)")
             
             logger.info(f"Successfully downloaded: {game_id}")
             logger.info(f"  HTTP URL: {http_url}")
@@ -780,6 +1147,22 @@ def download_game(download_info):
             logger.info(f"  Size: {final_size} bytes ({final_size / (1024*1024):.2f} MB)")
             logger.info(f"  Time: {total_time:.2f}s")
             logger.info(f"  Resumed from: {resume_from} bytes")
+            
+            # Download media files and update gamelist.xml after successful game download
+            try:
+                logger.info(f"Download completed successfully, downloading media files for {game_id}")
+                downloaded_media = download_game_media(system, game_id, download_id)
+                
+                # Get full game details for gamelist.xml update
+                game_data = get_game_details_from_api(system, game_id)
+                if game_data:
+                    # Update gamelist.xml with game entry
+                    update_gamelist_xml(system, game_id, game_data, downloaded_media)
+                else:
+                    logger.warning(f"Could not fetch game details for gamelist.xml update: {game_id}")
+            except Exception as e:
+                logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
+            
             return True
         else:
             logger.error(f"Downloaded file not found: {dest_path}")

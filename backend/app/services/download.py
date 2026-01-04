@@ -277,6 +277,9 @@ class DownloadService:
                 logger.warning(f"Game not found in queue: {game_id}")
                 return False
             
+            # Archive the download before deletion (user cancelled)
+            self.archive_download(queue_item.id, 'cancelled')
+            
             self.db.delete(queue_item)
             self.db.commit()
             
@@ -488,13 +491,16 @@ class DownloadService:
                 logger.info(f"Found resumable download: {resumable_download.id} (bytes_transferred: {resumable_download.bytes_transferred})")
                 # Update service assignment in case it changed
                 resumable_download.assigned_to_service = service_id
+                # Update last_progress_at to current time (download is being resumed)
+                resumable_download.last_progress_at = datetime.utcnow()
                 self.db.commit()
                 
                 # Get game info
                 game = self.game_service.get_game_by_id(resumable_download.game_id)
                 if not game:
                     logger.warning(f"Game not found: {resumable_download.game_id}")
-                    # Remove from queue since game doesn't exist
+                    # Archive and remove from queue since game doesn't exist
+                    self.archive_download(resumable_download.id, 'error')
                     self.db.delete(resumable_download)
                     self.db.commit()
                     return None
@@ -509,7 +515,8 @@ class DownloadService:
                         logger.info(f"File path with system: {file_path}")
                     else:
                         logger.error(f"System is empty for game_id={resumable_download.game_id}, cannot build file path")
-                        # Remove from queue since system is missing
+                        # Archive and remove from queue since system is missing
+                        self.archive_download(resumable_download.id, 'error')
                         self.db.delete(resumable_download)
                         self.db.commit()
                         return None
@@ -517,7 +524,8 @@ class DownloadService:
                 # Verify file or directory exists before resuming download
                 if not os.path.exists(file_path):
                     logger.error(f"File or directory does not exist: {file_path} for game_id={resumable_download.game_id}")
-                    # Remove from queue since file doesn't exist
+                    # Archive and remove from queue since file doesn't exist
+                    self.archive_download(resumable_download.id, 'error')
                     self.db.delete(resumable_download)
                     self.db.commit()
                     logger.info(f"Removed download {resumable_download.id} from queue - file not found")
@@ -592,7 +600,8 @@ class DownloadService:
             game = self.game_service.get_game_by_id(pending_download.game_id)
             if not game:
                 logger.warning(f"Game not found: {pending_download.game_id}")
-                # Remove from queue since game doesn't exist
+                # Archive and remove from queue since game doesn't exist
+                self.archive_download(pending_download.id, 'error')
                 self.db.delete(pending_download)
                 self.db.commit()
                 return None
@@ -607,7 +616,8 @@ class DownloadService:
                     logger.info(f"File path with system: {file_path}")
                 else:
                     logger.error(f"System is empty for game_id={pending_download.game_id}, cannot build file path")
-                    # Remove from queue since system is missing
+                    # Archive and remove from queue since system is missing
+                    self.archive_download(pending_download.id, 'error')
                     self.db.delete(pending_download)
                     self.db.commit()
                     return None
@@ -615,7 +625,8 @@ class DownloadService:
             # Verify file or directory exists before assigning download
             if not os.path.exists(file_path):
                 logger.error(f"File or directory does not exist: {file_path} for game_id={pending_download.game_id}")
-                # Remove from queue since file doesn't exist
+                # Archive and remove from queue since file doesn't exist
+                self.archive_download(pending_download.id, 'error')
                 self.db.delete(pending_download)
                 self.db.commit()
                 logger.info(f"Removed download {pending_download.id} from queue - file not found")
@@ -625,6 +636,7 @@ class DownloadService:
             pending_download.active_download = True
             pending_download.status = 'downloading'
             pending_download.started_at = datetime.utcnow()
+            pending_download.last_progress_at = datetime.utcnow()  # Initialize progress tracking
             pending_download.assigned_to_service = service_id
             self.db.commit()
             
@@ -670,8 +682,16 @@ class DownloadService:
                 logger.warning(f"Download {download_id} not found")
                 return False
             
+            # Update progress fields
             download.bytes_transferred = bytes_transferred
             download.bandwidth_used = bytes_per_second
+            download.last_progress_at = datetime.utcnow()
+            
+            # If status is "stuck", change it back to "downloading" (client reconnected)
+            if download.status == 'stuck':
+                logger.info(f"Download {download_id} resumed after being stuck, changing status to downloading")
+                download.status = 'downloading'
+                download.active_download = True
             
             # Update bandwidth manager
             self.bandwidth_manager.update_usage(download_id, bytes_per_second)
@@ -681,6 +701,68 @@ class DownloadService:
             return True
         except Exception as e:
             logger.error(f"Error updating progress: {e}")
+            self.db.rollback()
+            return False
+    
+    def archive_download(self, download_id: int, status: str) -> bool:
+        """Archive a download before deletion.
+        
+        Args:
+            download_id: Download ID to archive
+            status: Download status ('completed', 'error', 'cancelled', 'stuck', etc.)
+        
+        Returns:
+            bool: True if archived successfully, False otherwise
+        """
+        try:
+            from app.database import DownloadArchive, User
+            
+            # Get download from queue
+            download = self.db.query(DownloadQueue).filter(
+                DownloadQueue.id == download_id
+            ).first()
+            
+            if not download:
+                logger.warning(f"Download {download_id} not found for archiving")
+                return False
+            
+            # Get game information
+            game = self.game_service.get_game_by_id(download.game_id)
+            if not game:
+                logger.warning(f"Game not found for download {download_id}, using game_id as game_name")
+                game_name = download.game_id
+                system = None
+            else:
+                game_name = game.get('name', download.game_id)
+                system = game.get('system', None)
+            
+            # Get username from User table
+            username = None
+            user = self.db.query(User).filter(User.user_id == download.user_id).first()
+            if user:
+                username = user.username
+            
+            # Create archive entry
+            archive_entry = DownloadArchive(
+                download_id=download.id,
+                timestamp=datetime.now(timezone.utc),
+                user_id=download.user_id,
+                username=username,
+                game_name=game_name,
+                system=system,
+                rompath=download.game_id,
+                download_status=status,
+                bytes_transferred=download.bytes_transferred or 0,
+                file_size=download.file_size
+            )
+            
+            self.db.add(archive_entry)
+            self.db.commit()
+            
+            logger.info(f"Archived download {download_id} with status '{status}'")
+            return True
+        except Exception as e:
+            logger.error(f"Error archiving download {download_id}: {e}", exc_info=True)
             self.db.rollback()
             return False
     
@@ -694,6 +776,9 @@ class DownloadService:
             if not download:
                 logger.warning(f"Download {download_id} not found")
                 return False
+            
+            # Archive the download before deletion
+            self.archive_download(download_id, 'error')
             
             # Delete the download without updating statistics
             self.db.delete(download)
@@ -749,6 +834,9 @@ class DownloadService:
                 )
                 self.db.add(user)
                 logger.info(f"Created new user record for {user_id} with {downloaded_mb:.2f} MB, total_download_number: 1")
+            
+            # Archive the download before deletion
+            self.archive_download(download_id, 'completed')
             
             # Delete the download from queue instead of marking as completed
             self.db.delete(download)
