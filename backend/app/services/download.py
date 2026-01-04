@@ -554,7 +554,8 @@ class DownloadService:
                     'allocated_bandwidth': allocated_bandwidth,
                     'queue_type': resumable_download.queue_type,
                     'game_name': game.get('name', ''),
-                    'system': game.get('system', '')  # Include system for download service
+                    'system': game.get('system', ''),  # Include system for download service
+                    'game_details': game  # Include full game details for media download
                 }
                 
                 logger.info(f"Resuming download {resumable_download.id} from {resumable_download.bytes_transferred} bytes")
@@ -660,7 +661,8 @@ class DownloadService:
                 'allocated_bandwidth': allocated_bandwidth,
                 'queue_type': pending_download.queue_type,
                 'game_name': game.get('name', ''),
-                'system': game.get('system', '')
+                'system': game.get('system', ''),
+                'game_details': game  # Include full game details for media download
             }
             
             logger.info(f"Assigned download {pending_download.id} to service {service_id} with {allocated_bandwidth} bytes/s")
