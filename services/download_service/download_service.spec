@@ -17,14 +17,11 @@ a = Analysis(
     pathex=[str(spec_dir)],
     binaries=[],
     datas=[
-        # Include download_service.py as data (it will be imported)
-        (str(spec_dir / 'download_service.py'), '.'),
-        # Include installation scripts in the distribution
-        (str(spec_dir / 'install_windows_service.ps1'), '.'),
-        (str(spec_dir / 'install_windows_service.bat'), '.'),
-        (str(spec_dir / 'README_WINDOWS.md'), '.'),
+        # Include installation scripts in the distribution (optional, for reference)
+        # Note: These are optional since they're in the repo, but including them makes distribution easier
     ],
     hiddenimports=[
+        'download_service',  # Explicitly include the download_service module
         'requests',
         'requests.adapters',
         'requests.packages',
