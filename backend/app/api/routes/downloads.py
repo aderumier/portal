@@ -154,16 +154,34 @@ async def clear_queue(
     
     return {"success": True}
 
+@router.get("/config")
+async def get_download_config(
+    current_user: dict = Depends(require_auth_user)
+):
+    """Get download service configuration (for download_service.py).
+    
+    Returns configuration values like polling interval.
+    """
+    return {
+        "polling_interval": settings.POLLING_INTERVAL,
+        "bandwidth_update_interval": settings.BANDWIDTH_UPDATE_INTERVAL
+    }
+
 @router.post("/request")
 async def request_download(
     request: RequestDownloadRequest,
     http_request: Request,
     current_user: dict = Depends(require_auth_user),
-    download_service: DownloadService = Depends(get_download_service)
+    download_service: DownloadService = Depends(get_download_service),
+    db: Session = Depends(get_db)
 ):
     """Request next available download (for download_service.py).
     
     Only returns downloads associated with the authenticated token.
+    Also returns current polling_interval so the service can update its configuration.
+    
+    If queue_type is not specified, searches all queues (fast and slow) for downloads
+    associated with the token_id and returns the first available download.
     """
     queue_type = request.queue_type
     service_id = request.service_id or 'default'
@@ -177,12 +195,20 @@ async def request_download(
             detail="Token ID not found. API token authentication required."
         )
     
+    # If queue_type is not specified, search all queues for downloads with this token_id
+    # The backend will search both fast and slow queues and return the first available download
     download_info = download_service.get_next_download(queue_type, service_id, token_id=token_id)
     
     if not download_info:
-        return {"download": None}
+        return {
+            "download": None,
+            "polling_interval": settings.POLLING_INTERVAL
+        }
     
-    return {"download": download_info}
+    return {
+        "download": download_info,
+        "polling_interval": settings.POLLING_INTERVAL
+    }
 
 @router.post("/progress")
 async def report_progress(
@@ -202,9 +228,10 @@ async def report_progress(
             detail="Invalid download ID"
         )
     
-    # Check if download is paused before updating progress
+    # Use the same database session as the download_service to avoid session conflicts
+    # Query using download_service's db session
     from app.database import DownloadQueue
-    download = db.query(DownloadQueue).filter(DownloadQueue.id == download_id).first()
+    download = download_service.db.query(DownloadQueue).filter(DownloadQueue.id == download_id).first()
     
     if download and download.status == 'paused':
         logger.info(f"Progress report received for paused download {download_id} - returning pause signal")

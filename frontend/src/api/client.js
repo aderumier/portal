@@ -1,8 +1,10 @@
 import axios from 'axios'
 import { API_URL } from '../utils/constants'
 
+// Use API_URL if set, otherwise use relative URLs (for nginx proxy)
+// Empty baseURL means requests will be relative to the current origin
 const client = axios.create({
-  baseURL: API_URL,
+  baseURL: API_URL || '',  // Empty string = relative URLs (works with nginx)
   withCredentials: true, // Include cookies for session
   headers: {
     'Content-Type': 'application/json',

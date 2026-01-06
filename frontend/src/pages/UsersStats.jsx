@@ -125,6 +125,8 @@ const UsersStats = () => {
               <th>User ID</th>
               <th>Total Downloaded</th>
               <th>Games Downloaded</th>
+              <th>Medias Uploaded</th>
+              <th>Medias Validated</th>
               <th>Last Login</th>
               <th>Account Created</th>
             </tr>
@@ -132,7 +134,7 @@ const UsersStats = () => {
           <tbody>
             {users.length === 0 ? (
               <tr>
-                <td colSpan="6" className="no-users">
+                <td colSpan="8" className="no-users">
                   No users found
                 </td>
               </tr>
@@ -150,6 +152,12 @@ const UsersStats = () => {
                   </td>
                   <td className="download-number-cell">
                     <span className="download-number">{user.total_download_number}</span>
+                  </td>
+                  <td className="medias-upload-cell">
+                    <span className="medias-upload">{user.medias_upload || 0}</span>
+                  </td>
+                  <td className="medias-validated-cell">
+                    <span className="medias-validated">{user.medias_validated || 0}</span>
                   </td>
                   <td className="last-login-cell">
                     <span className="last-login" title={formatDate(user.last_login)}>

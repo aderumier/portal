@@ -34,12 +34,21 @@ class Settings:
     API_URL: str = os.getenv('API_URL', 'http://localhost:8000')  # Backend API URL for download service
     DOWNLOAD_FILE_URL: str = os.getenv('DOWNLOAD_FILE_URL', '')  # Public URL for download file endpoint (defaults to API_URL if not set)
     
+    # Session storage settings
+    SESSION_STORAGE: str = os.getenv('SESSION_STORAGE', 'memory')  # Options: 'memory', 'redis', 'file', 'database'
+    REDIS_URL: str = os.getenv('REDIS_URL', 'redis://localhost:6379/0')  # Redis connection URL for session storage
+    REDIS_SESSION_KEY_PREFIX: str = os.getenv('REDIS_SESSION_KEY_PREFIX', 'session:')  # Prefix for session keys in Redis
+    SESSION_MAX_AGE: int = int(os.getenv('SESSION_MAX_AGE', str(3600 * 24)))  # Session timeout in seconds (default: 24 hours)
+    
     # Bandwidth management settings
     # GLOBAL_BANDWIDTH_LIMIT is in Mbits/s, converted to bytes/s internally
     # Default: 1000 Mbits/s = 125,000,000 bytes/s
     GLOBAL_BANDWIDTH_LIMIT_Mbits: float = float(os.getenv('GLOBAL_BANDWIDTH_LIMIT', '1000.0'))  # Mbits/s
     GLOBAL_BANDWIDTH_LIMIT: int = int(GLOBAL_BANDWIDTH_LIMIT_Mbits * 125000)  # Convert to bytes/s (1 Mbit = 125 KB)
     BANDWIDTH_UPDATE_INTERVAL: int = int(os.getenv('BANDWIDTH_UPDATE_INTERVAL', '5'))  # 5 seconds
+    
+    # Download service settings
+    POLLING_INTERVAL: int = int(os.getenv('POLLING_INTERVAL', '10'))  # Seconds between queue checks
     
     # Per-user bandwidth limits for testing (optional, in Mbits/s)
     # If not set, no per-user limit is applied (users share available bandwidth equally)

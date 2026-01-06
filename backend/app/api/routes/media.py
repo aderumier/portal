@@ -1,8 +1,11 @@
 """Media upload and validation routes."""
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
 from typing import List
+from sqlalchemy.orm import Session
 from app.api.middleware.roles import require_admin_role
 from app.services.media import MediaService
+from app.database import get_db, User
+from sqlalchemy import text
 import logging
 
 logger = logging.getLogger(__name__)
@@ -20,7 +23,8 @@ async def upload_media(
     media_type: str = Form(...),
     file: UploadFile = File(...),
     current_user: dict = Depends(require_admin_role),
-    media_service: MediaService = Depends(get_media_service)
+    media_service: MediaService = Depends(get_media_service),
+    db: Session = Depends(get_db)
 ):
     """Upload media file for a game."""
     try:
@@ -54,13 +58,22 @@ async def upload_media(
                 detail="File size exceeds 10MB limit"
             )
         
+        # Get user_id from current_user
+        user_id = current_user.get('id')
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User ID not found"
+            )
+        
         # Upload file
         success = media_service.upload_media(
             system=system,
             game_id=game_id,
             media_type=media_type,
             file_content=file_content,
-            file_extension=file_extension
+            file_extension=file_extension,
+            user_id=user_id
         )
         
         if not success:
@@ -68,6 +81,28 @@ async def upload_media(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to upload media file"
             )
+        
+        # Increment medias_upload counter for user
+        try:
+            user = db.query(User).filter(User.user_id == user_id).first()
+            if user:
+                user.medias_upload = (user.medias_upload or 0) + 1
+                db.commit()
+                logger.info(f"Incremented medias_upload for user {user_id}")
+            else:
+                # Create user record if it doesn't exist
+                new_user = User(
+                    user_id=user_id,
+                    username=current_user.get('username'),
+                    medias_upload=1,
+                    medias_validated=0
+                )
+                db.add(new_user)
+                db.commit()
+                logger.info(f"Created user record for {user_id} with medias_upload=1")
+        except Exception as e:
+            logger.error(f"Error updating medias_upload counter: {e}", exc_info=True)
+            db.rollback()
         
         return {
             "success": True,
@@ -86,11 +121,25 @@ async def upload_media(
 @router.get("/pending")
 async def get_pending_media(
     current_user: dict = Depends(require_admin_role),
-    media_service: MediaService = Depends(get_media_service)
+    media_service: MediaService = Depends(get_media_service),
+    db: Session = Depends(get_db)
 ):
-    """Get list of pending media uploads."""
+    """Get list of pending media uploads with username information."""
     try:
         pending = media_service.get_pending_media()
+        
+        # Enrich with username information
+        for item in pending:
+            user_id = item.get('user_id')
+            if user_id:
+                user = db.query(User).filter(User.user_id == user_id).first()
+                if user:
+                    item['username'] = user.username
+                else:
+                    item['username'] = None
+            else:
+                item['username'] = None
+        
         return {"pending_media": pending}
     except Exception as e:
         logger.error(f"Error getting pending media: {e}", exc_info=True)
@@ -104,18 +153,42 @@ async def validate_media(
     system: str = Form(...),
     fieldname: str = Form(...),
     filename: str = Form(...),
+    user_id: str = Form(None),  # Optional, will be extracted from path if not provided
     current_user: dict = Depends(require_admin_role),
-    media_service: MediaService = Depends(get_media_service)
+    media_service: MediaService = Depends(get_media_service),
+    db: Session = Depends(get_db)
 ):
     """Validate and move media from pending to final location."""
     try:
-        success = media_service.validate_media(system, fieldname, filename)
+        success, validated_user_id = media_service.validate_media(system, fieldname, filename, user_id)
         
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Failed to validate media file"
             )
+        
+        # Increment medias_validated counter for the user who uploaded the media
+        if validated_user_id:
+            try:
+                user = db.query(User).filter(User.user_id == validated_user_id).first()
+                if user:
+                    user.medias_validated = (user.medias_validated or 0) + 1
+                    db.commit()
+                    logger.info(f"Incremented medias_validated for user {validated_user_id}")
+                else:
+                    # Create user record if it doesn't exist
+                    new_user = User(
+                        user_id=validated_user_id,
+                        medias_upload=0,
+                        medias_validated=1
+                    )
+                    db.add(new_user)
+                    db.commit()
+                    logger.info(f"Created user record for {validated_user_id} with medias_validated=1")
+            except Exception as e:
+                logger.error(f"Error updating medias_validated counter: {e}", exc_info=True)
+                db.rollback()
         
         return {
             "success": True,
@@ -136,12 +209,13 @@ async def delete_pending_media(
     system: str = Query(...),
     fieldname: str = Query(...),
     filename: str = Query(...),
+    user_id: str = Query(None),  # Optional, will be searched if not provided
     current_user: dict = Depends(require_admin_role),
     media_service: MediaService = Depends(get_media_service)
 ):
     """Delete pending media file."""
     try:
-        success = media_service.delete_pending_media(system, fieldname, filename)
+        success = media_service.delete_pending_media(system, fieldname, filename, user_id)
         
         if not success:
             raise HTTPException(
@@ -163,15 +237,19 @@ async def delete_pending_media(
             detail="An error occurred while deleting pending media"
         )
 
-@router.get("/pending-preview/{system}/{fieldname}/{filename:path}")
+@router.get("/pending-preview/{user_id}/{system}/{fieldname}/{filename:path}")
 async def get_pending_media_preview(
+    user_id: str,
     system: str,
     fieldname: str,
     filename: str,
     current_user: dict = Depends(require_admin_role),
     media_service: MediaService = Depends(get_media_service)
 ):
-    """Get preview of pending media file."""
+    """Get preview of pending media file.
+    
+    New path structure: /pending-preview/{user_id}/{system}/{fieldname}/{filename}
+    """
     from fastapi.responses import FileResponse
     from pathlib import Path
     
@@ -182,7 +260,8 @@ async def get_pending_media_preview(
                 detail="USERS_MEDIA_PATH is not configured"
             )
         
-        file_path = Path(media_service.users_media_path) / system / fieldname / filename
+        # New path structure: USERS_MEDIA_PATH/userid/system/fieldname/filename
+        file_path = Path(media_service.users_media_path) / user_id / system / fieldname / filename
         
         if not file_path.exists():
             raise HTTPException(

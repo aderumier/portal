@@ -1,0 +1,17 @@
+#!/bin/bash
+# Pre-installation script
+
+set -e
+
+# Stop services if they exist
+if systemctl is-active --quiet batocera-games-catalog-backend.service 2>/dev/null; then
+    systemctl stop batocera-games-catalog-backend.service || true
+fi
+
+if systemctl is-active --quiet batocera-games-catalog-frontend.service 2>/dev/null; then
+    systemctl stop batocera-games-catalog-frontend.service || true
+fi
+
+exit 0
+
+

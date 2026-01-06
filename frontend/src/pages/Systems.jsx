@@ -14,7 +14,7 @@ const Systems = () => {
   const loadSystems = async () => {
     try {
       setLoading(true)
-      const response = await client.get('/api/systems')
+      const response = await client.get('/api/catalog/systems')
       setSystems(response.data.systems || [])
     } catch (err) {
       console.error('Error loading systems:', err)

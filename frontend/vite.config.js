@@ -8,14 +8,21 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: process.env.VITE_API_URL || 'http://localhost:8000',
         changeOrigin: true,
       },
       '/media': {
-        target: 'http://localhost:8000',
+        target: process.env.VITE_API_URL || 'http://localhost:8000',
         changeOrigin: true,
       }
     }
+  },
+  // Build configuration for production
+  build: {
+    // Ensure API calls use relative URLs in production
+    // This allows nginx to proxy /api requests to backend
+    outDir: 'dist',
+    assetsDir: 'assets',
   }
 })
 

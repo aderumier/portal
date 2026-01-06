@@ -1,0 +1,15 @@
+#!/bin/bash
+# Post-removal script
+
+set -e
+
+# Disable services
+systemctl disable batocera-games-catalog-backend.service 2>/dev/null || true
+systemctl disable batocera-games-catalog-frontend.service 2>/dev/null || true
+
+# Reload systemd
+systemctl daemon-reload
+
+exit 0
+
+

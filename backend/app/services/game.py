@@ -11,6 +11,31 @@ from app.services.game_utils import normalize_game_name
 
 logger = logging.getLogger(__name__)
 
+def _is_game_hidden(game: ET.Element) -> bool:
+    """Check if a game is hidden by checking both attribute and element.
+    
+    Supports both formats:
+    - <game hidden="true">...</game> (attribute)
+    - <game><hidden>true</hidden></game> (element)
+    
+    Args:
+        game: XML Element representing a game
+        
+    Returns:
+        bool: True if the game is hidden, False otherwise
+    """
+    # Check attribute first (most common format)
+    hidden_attr = game.get('hidden', '').lower()
+    if hidden_attr in ['true', '1']:
+        return True
+    
+    # Check element (alternative format: <hidden>true</hidden>)
+    hidden_elem = game.findtext('hidden', '').lower()
+    if hidden_elem in ['true', '1']:
+        return True
+    
+    return False
+
 class GameService:
     """Service for managing game catalog from gamelist.xml files."""
     
@@ -22,6 +47,11 @@ class GameService:
         self.gamelists = {}  # In-memory storage: gamelists[system_id] = root_element
         self.systems_list = []  # Cached systems list with game counts
         self._gamelists_loaded = False
+        self.system_hardware = {}  # Cache: system_id -> hardware category
+        self.system_manufacturer = {}  # Cache: system_id -> manufacturer
+        self.system_release = {}  # Cache: system_id -> release year
+        self.system_fullname = {}  # Cache: system_id -> full name
+        self._hardware_loaded = False
         
         # System name mapping
         self.system_names = {
@@ -92,6 +122,156 @@ class GameService:
             'zxspectrum': 'ZX Spectrum'
         }
     
+    def _load_system_hardware(self) -> Dict[str, str]:
+        """Load system hardware categories, manufacturers, release years, and full names from es_systems*.cfg files.
+        
+        Parses es_systems.cfg first, then es_systems_*.cfg files which can override or add systems.
+        Stores hardware category, manufacturer, release year, and full name for each system.
+        
+        Returns:
+            dict: Mapping of system_id -> hardware category
+        """
+        logger.info("_load_system_hardware() called")
+        if self._hardware_loaded:
+            logger.info(f"Hardware already loaded, returning {len(self.system_hardware)} systems")
+            return self.system_hardware
+        
+        hardware_map = {}
+        manufacturer_map = {}
+        release_map = {}
+        fullname_map = {}
+        
+        # Try multiple paths to find data/systemscfg directory
+        # game.py is at: backend/app/services/game.py
+        # We need to go up 4 levels to reach project root: backend/app/services -> backend/app -> backend -> project_root
+        # 1. Relative to project root (development): project_root/data/systemscfg
+        # 2. Relative to installation directory (production: /opt/batocera-games-catalog)
+        possible_paths = [
+            Path(__file__).parent.parent.parent.parent / 'data' / 'systemscfg',  # Development: project_root/data/systemscfg
+            Path('/opt/batocera-games-catalog/data/systemscfg'),  # Production installation
+            Path(__file__).parent.parent.parent / 'data' / 'systemscfg',  # Fallback: backend/data/systemscfg (if data is in backend)
+        ]
+        
+        logger.info(f"Searching for systemscfg directory in: {possible_paths}")
+        systemcfg_dir = None
+        for path in possible_paths:
+            logger.debug(f"Checking path: {path} (exists: {path.exists()})")
+            if path.exists():
+                systemcfg_dir = path
+                logger.info(f"Found systemscfg directory at: {systemcfg_dir}")
+                break
+        
+        if not systemcfg_dir:
+            logger.error(f"System config directory not found. Tried: {possible_paths}")
+            self._hardware_loaded = True
+            return hardware_map
+        
+        # First, parse es_systems.cfg
+        main_config = systemcfg_dir / 'es_systems.cfg'
+        logger.info(f"Checking for main config file: {main_config} (exists: {main_config.exists()})")
+        if main_config.exists():
+            try:
+                logger.info(f"Parsing {main_config}")
+                tree = ET.parse(main_config)
+                root = tree.getroot()
+                logger.debug(f"Root element: {root.tag}")
+                # The root should be <systemList>, find all <system> elements
+                systems = root.findall('.//system')
+                logger.info(f"Found {len(systems)} systems in {main_config.name}")
+                parsed_count = 0
+                for system in systems:
+                    name_elem = system.find('name')
+                    hardware_elem = system.find('hardware')
+                    manufacturer_elem = system.find('manufacturer')
+                    release_elem = system.find('release')
+                    fullname_elem = system.find('fullname')
+                    if name_elem is not None and name_elem.text and hardware_elem is not None and hardware_elem.text:
+                        system_id = name_elem.text.strip()
+                        hardware = hardware_elem.text.strip()
+                        manufacturer = manufacturer_elem.text.strip() if manufacturer_elem is not None and manufacturer_elem.text else 'Unknown'
+                        release = release_elem.text.strip() if release_elem is not None and release_elem.text else 'Unknown'
+                        fullname = fullname_elem.text.strip() if fullname_elem is not None and fullname_elem.text else None
+                        if system_id and hardware:
+                            hardware_map[system_id] = hardware
+                            manufacturer_map[system_id] = manufacturer
+                            release_map[system_id] = release
+                            if fullname:
+                                fullname_map[system_id] = fullname
+                            parsed_count += 1
+                            if parsed_count <= 5:  # Log first 5 for debugging
+                                logger.info(f"Loaded hardware for {system_id}: {hardware}, manufacturer: {manufacturer}, release: {release}, fullname: {fullname}")
+                    else:
+                        # Log missing elements for debugging (only first few)
+                        if parsed_count < 3:
+                            if name_elem is None or not name_elem.text:
+                                logger.warning(f"System missing <name> element in {main_config.name}")
+                            if hardware_elem is None or not hardware_elem.text:
+                                logger.warning(f"System missing <hardware> element in {main_config.name}")
+                logger.info(f"Successfully parsed {parsed_count} systems from {main_config.name}")
+            except Exception as e:
+                logger.error(f"Error parsing {main_config}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        else:
+            logger.error(f"Main config file not found: {main_config}")
+        
+        # Then, parse all es_systems_*.cfg files (these can override or add systems)
+        additional_files = sorted(systemcfg_dir.glob('es_systems_*.cfg'))
+        logger.info(f"Found {len(additional_files)} additional es_systems_*.cfg files")
+        for cfg_file in additional_files:
+            if cfg_file.name == 'es_systems.cfg':
+                continue  # Skip main file, already processed
+            try:
+                logger.debug(f"Parsing {cfg_file.name}")
+                tree = ET.parse(cfg_file)
+                root = tree.getroot()
+                systems = root.findall('.//system')
+                logger.debug(f"Found {len(systems)} systems in {cfg_file.name}")
+                parsed_count = 0
+                for system in systems:
+                    name_elem = system.find('name')
+                    hardware_elem = system.find('hardware')
+                    manufacturer_elem = system.find('manufacturer')
+                    release_elem = system.find('release')
+                    fullname_elem = system.find('fullname')
+                    if name_elem is not None and name_elem.text and hardware_elem is not None and hardware_elem.text:
+                        system_id = name_elem.text.strip()
+                        hardware = hardware_elem.text.strip()
+                        manufacturer = manufacturer_elem.text.strip() if manufacturer_elem is not None and manufacturer_elem.text else 'Unknown'
+                        release = release_elem.text.strip() if release_elem is not None and release_elem.text else 'Unknown'
+                        fullname = fullname_elem.text.strip() if fullname_elem is not None and fullname_elem.text else None
+                        if system_id and hardware:
+                            # Override or add (later files override earlier ones)
+                            hardware_map[system_id] = hardware
+                            manufacturer_map[system_id] = manufacturer
+                            release_map[system_id] = release
+                            if fullname:
+                                fullname_map[system_id] = fullname
+                            parsed_count += 1
+                if parsed_count > 0:
+                    logger.debug(f"Parsed {parsed_count} systems from {cfg_file.name}")
+            except Exception as e:
+                logger.error(f"Error parsing {cfg_file}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        self.system_hardware = hardware_map
+        self.system_manufacturer = manufacturer_map
+        self.system_release = release_map
+        self.system_fullname = fullname_map
+        self._hardware_loaded = True
+        logger.info(f"=== Loaded hardware categories for {len(hardware_map)} systems ===")
+        logger.info(f"=== Loaded manufacturers for {len(manufacturer_map)} systems ===")
+        logger.info(f"=== Loaded release years for {len(release_map)} systems ===")
+        logger.info(f"=== Loaded full names for {len(fullname_map)} systems ===")
+        if hardware_map:
+            # Log a few examples for debugging
+            sample_systems = [(k, hardware_map[k], manufacturer_map.get(k, 'Unknown'), release_map.get(k, 'Unknown'), fullname_map.get(k, None)) for k in list(hardware_map.keys())[:10]]
+            logger.info(f"Sample mappings (first 10): {sample_systems}")
+        else:
+            logger.warning("No hardware mappings loaded! Check if es_systems.cfg files exist and are properly formatted.")
+        return hardware_map
+    
     def preload_all_gamelists(self) -> None:
         """Preload all gamelist.xml files into memory at startup."""
         if self._gamelists_loaded:
@@ -99,6 +279,22 @@ class GameService:
             return
         
         logger.info("Preloading all gamelist.xml files into memory...")
+        
+        # Load system hardware mapping once (parsed and kept in memory)
+        if not self._hardware_loaded:
+            self._load_system_hardware()
+        
+        # Get enabled systems from database
+        enabled_systems = set()
+        try:
+            from app.database import get_db, System
+            db = next(get_db())
+            enabled_systems_db = db.query(System).filter(System.enabled == True).all()
+            enabled_systems = {s.id for s in enabled_systems_db}
+            logger.info(f"Found {len(enabled_systems)} enabled systems in database")
+        except Exception as e:
+            logger.warning(f"Could not load enabled systems from database: {e}. Will load all systems.")
+        
         systems = []
         self.gamelists = {}
         
@@ -112,6 +308,16 @@ class GameService:
             if dir_name in ['.', '..']:
                 continue
             
+            # Skip systems with _spirit suffix
+            if dir_name.endswith('_spirit'):
+                logger.debug(f"Skipping system with _spirit suffix: {dir_name}")
+                continue
+            
+            # Skip system "radio"
+            if dir_name == 'radio':
+                logger.debug(f"Skipping system: {dir_name}")
+                continue
+            
             dir_path = os.path.join(self.games_path, dir_name)
             if not os.path.isdir(dir_path) or not os.access(dir_path, os.R_OK):
                 logger.warning(f"Directory not readable: {dir_path}")
@@ -120,6 +326,11 @@ class GameService:
             gamelist_path = os.path.join(dir_path, 'gamelist.xml')
             if not os.path.isfile(gamelist_path) or not os.access(gamelist_path, os.R_OK):
                 logger.warning(f"No gamelist.xml found for system: {dir_name}")
+                continue
+            
+            # Skip if system is not enabled in database (if database check succeeded)
+            if enabled_systems and dir_name not in enabled_systems:
+                logger.debug(f"Skipping disabled system: {dir_name}")
                 continue
             
             # Parse and store XML in memory
@@ -131,14 +342,78 @@ class GameService:
                 # Count games (excluding hidden ones)
                 game_count = 0
                 for game in root.findall('.//game'):
-                    hidden = game.get('hidden', 'false')
-                    if hidden.lower() not in ['true', '1']:
+                    if not _is_game_hidden(game):
                         game_count += 1
+                
+                # Handle systems with _batocera, _retrobat, or _lite suffix
+                # Map to base system name in es_systems.cfg
+                base_system_id = dir_name
+                suffix = None
+                suffix_display = None
+                
+                if dir_name.endswith('_batocera'):
+                    base_system_id = dir_name[:-9]  # Remove '_batocera' suffix
+                    suffix = 'batocera'
+                    suffix_display = '(Batocera)'
+                elif dir_name.endswith('_retrobat'):
+                    base_system_id = dir_name[:-9]  # Remove '_retrobat' suffix
+                    suffix = 'retrobat'
+                    suffix_display = '(Retrobat)'
+                elif dir_name.endswith('_lite'):
+                    base_system_id = dir_name[:-5]  # Remove '_lite' suffix
+                    suffix = 'lite'
+                    suffix_display = '(Lite)'
+                
+                # Get hardware category, manufacturer, release year, and full name from in-memory mapping
+                # Try base system name first (for _batocera/_retrobat systems)
+                hardware = self.system_hardware.get(base_system_id, 'unknown')
+                manufacturer = self.system_manufacturer.get(base_system_id, 'Unknown')
+                release = self.system_release.get(base_system_id, 'Unknown')
+                fullname = self.system_fullname.get(base_system_id, None)
+                
+                # If not found with base name, try original dir_name
+                if hardware == 'unknown' and len(self.system_hardware) > 0:
+                    hardware = self.system_hardware.get(dir_name, 'unknown')
+                    if hardware != 'unknown':
+                        manufacturer = self.system_manufacturer.get(dir_name, 'Unknown')
+                        release = self.system_release.get(dir_name, 'Unknown')
+                        fullname = self.system_fullname.get(dir_name, None)
+                
+                # Log if hardware not found (for debugging)
+                if hardware == 'unknown' and len(self.system_hardware) > 0:
+                    # Check if there's a similar name (case-insensitive)
+                    dir_name_lower = dir_name.lower()
+                    base_system_id_lower = base_system_id.lower()
+                    matching_systems = [k for k in self.system_hardware.keys() if k.lower() == dir_name_lower or k.lower() == base_system_id_lower]
+                    if matching_systems:
+                        matched_id = matching_systems[0]
+                        logger.warning(f"System '{dir_name}' not found in hardware map, but found case-insensitive match: {matched_id}")
+                        hardware = self.system_hardware[matched_id]
+                        manufacturer = self.system_manufacturer.get(matched_id, 'Unknown')
+                        release = self.system_release.get(matched_id, 'Unknown')
+                        fullname = self.system_fullname.get(matched_id, None)
+                    else:
+                        logger.debug(f"Hardware not found for system '{dir_name}' (base: '{base_system_id}'). Available systems (first 20): {list(self.system_hardware.keys())[:20]}")
+                
+                # Use fullname if available, otherwise fall back to get_system_name
+                display_name = fullname if fullname else self.get_system_name(base_system_id)
+                
+                # Append suffix to fullname if system has _batocera, _retrobat, or _lite suffix
+                if suffix_display and display_name:
+                    display_name = f"{display_name} {suffix_display}"
+                
+                # Skip systems with hardware category "library"
+                if hardware.lower() == 'library':
+                    logger.debug(f"Skipping system with library hardware category: {dir_name}")
+                    continue
                 
                 system = {
                     'id': dir_name,
-                    'name': self.get_system_name(dir_name),
-                    'gameCount': game_count
+                    'name': display_name,
+                    'gameCount': game_count,
+                    'hardware': hardware,
+                    'manufacturer': manufacturer,
+                    'release': release
                 }
                 
                 systems.append(system)
@@ -202,8 +477,7 @@ class GameService:
             # Filter out hidden games
             visible_games = []
             for game in all_games:
-                hidden = game.get('hidden', 'false')
-                if hidden.lower() not in ['true', '1']:
+                if not _is_game_hidden(game):
                     visible_games.append(game)
             
             total_games = len(visible_games)
@@ -215,24 +489,31 @@ class GameService:
             logger.info(f"Games after pagination: {len(paginated_games)}")
             
             for game in paginated_games:
-                thumbnail_path = game.findtext('thumbnail', '')
-                image_path = game.findtext('image', '')
+                # Get all media fields
+                def get_media_path(media_type):
+                    path = game.findtext(media_type, '')
+                    if path:
+                        path = path.lstrip('./')
+                        if not path.startswith(f"{system}/"):
+                            path = f"{system}/{path}"
+                    return path
                 
-                # Prefer thumbnail, fallback to image
-                display_image = thumbnail_path if thumbnail_path else image_path
+                thumbnail_path = get_media_path('thumbnail')
+                boxart_path = get_media_path('boxart')
+                extra1_path = get_media_path('extra1')
+                image_path = get_media_path('image')
                 
-                # Clean up image path
-                display_image = display_image.lstrip('./')
-                
-                # If path doesn't start with system, prefix it
-                if display_image and not display_image.startswith(f"{system}/"):
-                    display_image = f"{system}/{display_image}"
+                # Prefer thumbnail, fallback to boxart, then extra1, then image
+                display_image = thumbnail_path if thumbnail_path else (boxart_path if boxart_path else (extra1_path if extra1_path else image_path))
                 
                 game_data = {
                     'id': game.findtext('path', ''),
                     'name': game.findtext('name', ''),
                     'description': game.findtext('desc', ''),
                     'image': display_image,
+                    'thumbnail': thumbnail_path,
+                    'boxart': boxart_path,
+                    'extra1': extra1_path,
                     'system': system,
                     'systemName': self.get_system_name(system)
                 }
@@ -260,8 +541,7 @@ class GameService:
             root = self.gamelists[system]
             visible_games = 0
             for game in root.findall('.//game'):
-                hidden = game.get('hidden', 'false')
-                if hidden.lower() not in ['true', '1']:
+                if not _is_game_hidden(game):
                     visible_games += 1
             
             return visible_games > (page * limit)
@@ -270,7 +550,10 @@ class GameService:
             return False
     
     def search_games(self, query: str, page: int = 1, limit: int = 12) -> List[Dict]:
-        """Search games across all systems."""
+        """Search games across all systems.
+        
+        Only searches games from systems that are enabled in the database.
+        """
         if not query:
             return []
         
@@ -278,11 +561,19 @@ class GameService:
         if cache_key in self.cache:
             return self.cache[cache_key]
         
+        # Get enabled systems from database
+        enabled_systems = self._get_enabled_systems_set()
+        
         systems = self.get_systems()
         results = []
         
         for system in systems:
             system_id = system['id']
+            
+            # Skip if system is not enabled
+            if enabled_systems and system_id not in enabled_systems:
+                continue
+            
             gamelist_path = os.path.join(self.games_path, system_id, 'gamelist.xml')
             
             if not os.path.isfile(gamelist_path) or not os.access(gamelist_path, os.R_OK):
@@ -294,8 +585,7 @@ class GameService:
                 
                 for game in root.findall('.//game'):
                     # Skip hidden games
-                    hidden = game.get('hidden', 'false')
-                    if hidden.lower() in ['true', '1']:
+                    if _is_game_hidden(game):
                         continue
                     
                     name = game.findtext('name', '')
@@ -372,8 +662,7 @@ class GameService:
                 clean_game_path = game_path.lstrip('./')
                 
                 # Check if game is hidden
-                hidden = game.get('hidden', 'false')
-                if hidden.lower() in ['true', '1']:
+                if _is_game_hidden(game):
                     continue
                 
                 # Match the path exactly (with or without ./ prefix)
@@ -429,6 +718,8 @@ class GameService:
                 'thumbnail': get_media_path('thumbnail'),
                 'image': get_media_path('image'),
                 'boxart': get_media_path('boxart'),
+                'extra1': get_media_path('extra1'),
+                'spine': get_media_path('spine'),
                 'boxback': get_media_path('boxback'),
                 'marquee': get_media_path('marquee'),
                 'fanart': get_media_path('fanart'),
@@ -561,8 +852,27 @@ class GameService:
         except Exception as e:
             logger.warning(f"Failed to save index to cache: {e}")
     
+    def _get_enabled_systems_set(self) -> set:
+        """Get set of enabled system IDs from database."""
+        enabled_systems = set()
+        try:
+            from app.database import get_db, System
+            db = next(get_db())
+            enabled_systems_db = db.query(System).filter(System.enabled == True).all()
+            enabled_systems = {s.id for s in enabled_systems_db}
+            logger.debug(f"Found {len(enabled_systems)} enabled systems in database")
+        except Exception as e:
+            logger.warning(f"Could not load enabled systems from database: {e}. Will use all loaded systems.")
+            # If database check fails, use systems from self.systems_list (which should already be filtered)
+            if self._gamelists_loaded:
+                enabled_systems = {s['id'] for s in self.systems_list}
+        return enabled_systems
+    
     def build_search_index(self) -> Dict:
-        """Build a global partitioned search index with normalized game names."""
+        """Build a global partitioned search index with normalized game names.
+        
+        Only indexes games from systems that are enabled in the database.
+        """
         # Check in-memory cache first
         if self._index_built and 'search_index' in self.cache:
             logger.info("Returning in-memory cached search index")
@@ -584,11 +894,19 @@ class GameService:
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
         
+        # Get enabled systems from database
+        enabled_systems = self._get_enabled_systems_set()
+        
         systems = self.get_systems()
         total_games = 0
         
         for system in systems:
             system_id = system['id']
+            
+            # Skip if system is not enabled
+            if enabled_systems and system_id not in enabled_systems:
+                logger.debug(f"Skipping disabled system in search index: {system_id}")
+                continue
             
             if system_id not in self.gamelists:
                 continue
@@ -598,8 +916,7 @@ class GameService:
                 
                 for game in root.findall('.//game'):
                     # Skip hidden games
-                    hidden = game.get('hidden', 'false')
-                    if hidden.lower() in ['true', '1']:
+                    if _is_game_hidden(game):
                         continue
                     
                     game_name = game.findtext('name', '')
@@ -658,8 +975,44 @@ class GameService:
         logger.info(f"Search index built: {len(index)} letters, {total_games} games indexed")
         return index
     
+    def refresh_catalog(self) -> dict:
+        """Refresh catalog cache and search index by clearing cache and reloading everything."""
+        logger.info("Refreshing catalog cache and search index...")
+        
+        # Clear all caches
+        self.cache = {}
+        self.gamelists = {}
+        self.systems_list = []
+        self.search_index = {}
+        
+        # Reset flags
+        self._gamelists_loaded = False
+        self._index_built = False
+        self._hardware_loaded = False
+        
+        # Clear hardware mappings
+        self.system_hardware = {}
+        self.system_manufacturer = {}
+        self.system_release = {}
+        self.system_fullname = {}
+        
+        # Reload everything
+        self.preload_all_gamelists()
+        self.build_search_index()
+        
+        logger.info("Catalog cache and search index refreshed successfully")
+        
+        return {
+            "success": True,
+            "systems_count": len(self.systems_list),
+            "total_games": sum(s['gameCount'] for s in self.systems_list)
+        }
+    
     def search_indexed_games(self, query: str, limit: int = 50) -> List[Dict]:
-        """Search games using the partitioned index."""
+        """Search games using the partitioned index.
+        
+        Only returns games from systems that are enabled in the database.
+        """
         if not query:
             return []
         
@@ -676,6 +1029,9 @@ class GameService:
         # Ensure search_index exists
         if not hasattr(self, 'search_index') or not self.search_index:
             self.build_search_index()
+        
+        # Get enabled systems from database
+        enabled_systems = self._get_enabled_systems_set()
         
         results = []
         query_lower = normalized_query.lower()
@@ -696,7 +1052,11 @@ class GameService:
                         relevance = 2  # Contains
                     
                     # Add all games with this normalized name, with relevance score
+                    # Filter by enabled systems
                     for game in games:
+                        # Only include games from enabled systems
+                        if enabled_systems and game['system'] not in enabled_systems:
+                            continue
                         results.append((relevance, game))
         
         # Remove duplicates (same game might appear multiple times if indexed multiple ways)

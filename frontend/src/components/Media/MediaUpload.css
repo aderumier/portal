@@ -42,27 +42,46 @@
   margin-bottom: 0.75rem;
 }
 
-.media-upload-button {
-  padding: 0.5rem 1rem;
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+.media-upload-compact {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.media-upload-button-compact {
+  padding: 0.25rem 0.5rem;
+  background: var(--accent);
   color: white;
   border: none;
-  border-radius: 6px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 600;
-  transition: all 0.3s ease;
-  box-shadow: 0 2px 8px rgba(88, 101, 242, 0.2);
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+  min-width: 32px;
+  min-height: 32px;
 }
 
-.media-upload-button:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3);
+.media-upload-button-compact:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
 }
 
-.media-upload-button:disabled {
+.media-upload-button-compact:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.media-upload-error-compact {
+  font-size: 0.7rem;
+  color: #dc3545;
+  text-align: center;
+  max-width: 100px;
+}
+
+.media-upload-success-compact {
+  font-size: 0.9rem;
+  color: #28a745;
 }
 
 .media-upload-error {

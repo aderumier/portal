@@ -29,7 +29,7 @@ const Search = () => {
     try {
       setLoading(true)
       // Use the indexed search endpoint
-      const response = await client.get('/api/search', {
+      const response = await client.get('/api/catalog/search', {
         params: {
           q: searchQuery,
           page: pageNum,

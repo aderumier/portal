@@ -2,10 +2,11 @@
 from fastapi import APIRouter, Query, Depends
 from typing import Optional
 from sqlalchemy.orm import Session
-from app.database import get_db
+from app.database import get_db, System
 from app.services.game import GameService
 from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.guild import require_guild_member
+from app.api.middleware.roles import require_admin_role
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,10 +26,41 @@ def get_game_service() -> GameService:
 @router.get("/systems")
 async def get_systems(
     current_user: dict = Depends(require_guild_member),
+    db: Session = Depends(get_db),
     game_service: GameService = Depends(get_game_service)
 ):
-    """Get list of all systems."""
-    systems = game_service.get_systems()
+    """Get list of all enabled systems from database."""
+    # Get enabled systems from database
+    db_systems = db.query(System).filter(System.enabled == True).order_by(System.name).all()
+    
+    # Ensure gamelists are loaded to count games
+    if not game_service._gamelists_loaded:
+        game_service.preload_all_gamelists()
+    
+    # Build systems list with game counts
+    systems = []
+    for db_system in db_systems:
+        # Count games for this system
+        game_count = 0
+        if db_system.id in game_service.gamelists:
+            root = game_service.gamelists[db_system.id]
+            from app.services.game import _is_game_hidden
+            for game in root.findall('.//game'):
+                if not _is_game_hidden(game):
+                    game_count += 1
+        
+        # Use fullname from database, fallback to name
+        display_name = db_system.fullname or db_system.name
+        
+        systems.append({
+            'id': db_system.id,
+            'name': display_name,
+            'gameCount': game_count,
+            'hardware': db_system.hardware or 'unknown',
+            'manufacturer': db_system.manufacturer or 'Unknown',
+            'release': db_system.release or 'Unknown'
+        })
+    
     return {"systems": systems}
 
 @router.get("/games/{system}")
@@ -127,4 +159,14 @@ async def get_game_details(
         )
     
     return game
+
+@router.post("/refresh")
+async def refresh_catalog(
+    current_user: dict = Depends(require_admin_role),
+    game_service: GameService = Depends(get_game_service)
+):
+    """Refresh catalog cache and search index (admin only)."""
+    logger.info(f"Admin {current_user.get('username')} requested catalog refresh")
+    result = game_service.refresh_catalog()
+    return result
 

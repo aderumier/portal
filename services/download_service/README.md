@@ -15,42 +15,151 @@ cp .env.example .env
 # Edit .env with your configuration
 ```
 
-3. Install the systemd service:
+3. Install the init.d service:
+
+**Step 1: Edit the init script if needed:**
 ```bash
-sudo cp pixel-nostalgia-download.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable pixel-nostalgia-download
-sudo systemctl start pixel-nostalgia-download
+nano batocera-games-catalog-download
+# Default SERVICE_DIR is /userdata/system/rgs/download_service
+# Default log file is /userdata/system/logs/rgs_download.log
+# Update paths only if your installation differs
+```
+
+**Step 2: Copy the init script:**
+```bash
+sudo cp batocera-games-catalog-download /etc/init.d/
+sudo chmod +x /etc/init.d/batocera-games-catalog-download
+```
+
+**Step 3: (Optional) Create default configuration:**
+```bash
+sudo cp default-config /etc/default/batocera-games-catalog-download
+sudo nano /etc/default/batocera-games-catalog-download  # Edit as needed
+```
+
+**Step 4: Enable and start the service:**
+```bash
+# For SysV init systems (Debian/Ubuntu older versions)
+sudo update-rc.d batocera-games-catalog-download defaults
+sudo service batocera-games-catalog-download start
+
+# For systems with chkconfig (RedHat/CentOS)
+sudo chkconfig --add batocera-games-catalog-download
+sudo chkconfig batocera-games-catalog-download on
+sudo service batocera-games-catalog-download start
+
+# Or manually enable for runlevels 2-5
+sudo ln -s /etc/init.d/batocera-games-catalog-download /etc/rc2.d/S90batocera-games-catalog-download
+sudo ln -s /etc/init.d/batocera-games-catalog-download /etc/rc3.d/S90batocera-games-catalog-download
+sudo ln -s /etc/init.d/batocera-games-catalog-download /etc/rc4.d/S90batocera-games-catalog-download
+sudo ln -s /etc/init.d/batocera-games-catalog-download /etc/rc5.d/S90batocera-games-catalog-download
+sudo ln -s /etc/init.d/batocera-games-catalog-download /etc/rc0.d/K10batocera-games-catalog-download
+sudo ln -s /etc/init.d/batocera-games-catalog-download /etc/rc6.d/K10batocera-games-catalog-download
 ```
 
 ## Configuration
 
-Edit the `.env` file with your settings:
+The service uses environment variables for configuration. You can set them in two ways:
 
-- `API_URL`: The URL of your Pixel Nostalgia **backend API** (typically `http://localhost:8000` or `http://your-server:8000`). **IMPORTANT**: This should point to the backend API, NOT the frontend (port 3000).
-- `API_TOKEN`: Your API token for authentication (required)
-- `DOWNLOAD_PATH`: Where downloaded games will be stored
-- `GAMES_PATH`: Where the source game files are located
-- `POLLING_INTERVAL`: How often to check the queue (in seconds)
-- `LOG_LEVEL`: Logging level (INFO, DEBUG, etc.)
+### Option 1: Edit the init script (default values)
+
+Edit `/etc/init.d/batocera-games-catalog-download` and modify the environment variables at the top:
+
+```bash
+export API_URL="${API_URL:-https://rgs-retro.ddns.net}"
+export ROMS_PATH="${ROMS_PATH:-/userdata/roms}"
+export POLLING_INTERVAL="${POLLING_INTERVAL:-10}"
+export BANDWIDTH_UPDATE_INTERVAL="${BANDWIDTH_UPDATE_INTERVAL:-5}"
+export LOG_LEVEL="${LOG_LEVEL:-INFO}"
+```
+
+### Option 2: Use default configuration file (recommended)
+
+Create `/etc/default/batocera-games-catalog-download`:
+
+```bash
+sudo cp default-config /etc/default/batocera-games-catalog-download
+sudo nano /etc/default/batocera-games-catalog-download
+```
+
+Edit the values as needed:
+```bash
+API_URL="https://rgs-retro.ddns.net"
+ROMS_PATH="/userdata/roms"
+POLLING_INTERVAL="10"
+BANDWIDTH_UPDATE_INTERVAL="5"
+LOG_LEVEL="INFO"
+SERVICE_ID="batocera-download-1"
+```
+
+The init script will automatically source this file if it exists. After editing, restart the service:
+```bash
+sudo service batocera-games-catalog-download restart
+```
+
+### Configuration Variables
+
+- `API_URL`: The URL of your backend API (typically `http://localhost:8000` or `https://your-server.com`). **IMPORTANT**: This should point to the backend API, NOT the frontend (port 3000).
+- `ROMS_PATH`: Where downloaded games will be stored (default: `/userdata/roms`)
+- `POLLING_INTERVAL`: How often to check the queue (in seconds, default: 10)
+- `BANDWIDTH_UPDATE_INTERVAL`: How often to update bandwidth stats (in seconds, default: 5)
+- `LOG_LEVEL`: Logging level (INFO, DEBUG, WARNING, ERROR, default: INFO)
+- `SERVICE_ID`: Optional identifier for this service instance (default: hostname)
 
 ### API Token Setup
 
-1. Generate an API token in your Pixel Nostalgia account settings
-2. Copy the token to your `.env` file
+1. Generate an API token in your account settings
+2. Create `API_TOKEN.txt` file in the service directory:
+   ```bash
+   echo "your-api-token-here" > /path/to/services/download_service/API_TOKEN.txt
+   chmod 600 /path/to/services/download_service/API_TOKEN.txt
+   ```
 3. Make sure the token has the necessary permissions for the download service
 
 ## Usage
 
-The service runs automatically in the background. You can check its status with:
+The service runs automatically in the background once installed and started.
+
+### Using the init.d script
 
 ```bash
-sudo systemctl status pixel-nostalgia-download
+# Start the service
+sudo service batocera-games-catalog-download start
+# or
+sudo /etc/init.d/batocera-games-catalog-download start
+
+# Stop the service
+sudo service batocera-games-catalog-download stop
+
+# Restart the service
+sudo service batocera-games-catalog-download restart
+
+# Check status
+sudo service batocera-games-catalog-download status
+# or
+sudo /etc/init.d/batocera-games-catalog-download status
+
+# View logs
+sudo /etc/init.d/batocera-games-catalog-download logs
+
+# Follow logs in real-time
+sudo /etc/init.d/batocera-games-catalog-download logs -f
+
+# Reload configuration (restarts the service)
+sudo service batocera-games-catalog-download reload
 ```
 
-View logs:
+### Disable auto-start on boot
+
 ```bash
-journalctl -u pixel-nostalgia-download -f
+# For SysV init systems
+sudo update-rc.d batocera-games-catalog-download remove
+
+# For chkconfig systems
+sudo chkconfig batocera-games-catalog-download off
+
+# Or manually remove symlinks
+sudo rm /etc/rc*.d/*batocera-games-catalog-download
 ```
 
 ## Development

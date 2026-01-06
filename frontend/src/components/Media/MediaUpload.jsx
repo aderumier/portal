@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react'
 import client from '../../api/client'
 import './MediaUpload.css'
 
-const MediaUpload = ({ system, gameId, mediaType, label, onUploadSuccess }) => {
+const MediaUpload = ({ system, gameId, mediaType, label, onUploadSuccess, compact = false }) => {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(false)
@@ -86,18 +86,55 @@ const MediaUpload = ({ system, gameId, mediaType, label, onUploadSuccess }) => {
     }
   }
 
+  const handleDoubleClick = () => {
+    if (fileInputRef.current && !uploading) {
+      fileInputRef.current.click()
+    }
+  }
+
+  if (compact) {
+    // Compact version: just a small upload button
+    return (
+      <div className="media-upload-compact">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
+          onChange={handleFileSelect}
+          style={{ display: 'none' }}
+        />
+        <button
+          className="media-upload-button-compact"
+          onClick={handleClick}
+          disabled={uploading}
+          title="Upload new image"
+        >
+          {uploading ? '...' : '📤'}
+        </button>
+        {error && (
+          <div className="media-upload-error-compact">{error}</div>
+        )}
+        {success && (
+          <div className="media-upload-success-compact">✓</div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div 
       className="media-upload-card"
       onDragOver={handleDragOver}
       onDrop={handleDrop}
+      onDoubleClick={handleDoubleClick}
+      title="Double-click to upload"
     >
       <div className="media-upload-content">
         <div className="media-upload-icon">
           <i className="fas fa-cloud-upload-alt"></i>
         </div>
         <div className="media-upload-label">{label}</div>
-        <div className="media-upload-hint">Click or drag to upload</div>
+        <div className="media-upload-hint">Double-click to upload</div>
         
         {error && (
           <div className="media-upload-error">{error}</div>
@@ -116,14 +153,6 @@ const MediaUpload = ({ system, gameId, mediaType, label, onUploadSuccess }) => {
           onChange={handleFileSelect}
           style={{ display: 'none' }}
         />
-
-        <button
-          className="media-upload-button"
-          onClick={handleClick}
-          disabled={uploading}
-        >
-          {uploading ? 'Uploading...' : 'Choose File'}
-        </button>
       </div>
     </div>
   )

@@ -4,6 +4,7 @@ import './SystemsList.css'
 
 const SystemsList = ({ systems }) => {
   const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
+  const [selectedHardware, setSelectedHardware] = useState(null) // null = all, or specific hardware type
 
   // Load view preference from localStorage
   useEffect(() => {
@@ -17,6 +18,89 @@ const SystemsList = ({ systems }) => {
   const handleViewChange = (mode) => {
     setViewMode(mode)
     localStorage.setItem('systemsViewMode', mode)
+  }
+
+  // Group systems by hardware category (exclude library category)
+  const groupedSystems = systems.reduce((acc, system) => {
+    const hardware = system.hardware || 'unknown'
+    // Skip library category
+    if (hardware.toLowerCase() === 'library') {
+      return acc
+    }
+    if (!acc[hardware]) {
+      acc[hardware] = []
+    }
+    acc[hardware].push(system)
+    return acc
+  }, {})
+
+  // Sort systems within each hardware category by manufacturer, then by release year, then by name
+  Object.keys(groupedSystems).forEach(hardware => {
+    groupedSystems[hardware].sort((a, b) => {
+      // First sort by manufacturer
+      const manufacturerA = (a.manufacturer || 'Unknown').toLowerCase()
+      const manufacturerB = (b.manufacturer || 'Unknown').toLowerCase()
+      if (manufacturerA !== manufacturerB) {
+        return manufacturerA.localeCompare(manufacturerB)
+      }
+      // If same manufacturer, sort by release year (ascending, Unknown last)
+      const releaseA = a.release || 'Unknown'
+      const releaseB = b.release || 'Unknown'
+      if (releaseA !== releaseB) {
+        // If both are numeric years, compare as numbers
+        const yearA = parseInt(releaseA)
+        const yearB = parseInt(releaseB)
+        if (!isNaN(yearA) && !isNaN(yearB)) {
+          return yearA - yearB
+        }
+        // If one is numeric and the other is not, numeric comes first
+        if (!isNaN(yearA) && isNaN(yearB)) return -1
+        if (isNaN(yearA) && !isNaN(yearB)) return 1
+        // Both are non-numeric, sort alphabetically (Unknown goes last)
+        if (releaseA === 'Unknown') return 1
+        if (releaseB === 'Unknown') return -1
+        return releaseA.localeCompare(releaseB)
+      }
+      // If same manufacturer and release, sort by name
+      const nameA = (a.name || '').toLowerCase()
+      const nameB = (b.name || '').toLowerCase()
+      return nameA.localeCompare(nameB)
+    })
+  })
+
+  // Sort hardware categories (custom order, then alphabetically)
+  const hardwareOrder = ['console', 'portable', 'computer', 'arcade', 'port', 'pcgaming', 'vintage', 'pinball', 'unknown']
+  const sortedHardware = Object.keys(groupedSystems).sort((a, b) => {
+    const aIndex = hardwareOrder.indexOf(a)
+    const bIndex = hardwareOrder.indexOf(b)
+    if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex
+    if (aIndex !== -1) return -1
+    if (bIndex !== -1) return 1
+    return a.localeCompare(b)
+  })
+
+  // Filter hardware categories based on selection
+  const filteredHardware = selectedHardware 
+    ? sortedHardware.filter(h => h === selectedHardware)
+    : sortedHardware
+
+  // Format hardware name for display
+  const formatHardwareName = (hardware) => {
+    return hardware.charAt(0).toUpperCase() + hardware.slice(1).replace(/([A-Z])/g, ' $1')
+  }
+
+  // Get system image path, removing _batocera, _retrobat, or _lite suffix if present
+  const getSystemImagePath = (systemId) => {
+    let imageId = systemId
+    // Remove suffix if present
+    if (systemId.endsWith('_batocera')) {
+      imageId = systemId.slice(0, -9) // Remove '_batocera'
+    } else if (systemId.endsWith('_retrobat')) {
+      imageId = systemId.slice(0, -9) // Remove '_retrobat'
+    } else if (systemId.endsWith('_lite')) {
+      imageId = systemId.slice(0, -5) // Remove '_lite'
+    }
+    return `/systems_logos/${imageId}.webp`
   }
 
   return (
@@ -51,54 +135,116 @@ const SystemsList = ({ systems }) => {
         </div>
       </div>
 
+      {/* Hardware Filter Bar */}
+      <div className="hardware-filter-bar">
+        <button
+          className={`hardware-filter-btn ${selectedHardware === null ? 'active' : ''}`}
+          onClick={() => setSelectedHardware(null)}
+        >
+          All
+        </button>
+        {sortedHardware.map((hardware) => (
+          <button
+            key={hardware}
+            className={`hardware-filter-btn ${selectedHardware === hardware ? 'active' : ''}`}
+            onClick={() => setSelectedHardware(hardware)}
+          >
+            {formatHardwareName(hardware)}
+            <span className="hardware-count">({groupedSystems[hardware].length})</span>
+          </button>
+        ))}
+      </div>
+
       {viewMode === 'grid' ? (
-        <div className="systems-grid">
-          {systems.map((system) => (
-            <Link 
-              key={system.id} 
-              to={`/system/${system.id}`}
-              className="system-card"
-            >
-              <div className="system-card-content">
-                <h2>{system.name}</h2>
-                <p>{system.gameCount} games</p>
+        <div className="systems-by-hardware">
+          {filteredHardware.map((hardware) => (
+            <div key={hardware} className="hardware-category">
+              <h2 className="hardware-category-title">{formatHardwareName(hardware)}</h2>
+              <div className="systems-grid">
+                {groupedSystems[hardware].map((system) => {
+                  const systemImage = getSystemImagePath(system.id)
+                  return (
+                    <Link 
+                      key={system.id} 
+                      to={`/system/${system.id}`}
+                      className="system-card"
+                    >
+                      <div className="system-card-image">
+                        <img 
+                          src={systemImage} 
+                          alt={system.name}
+                          onError={(e) => {
+                            // Fallback to a placeholder if image doesn't exist
+                            e.target.style.display = 'none'
+                          }}
+                        />
+                      </div>
+                      <div className="system-card-content">
+                        <h2>{system.name}</h2>
+                        <p>{system.gameCount} games</p>
+                      </div>
+                    </Link>
+                  )
+                })}
               </div>
-            </Link>
+            </div>
           ))}
         </div>
       ) : (
-        <div className="systems-table-container">
-          <table className="systems-table">
-            <thead>
-              <tr>
-                <th>System Name</th>
-                <th>Games</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {systems.map((system) => (
-                <tr key={system.id}>
-                  <td className="system-name-cell">
-                    <Link to={`/system/${system.id}`} className="system-link">
-                      {system.name}
-                    </Link>
-                  </td>
-                  <td className="system-games-cell">
-                    <span className="games-count">{system.gameCount} games</span>
-                  </td>
-                  <td className="system-actions-cell">
-                    <Link 
-                      to={`/system/${system.id}`}
-                      className="view-system-btn"
-                    >
-                      View Games
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="systems-by-hardware">
+          {filteredHardware.map((hardware) => (
+            <div key={hardware} className="hardware-category">
+              <h2 className="hardware-category-title">{formatHardwareName(hardware)}</h2>
+              <div className="systems-table-container">
+                <table className="systems-table">
+                  <thead>
+                    <tr>
+                      <th>Image</th>
+                      <th>System Name</th>
+                      <th>Games</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groupedSystems[hardware].map((system) => {
+                      const systemImage = getSystemImagePath(system.id)
+                      return (
+                        <tr key={system.id}>
+                          <td className="system-image-cell">
+                            <img 
+                              src={systemImage} 
+                              alt={system.name}
+                              className="system-table-image"
+                              onError={(e) => {
+                                // Hide image if it doesn't exist
+                                e.target.style.display = 'none'
+                              }}
+                            />
+                          </td>
+                          <td className="system-name-cell">
+                            <Link to={`/system/${system.id}`} className="system-link">
+                              {system.name}
+                            </Link>
+                          </td>
+                          <td className="system-games-cell">
+                            <span className="games-count">{system.gameCount} games</span>
+                          </td>
+                          <td className="system-actions-cell">
+                            <Link 
+                              to={`/system/${system.id}`}
+                              className="view-system-btn"
+                            >
+                              View Games
+                            </Link>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

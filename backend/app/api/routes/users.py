@@ -76,6 +76,8 @@ async def get_users_stats(
                 'username': user.username or user.user_id,
                 'total_download_mb': round(user.total_download_mb, 2),
                 'total_download_number': user.total_download_number,
+                'medias_upload': user.medias_upload or 0,
+                'medias_validated': user.medias_validated or 0,
                 'last_login': user.last_login.isoformat() if user.last_login else None,
                 'created_at': user.created_at.isoformat() if user.created_at else None,
                 'updated_at': user.updated_at.isoformat() if user.updated_at else None

@@ -1,0 +1,20 @@
+Package: batocera-games-catalog
+Version: 1.0.0
+Section: web
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.9), python3-pip, python3-venv, nodejs (>= 18.0.0), npm (>= 9.0.0), systemd, adduser
+Recommends: nginx, libnginx-mod-http-image-filter, certbot, python3-certbot-nginx
+Maintainer: Batocera Games Catalog <admin@example.com>
+Description: Batocera Games Catalog - Web portal for managing game catalogs
+ A web portal catalog for Batocera gamelist.xml files, displaying game
+ catalogs with Discord authentication and download queue management.
+ .
+ Features:
+ - Discord OAuth2 authentication
+ - Guild membership verification
+ - Game catalog browsing by system
+ - Search functionality across all systems
+ - Download queue management
+ - API token system for download service integration
+

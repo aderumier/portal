@@ -49,7 +49,7 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
         params.search = searchQuery
       }
       
-      const response = await client.get(`/api/games/${systemId}`, { params })
+      const response = await client.get(`/api/catalog/games/${systemId}`, { params })
       const newGames = response.data.games || []
       
       if (append) {
@@ -196,9 +196,15 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
                 </thead>
                 <tbody>
                   {games.map((game) => {
-                    const imageUrl = game.image 
-                      ? getMediaUrl(game.image)
-                      : '/assets/images/no-image.png'
+                    // Get game image with priority: thumbnail > boxart > extra1 > image
+                    const getGameImage = (game) => {
+                      if (game.thumbnail) return getMediaUrl(game.thumbnail)
+                      if (game.boxart) return getMediaUrl(game.boxart)
+                      if (game.extra1) return getMediaUrl(game.extra1)
+                      if (game.image) return getMediaUrl(game.image)
+                      return '/assets/images/no-image.png'
+                    }
+                    const imageUrl = getGameImage(game)
                     let gameId = game.id.replace(/^\.\//, '')
                     if (gameId.startsWith(`${game.system}/`)) {
                       gameId = gameId.substring(game.system.length + 1)

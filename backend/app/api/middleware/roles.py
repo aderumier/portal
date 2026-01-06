@@ -78,8 +78,58 @@ async def require_download_role(
     request: Request,
     current_user: Optional[dict] = Depends(get_current_user)
 ) -> dict:
-    """Require user to have the download role."""
-    return await require_role(request, settings.DISCORD_DOWNLOAD_ROLE, current_user)
+    """Require user to have either the download role or fastdownload role."""
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+    
+    # Check if authenticated via API token
+    auth_method = getattr(request.state, 'auth_method', None)
+    if auth_method == 'api_token':
+        # API tokens bypass role checks (they're used by the download service)
+        return current_user
+    
+    # Check if user has either download role or fastdownload role
+    has_download_role = current_user.get('is_download', False)
+    has_fastdownload_role = current_user.get('is_fastdownload', False)
+    
+    # If session doesn't show either role, double-check with Discord API
+    if not has_download_role and not has_fastdownload_role:
+        user_id = current_user.get('id')
+        logger.info(f"Session shows user {user_id} doesn't have download roles, re-checking with Discord API...")
+        
+        try:
+            discord_service = DiscordService()
+            has_download_role = await discord_service.has_role(user_id, settings.DISCORD_DOWNLOAD_ROLE)
+            has_fastdownload_role = await discord_service.has_role(user_id, settings.DISCORD_FASTDOWNLOAD_ROLE)
+            await discord_service.close()
+            
+            if has_download_role or has_fastdownload_role:
+                logger.info(f"User {user_id} actually HAS download role(s), updating session")
+                # Update session with correct role keys
+                if 'user' in request.session:
+                    request.session['user']['is_download'] = has_download_role
+                    request.session['user']['is_fastdownload'] = has_fastdownload_role
+                    request.session.modified = True
+                # Update current_user dict for this request
+                current_user['is_download'] = has_download_role
+                current_user['is_fastdownload'] = has_fastdownload_role
+            else:
+                logger.warning(f"User {user_id} confirmed to NOT have download roles")
+        except Exception as e:
+            logger.error(f"Error re-checking download roles: {e}", exc_info=True)
+            # If re-check fails, fall back to session value
+    
+    if not has_download_role and not has_fastdownload_role:
+        logger.warning(f"User {current_user.get('id')} does not have download or fastdownload role")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"{settings.DISCORD_DOWNLOAD_ROLE} or {settings.DISCORD_FASTDOWNLOAD_ROLE} role required"
+        )
+    
+    return current_user
 
 async def require_admin_role(
     request: Request,

@@ -8,9 +8,16 @@ const GameCard = ({ game, onDownload }) => {
   const navigate = useNavigate()
   const { isDownload, isFastDownload } = useAuth()
   
-  const imageUrl = game.image 
-    ? getMediaUrl(game.image)
-    : '/assets/images/no-image.png'
+  // Get game image with priority: thumbnail > boxart > extra1 > image
+  const getGameImage = (game) => {
+    if (game.thumbnail) return getMediaUrl(game.thumbnail)
+    if (game.boxart) return getMediaUrl(game.boxart)
+    if (game.extra1) return getMediaUrl(game.extra1)
+    if (game.image) return getMediaUrl(game.image)
+    return '/assets/images/no-image.png'
+  }
+  
+  const imageUrl = getGameImage(game)
 
   const handleCardClick = (e) => {
     // Don't navigate if clicking the download button

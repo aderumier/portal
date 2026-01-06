@@ -5,7 +5,7 @@ from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from datetime import datetime, timezone
-from app.database import DownloadQueue
+from app.database import DownloadQueue, System
 from app.services.game import GameService
 from app.services.bandwidth import BandwidthManager
 from app.config import settings
@@ -455,16 +455,23 @@ class DownloadService:
         """Get next available download from queue, including resumable interrupted downloads.
         
         Only returns downloads associated with the specified token_id.
+        
+        If queue_type is None, searches both fast and slow queues for downloads with matching token_id.
         """
         try:
             # First, try to promote items from user queues to global queue for this token
-            self._promote_user_queue_to_global(queue_type, token_id=token_id)
+            # When queue_type is None, promote from both queues
+            if queue_type is None:
+                self._promote_user_queue_to_global('fast', token_id=token_id)
+                self._promote_user_queue_to_global('slow', token_id=token_id)
+            else:
+                self._promote_user_queue_to_global(queue_type, token_id=token_id)
             
             # Then, check for downloads that are marked as downloading but might be interrupted
             # (e.g., service crashed, network issue). Allow resuming if assigned to same service
             # or if no progress in last 5 minutes (configurable timeout)
             from datetime import timedelta
-            timeout_threshold = datetime.utcnow() - timedelta(minutes=5)
+            timeout_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
             
             # Check for resumable downloads (downloading status, same service or timed out)
             # Only for the authenticated token (exclude paused)
@@ -482,6 +489,7 @@ class DownloadService:
             if token_id is not None:
                 resumable_query = resumable_query.filter(DownloadQueue.token_id == token_id)
             
+            # Filter by queue_type if specified, otherwise search all queues
             if queue_type:
                 resumable_query = resumable_query.filter(DownloadQueue.queue_type == queue_type)
             
@@ -492,7 +500,7 @@ class DownloadService:
                 # Update service assignment in case it changed
                 resumable_download.assigned_to_service = service_id
                 # Update last_progress_at to current time (download is being resumed)
-                resumable_download.last_progress_at = datetime.utcnow()
+                resumable_download.last_progress_at = datetime.now(timezone.utc)
                 self.db.commit()
                 
                 # Get game info
@@ -534,6 +542,23 @@ class DownloadService:
                 # Calculate available bandwidth
                 allocated_bandwidth = self.bandwidth_manager.allocate_bandwidth(resumable_download.queue_type)
                 
+                # Get batocera_system from System table
+                db_system = self.db.query(System).filter(System.id == system).first()
+                if not db_system:
+                    logger.error(f"System not found in database: {system}")
+                    self.archive_download(resumable_download.id, 'error')
+                    self.db.delete(resumable_download)
+                    self.db.commit()
+                    return None
+                
+                batocera_system = db_system.batocera_system
+                if not batocera_system:
+                    logger.error(f"batocera_system not set for system: {system}")
+                    self.archive_download(resumable_download.id, 'error')
+                    self.db.delete(resumable_download)
+                    self.db.commit()
+                    return None
+                
                 # Construct HTTP URL for the file
                 import urllib.parse
                 clean_game_id = resumable_download.game_id.lstrip('./')
@@ -555,6 +580,7 @@ class DownloadService:
                     'queue_type': resumable_download.queue_type,
                     'game_name': game.get('name', ''),
                     'system': game.get('system', ''),  # Include system for download service
+                    'batocera_system': batocera_system,  # Include batocera_system for destination path
                     'game_details': game  # Include full game details for media download
                 }
                 
@@ -574,7 +600,7 @@ class DownloadService:
             if token_id is not None:
                 query = query.filter(DownloadQueue.token_id == token_id)
             
-            # Filter by queue type if specified
+            # Filter by queue_type if specified, otherwise search all queues
             if queue_type:
                 query = query.filter(DownloadQueue.queue_type == queue_type)
             
@@ -636,10 +662,27 @@ class DownloadService:
             # Mark as active
             pending_download.active_download = True
             pending_download.status = 'downloading'
-            pending_download.started_at = datetime.utcnow()
-            pending_download.last_progress_at = datetime.utcnow()  # Initialize progress tracking
+            pending_download.started_at = datetime.now(timezone.utc)
+            pending_download.last_progress_at = datetime.now(timezone.utc)  # Initialize progress tracking
             pending_download.assigned_to_service = service_id
             self.db.commit()
+            
+            # Get batocera_system from System table
+            db_system = self.db.query(System).filter(System.id == system).first()
+            if not db_system:
+                logger.error(f"System not found in database: {system}")
+                self.archive_download(pending_download.id, 'error')
+                self.db.delete(pending_download)
+                self.db.commit()
+                return None
+            
+            batocera_system = db_system.batocera_system
+            if not batocera_system:
+                logger.error(f"batocera_system not set for system: {system}")
+                self.archive_download(pending_download.id, 'error')
+                self.db.delete(pending_download)
+                self.db.commit()
+                return None
             
             # Construct HTTP URL for the file
             import urllib.parse
@@ -662,6 +705,7 @@ class DownloadService:
                 'queue_type': pending_download.queue_type,
                 'game_name': game.get('name', ''),
                 'system': game.get('system', ''),
+                'batocera_system': batocera_system,  # Include batocera_system for destination path
                 'game_details': game  # Include full game details for media download
             }
             
@@ -676,6 +720,7 @@ class DownloadService:
     def update_progress(self, download_id: int, bytes_transferred: int, bytes_per_second: int) -> bool:
         """Update download progress."""
         try:
+            # Query the download
             download = self.db.query(DownloadQueue).filter(
                 DownloadQueue.id == download_id
             ).first()
@@ -684,10 +729,15 @@ class DownloadService:
                 logger.warning(f"Download {download_id} not found")
                 return False
             
-            # Update progress fields
+            # Log previous values for debugging
+            old_bytes = download.bytes_transferred
+            old_bandwidth = download.bandwidth_used
+            
+            # Update progress fields - always update even if values seem the same
+            # This ensures SQLAlchemy tracks the change
             download.bytes_transferred = bytes_transferred
             download.bandwidth_used = bytes_per_second
-            download.last_progress_at = datetime.utcnow()
+            download.last_progress_at = datetime.now(timezone.utc)
             
             # If status is "stuck", change it back to "downloading" (client reconnected)
             if download.status == 'stuck':
@@ -695,14 +745,23 @@ class DownloadService:
                 download.status = 'downloading'
                 download.active_download = True
             
-            # Update bandwidth manager
-            self.bandwidth_manager.update_usage(download_id, bytes_per_second)
+            # Mark object as modified explicitly (though assignment should do this)
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(download, "bytes_transferred")
+            flag_modified(download, "bandwidth_used")
+            flag_modified(download, "last_progress_at")
             
+            # Flush changes to database before commit to ensure they're persisted
+            self.db.flush()
+            
+            # Commit all changes together
             self.db.commit()
-            logger.debug(f"Updated progress for download {download_id}: {bytes_transferred} bytes, {bytes_per_second} bytes/s")
+            
+            # Log the update (use INFO level so we can see it in logs)
+            logger.info(f"Updated progress for download {download_id}: {old_bytes} -> {bytes_transferred} bytes, {old_bandwidth} -> {bytes_per_second} bytes/s")
             return True
         except Exception as e:
-            logger.error(f"Error updating progress: {e}")
+            logger.error(f"Error updating progress for download {download_id}: {e}", exc_info=True)
             self.db.rollback()
             return False
     

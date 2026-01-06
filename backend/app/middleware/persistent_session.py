@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class PersistentSessionMiddleware(BaseHTTPMiddleware):
     """Middleware that provides persistent sessions stored in database."""
     
-    def __init__(self, app, secret_key: str, max_age: int = 3600 * 24 * 7, same_site: str = "lax"):
+    def __init__(self, app, secret_key: str, max_age: int = 3600 * 24, same_site: str = "lax"):  # Default: 24 hours
         super().__init__(app)
         self.secret_key = secret_key
         self.max_age = max_age
@@ -57,21 +57,37 @@ class PersistentSessionMiddleware(BaseHTTPMiddleware):
         
         # Save session if modified
         current_session = request.scope.get('session', {})
-        if isinstance(current_session, SessionDict) and current_session.modified:
-            self._save_session(session_id, dict(current_session))
+        session_data = {}
+        if isinstance(current_session, SessionDict):
+            session_data = dict(current_session)
+            if current_session.modified:
+                # If session was cleared (empty), delete it from database
+                if len(session_data) == 0:
+                    self._delete_session(session_id)
+                    # Delete cookie
+                    response.delete_cookie(
+                        key=self.session_cookie,
+                        path='/',
+                        httponly=True,
+                        samesite=self.same_site
+                    )
+                    return response
+                else:
+                    self._save_session(session_id, session_data)
         
-        # Set session cookie
-        expires = datetime.now(timezone.utc) + timedelta(seconds=self.max_age)
-        response.set_cookie(
-            key=self.session_cookie,
-            value=session_id,
-            max_age=self.max_age,
-            expires=expires,
-            httponly=True,
-            secure=False,  # Set to True in production with HTTPS
-            samesite=self.same_site,
-            path="/"
-        )
+        # Set session cookie only if session has data
+        if session_data:
+            expires = datetime.now(timezone.utc) + timedelta(seconds=self.max_age)
+            response.set_cookie(
+                key=self.session_cookie,
+                value=session_id,
+                max_age=self.max_age,
+                expires=expires,
+                httponly=True,
+                secure=False,  # Set to True in production with HTTPS
+                samesite=self.same_site,
+                path="/"
+            )
         
         return response
     

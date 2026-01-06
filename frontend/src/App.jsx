@@ -15,6 +15,7 @@ import ProtectedRoute from './components/Auth/ProtectedRoute'
 import MediaValidation from './pages/MediaValidation'
 import DownloadQueues from './pages/DownloadQueues'
 import UsersStats from './pages/UsersStats'
+import SystemsConfiguration from './pages/SystemsConfiguration'
 
 function App() {
   return (
@@ -34,6 +35,7 @@ function App() {
             <Route path="users-stats" element={<ProtectedRoute requireAdmin><UsersStats /></ProtectedRoute>} />
             <Route path="media-validation" element={<ProtectedRoute requireAdmin><MediaValidation /></ProtectedRoute>} />
             <Route path="download-queues" element={<ProtectedRoute requireAdmin><DownloadQueues /></ProtectedRoute>} />
+            <Route path="systems-configuration" element={<ProtectedRoute requireAdmin><SystemsConfiguration /></ProtectedRoute>} />
           </Route>
         </Routes>
       </Router>
