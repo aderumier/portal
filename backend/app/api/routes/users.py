@@ -184,7 +184,9 @@ async def get_users_stats(
                 'total_download_number': user.total_download_number,
                 'medias_upload': user.medias_upload or 0,
                 'medias_validated': user.medias_validated or 0,
+                'bandwidth_limit': user.bandwidth_limit,
                 'last_login': user.last_login.isoformat() if user.last_login else None,
+                'last_login_ip': user.last_login_ip,
                 'created_at': user.created_at.isoformat() if user.created_at else None,
                 'updated_at': user.updated_at.isoformat() if user.updated_at else None
             })
