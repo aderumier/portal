@@ -27,6 +27,15 @@ data/*.db
 data/*.pkl
 data/*.hash
 
+# Backend data (large files)
+backend/data/*
+
+# Public media files (large files)
+public/*
+
+# Build artifacts
+build-deb/
+
 # IDE
 .vscode/
 .idea/
