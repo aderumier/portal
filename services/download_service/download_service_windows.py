@@ -5,6 +5,7 @@ Handles Windows-specific paths and ensures standalone execution
 import os
 import sys
 import platform
+import configparser
 from pathlib import Path
 
 # Ensure we're running on Windows
@@ -23,6 +24,24 @@ else:
     # Running as script
     EXE_DIR = Path(__file__).parent
 
+def read_config_ini(config_path):
+    """Read config.ini file and return a dictionary of settings."""
+    config = {}
+    if config_path.exists():
+        try:
+            parser = configparser.ConfigParser()
+            parser.read(config_path, encoding='utf-8')
+            if 'Service' in parser:
+                for key, value in parser['Service'].items():
+                    config[key.upper()] = value
+        except Exception as e:
+            print(f"Warning: Failed to read config.ini at {config_path}: {e}", file=sys.stderr)
+    return config
+
+# Read config.ini if it exists
+config_ini_path = EXE_DIR / 'config.ini'
+config = read_config_ini(config_ini_path)
+
 # Set Windows-specific defaults before importing download_service
 def get_windows_paths():
     """Get Windows-appropriate paths."""
@@ -39,11 +58,23 @@ def get_windows_paths():
 
 # Set environment variables if not already set
 if 'ROMS_PATH' not in os.environ:
-    roms_path, _ = get_windows_paths()
+    roms_path = config.get('ROMS_PATH') or get_windows_paths()[0]
     os.environ['ROMS_PATH'] = roms_path
 
-# Set log file path before importing download_service
-_, log_file_path = get_windows_paths()
+# Determine log file path - priority: LOG_FILE env > LOG_DIR from config.ini/env > default
+if os.getenv('LOG_FILE'):
+    log_file_path = os.path.abspath(os.getenv('LOG_FILE'))
+elif config.get('LOG_DIR'):
+    log_dir = config.get('LOG_DIR')
+    log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+elif os.getenv('LOG_DIR'):
+    log_dir = os.getenv('LOG_DIR')
+    log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+else:
+    _, log_file_path = get_windows_paths()
+    log_file_path = os.path.abspath(log_file_path)
+
+# Set LOG_FILE environment variable so download_service.py can use it
 os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 os.environ['LOG_FILE'] = log_file_path
 

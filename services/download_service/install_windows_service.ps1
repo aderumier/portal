@@ -118,6 +118,7 @@ if (Test-Path $ConfigFile) {
     if ($config.ROMS_PATH) { $envVars += "ROMS_PATH=$($config.ROMS_PATH)" }
     if ($config.SERVICE_ID) { $envVars += "SERVICE_ID=$($config.SERVICE_ID)" }
     if ($config.LOG_LEVEL) { $envVars += "LOG_LEVEL=$($config.LOG_LEVEL)" }
+    if ($config.LOG_DIR) { $envVars += "LOG_DIR=$($config.LOG_DIR)" }
     if ($config.BANDWIDTH_UPDATE_INTERVAL) { $envVars += "BANDWIDTH_UPDATE_INTERVAL=$($config.BANDWIDTH_UPDATE_INTERVAL)" }
     
     if ($envVars.Count -gt 0) {
@@ -144,4 +145,6 @@ Write-Host "3. Check service status: Get-Service -Name $ServiceName" -Foreground
 Write-Host "4. View logs: Get-Content '$env:APPDATA\RGS\logs\rgs_download.log' -Tail 50" -ForegroundColor White
 Write-Host ""
 Write-Host "To uninstall: & '$NSSMPath' remove $ServiceName confirm" -ForegroundColor Yellow
+
+
 

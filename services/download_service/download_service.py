@@ -9,11 +9,31 @@ import xml.etree.ElementTree as ET
 import subprocess
 import logging
 import platform
+import configparser
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
-# Setup logging
-log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+def read_config_ini(config_path):
+    """Read config.ini file and return a dictionary of settings.
+    
+    Args:
+        config_path: Path to config.ini file
+        
+    Returns:
+        Dictionary with config values, or empty dict if file doesn't exist
+    """
+    config = {}
+    if config_path.exists():
+        try:
+            parser = configparser.ConfigParser()
+            parser.read(config_path, encoding='utf-8')
+            if 'Service' in parser:
+                for key, value in parser['Service'].items():
+                    config[key.upper()] = value
+        except Exception as e:
+            # If config.ini exists but can't be read, log to stderr since logger isn't set up yet
+            print(f"Warning: Failed to read config.ini at {config_path}: {e}", file=sys.stderr)
+    return config
 
 # Determine paths based on platform
 if platform.system() == 'Windows':
@@ -24,15 +44,48 @@ if platform.system() == 'Windows':
     else:
         # Running as script
         SERVICE_DIR = Path(__file__).parent
-    
-    # Use AppData for logs (user-specific)
-    appdata = os.getenv('APPDATA', os.path.expanduser('~'))
-    log_dir = os.path.join(appdata, 'RGS', 'logs')
-    log_file_path = os.path.abspath(os.getenv('LOG_FILE', os.path.join(log_dir, 'rgs_download.log')))
 else:
     # Linux/Batocera paths
     SERVICE_DIR = Path(__file__).parent
-    log_file_path = os.path.abspath(os.getenv('LOG_FILE', '/userdata/system/logs/rgs_download.log'))
+
+# Read config.ini if it exists
+config_ini_path = SERVICE_DIR / 'config.ini'
+config = read_config_ini(config_ini_path)
+
+# Setup logging - check config.ini first, then environment variables, then defaults
+log_level = config.get('LOG_LEVEL') or os.getenv('LOG_LEVEL', 'INFO')
+log_level = log_level.upper()
+
+# Determine log file path
+# Priority: LOG_FILE env var > LOG_DIR from config.ini/env > default
+if platform.system() == 'Windows':
+    # Windows paths
+    if os.getenv('LOG_FILE'):
+        log_file_path = os.path.abspath(os.getenv('LOG_FILE'))
+    elif config.get('LOG_DIR'):
+        log_dir = config.get('LOG_DIR')
+        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+    elif os.getenv('LOG_DIR'):
+        log_dir = os.getenv('LOG_DIR')
+        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+    else:
+        # Default Windows location
+        appdata = os.getenv('APPDATA', os.path.expanduser('~'))
+        log_dir = os.path.join(appdata, 'RGS', 'logs')
+        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+else:
+    # Linux/Batocera paths
+    if os.getenv('LOG_FILE'):
+        log_file_path = os.path.abspath(os.getenv('LOG_FILE'))
+    elif config.get('LOG_DIR'):
+        log_dir = config.get('LOG_DIR')
+        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+    elif os.getenv('LOG_DIR'):
+        log_dir = os.getenv('LOG_DIR')
+        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+    else:
+        # Default Linux location
+        log_file_path = os.path.abspath(os.getenv('LOG_FILE', '/userdata/system/logs/rgs_download.log'))
 
 # Ensure log directory exists
 log_dir = os.path.dirname(log_file_path)
@@ -62,12 +115,13 @@ logger.addHandler(file_handler)
 # Get logger for this module
 logger = logging.getLogger(__name__)
 logger.info(f"Logging initialized. Log file: {log_file_path}")
+if config_ini_path.exists():
+    logger.info(f"Configuration loaded from: {config_ini_path}")
 
-# Environment variables are read from system environment (os.getenv)
-# No .env file loading - use system environment variables or set them before running
+# Configuration - read from config.ini first, then environment variables, then defaults
+# Priority: config.ini > environment variable > default
 
-# Configuration
-API_URL = os.getenv('API_URL', 'https://rgs-retro.ddns.net')
+API_URL = config.get('API_URL') or os.getenv('API_URL', 'https://rgs-retro.ddns.net')
 
 # Set ROMS_PATH based on platform
 if platform.system() == 'Windows':
@@ -75,13 +129,13 @@ if platform.system() == 'Windows':
 else:
     DEFAULT_ROMS_PATH = '/userdata/roms'
 
-ROMS_PATH = os.getenv('ROMS_PATH', DEFAULT_ROMS_PATH)
+ROMS_PATH = config.get('ROMS_PATH') or os.getenv('ROMS_PATH', DEFAULT_ROMS_PATH)
 
 # POLLING_INTERVAL will be fetched from backend on first request_download call
 # No fallback - must be set by backend
 POLLING_INTERVAL = None
-BANDWIDTH_UPDATE_INTERVAL = int(os.getenv('BANDWIDTH_UPDATE_INTERVAL', '5'))
-SERVICE_ID = os.getenv('SERVICE_ID', socket.gethostname())
+BANDWIDTH_UPDATE_INTERVAL = int(config.get('BANDWIDTH_UPDATE_INTERVAL') or os.getenv('BANDWIDTH_UPDATE_INTERVAL', '5'))
+SERVICE_ID = config.get('SERVICE_ID') or os.getenv('SERVICE_ID', socket.gethostname())
 
 # Read API_TOKEN from API_TOKEN.txt file in the service root directory
 # Use SERVICE_DIR which is set based on platform above
