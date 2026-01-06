@@ -32,7 +32,7 @@ const MediaValidation = () => {
     }
   }
 
-  const handleValidate = async (system, fieldname, filename) => {
+  const handleValidate = async (system, fieldname, filename, userId) => {
     if (!confirm(`Validate and move ${filename}?`)) {
       return
     }
@@ -42,6 +42,9 @@ const MediaValidation = () => {
       formData.append('system', system)
       formData.append('fieldname', fieldname)
       formData.append('filename', filename)
+      if (userId) {
+        formData.append('user_id', userId)
+      }
 
       await client.post('/api/media/validate', formData, {
         headers: {
@@ -57,19 +60,22 @@ const MediaValidation = () => {
     }
   }
 
-  const handleDelete = async (system, fieldname, filename) => {
+  const handleDelete = async (system, fieldname, filename, userId) => {
     if (!confirm(`Delete ${filename}?`)) {
       return
     }
 
     try {
-      await client.delete('/api/media/pending', {
-        params: {
-          system,
-          fieldname,
-          filename
-        }
-      })
+      const params = {
+        system,
+        fieldname,
+        filename
+      }
+      if (userId) {
+        params.user_id = userId
+      }
+
+      await client.delete('/api/media/pending', { params })
 
       alert('Pending media deleted successfully!')
       loadPendingMedia()
@@ -185,7 +191,7 @@ const MediaValidation = () => {
                     <div key={index} className="media-item">
                       <div className="media-item-preview">
                         <img
-                          src={`${API_URL}/api/media/pending-preview/${media.system}/${media.fieldname}/${encodeURIComponent(media.filename)}`}
+                          src={`${API_URL}/api/media/pending-preview/${media.user_id || 'unknown'}/${media.system}/${media.fieldname}/${encodeURIComponent(media.filename)}`}
                           alt={media.filename}
                           onError={(e) => {
                             e.target.style.display = 'none'
@@ -201,6 +207,11 @@ const MediaValidation = () => {
                       </div>
                       <div className="media-item-info">
                         <div className="media-item-filename">{media.filename}</div>
+                        {media.username && (
+                          <div className="media-item-meta">
+                            Uploaded by: <strong>{media.username}</strong>
+                          </div>
+                        )}
                         <div className="media-item-meta">
                           Uploaded: {new Date(media.upload_date).toLocaleString()}
                         </div>
@@ -211,13 +222,13 @@ const MediaValidation = () => {
                       <div className="media-item-actions">
                         <button
                           className="validate-button"
-                          onClick={() => handleValidate(media.system, media.fieldname, media.filename)}
+                          onClick={() => handleValidate(media.system, media.fieldname, media.filename, media.user_id)}
                         >
                           Validate
                         </button>
                         <button
                           className="delete-button"
-                          onClick={() => handleDelete(media.system, media.fieldname, media.filename)}
+                          onClick={() => handleDelete(media.system, media.fieldname, media.filename, media.user_id)}
                         >
                           Delete
                         </button>

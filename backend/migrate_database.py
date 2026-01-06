@@ -126,6 +126,8 @@ def migrate_database():
         ("total_download_number", "INTEGER NOT NULL DEFAULT 0"),
         ("username", "TEXT"),
         ("last_login", "TEXT"),
+        ("medias_upload", "INTEGER NOT NULL DEFAULT 0"),
+        ("medias_validated", "INTEGER NOT NULL DEFAULT 0"),
     ]
     
     for col_name, col_def in columns_to_add:
@@ -176,6 +178,92 @@ def migrate_database():
             print(f"  ✓ Created/verified index {idx_name}")
         except sqlite3.OperationalError as e:
             print(f"  ✗ Error creating index {idx_name}: {e}")
+    
+    # Create systems table if it doesn't exist
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS systems (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            fullname TEXT,
+            hardware TEXT,
+            release TEXT,
+            manufacturer TEXT,
+            batocera_system TEXT,
+            retrobat_system TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    print("  ✓ Created/verified systems table")
+    
+    # Check existing columns and add missing ones
+    cursor.execute("PRAGMA table_info(systems)")
+    existing_system_columns = [col[1] for col in cursor.fetchall()]
+    
+    system_columns_to_add = [
+        ("fullname", "TEXT"),
+        ("hardware", "TEXT"),
+        ("release", "TEXT"),
+        ("manufacturer", "TEXT"),
+        ("batocera_system", "TEXT"),
+        ("retrobat_system", "TEXT"),
+        ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("created_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
+        ("updated_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
+    ]
+    
+    # Migrate old columns if they exist (extract last directory from path)
+    if 'batocerapath' in existing_system_columns and 'batocera_system' not in existing_system_columns:
+        try:
+            cursor.execute("ALTER TABLE systems ADD COLUMN batocera_system TEXT")
+            # Get all rows with batocerapath and update with last directory
+            cursor.execute("SELECT id, batocerapath FROM systems WHERE batocerapath IS NOT NULL")
+            rows = cursor.fetchall()
+            for row_id, path in rows:
+                if path:
+                    # Extract last directory from path
+                    path_clean = path.rstrip('/').rstrip('\\')
+                    last_dir = os.path.basename(path_clean) if path_clean else None
+                    if last_dir:
+                        cursor.execute("UPDATE systems SET batocera_system = ? WHERE id = ?", (last_dir, row_id))
+            print(f"  ✓ Migrated batocerapath to batocera_system (extracted last directory from {len(rows)} rows)")
+        except sqlite3.OperationalError as e:
+            print(f"  ✗ Error migrating batocerapath: {e}")
+    
+    if 'retrobatpath' in existing_system_columns and 'retrobat_system' not in existing_system_columns:
+        try:
+            cursor.execute("ALTER TABLE systems ADD COLUMN retrobat_system TEXT")
+            # Get all rows with retrobatpath and update with last directory
+            cursor.execute("SELECT id, retrobatpath FROM systems WHERE retrobatpath IS NOT NULL")
+            rows = cursor.fetchall()
+            for row_id, path in rows:
+                if path:
+                    # Extract last directory from path
+                    path_clean = path.rstrip('/').rstrip('\\')
+                    last_dir = os.path.basename(path_clean) if path_clean else None
+                    if last_dir:
+                        cursor.execute("UPDATE systems SET retrobat_system = ? WHERE id = ?", (last_dir, row_id))
+            print(f"  ✓ Migrated retrobatpath to retrobat_system (extracted last directory from {len(rows)} rows)")
+        except sqlite3.OperationalError as e:
+            print(f"  ✗ Error migrating retrobatpath: {e}")
+    
+    for col_name, col_def in system_columns_to_add:
+        if col_name not in existing_system_columns:
+            try:
+                cursor.execute(f"ALTER TABLE systems ADD COLUMN {col_name} {col_def}")
+                print(f"  ✓ Added column {col_name} to systems table")
+            except sqlite3.OperationalError as e:
+                print(f"  ✗ Error adding column {col_name}: {e}")
+        else:
+            print(f"  - Column {col_name} already exists")
+    
+    # Create index on enabled for filtering
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_systems_enabled ON systems(enabled)")
+        print("  ✓ Created/verified index idx_systems_enabled")
+    except sqlite3.OperationalError as e:
+        print(f"  ✗ Error creating index idx_systems_enabled: {e}")
     
     conn.commit()
     conn.close()

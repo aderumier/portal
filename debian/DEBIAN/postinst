@@ -1,0 +1,131 @@
+#!/bin/bash
+# Post-installation script
+
+set -e
+
+INSTALL_DIR="/opt/batocera-games-catalog"
+BACKEND_DIR="$INSTALL_DIR/backend"
+FRONTEND_DIR="$INSTALL_DIR/frontend"
+
+# Create necessary directories
+mkdir -p "$INSTALL_DIR/data"
+mkdir -p "$INSTALL_DIR/logs"
+mkdir -p "$BACKEND_DIR/data"
+mkdir -p "$FRONTEND_DIR/dist"
+
+# Create .env file from example if it doesn't exist
+if [ -f "$INSTALL_DIR/.env.example" ] && [ ! -f "$BACKEND_DIR/.env" ]; then
+    cp "$INSTALL_DIR/.env.example" "$BACKEND_DIR/.env"
+    echo "Created .env file from example. Please configure it before starting services."
+fi
+
+# Create pixn user if it doesn't exist
+if ! id "pixn" &>/dev/null; then
+    echo "Creating pixn user and group..."
+    adduser --system --group --no-create-home --disabled-login pixn || true
+fi
+
+# Set ownership to pixn user and group
+if id "pixn" &>/dev/null; then
+    chown -R pixn:pixn "$INSTALL_DIR" || true
+    echo "Set ownership of $INSTALL_DIR to pixn:pixn"
+else
+    echo "Warning: Failed to create pixn user. Please create it manually:"
+    echo "  sudo adduser --system --group --no-create-home --disabled-login pixn"
+    echo "  sudo chown -R pixn:pixn $INSTALL_DIR"
+fi
+
+# Setup backend virtual environment (as root, then fix ownership)
+if [ -d "$BACKEND_DIR" ]; then
+    cd "$BACKEND_DIR"
+    if [ ! -d "venv" ]; then
+        python3 -m venv venv
+    fi
+    if [ -f "requirements.txt" ]; then
+        "$BACKEND_DIR/venv/bin/pip" install --upgrade pip
+        "$BACKEND_DIR/venv/bin/pip" install -r requirements.txt
+    fi
+    # Fix ownership of venv if pixn user exists
+    if id "pixn" &>/dev/null; then
+        chown -R pixn:pixn "$BACKEND_DIR/venv" || true
+    fi
+fi
+
+# Build frontend (as root, then fix ownership)
+if [ -d "$FRONTEND_DIR" ]; then
+    cd "$FRONTEND_DIR"
+    if [ -f "package.json" ]; then
+        npm install
+        npm run build
+    fi
+    # Make serve script executable
+    chmod +x "$FRONTEND_DIR/serve.sh" 2>/dev/null || true
+    # Fix ownership of node_modules and dist if pixn user exists
+    if id "pixn" &>/dev/null; then
+        chown -R pixn:pixn "$FRONTEND_DIR/node_modules" "$FRONTEND_DIR/dist" 2>/dev/null || true
+    fi
+fi
+
+# Final ownership fix for entire directory (in case anything was missed)
+if id "pixn" &>/dev/null; then
+    chown -R pixn:pixn "$INSTALL_DIR" || true
+fi
+
+# Setup nginx configuration (if nginx is installed)
+if command -v nginx &> /dev/null; then
+    NGINX_CONF="/etc/nginx/sites-available/batocera-games-catalog"
+    if [ -f "$NGINX_CONF" ]; then
+        echo "Nginx configuration found at $NGINX_CONF"
+        echo "To enable it: sudo ln -s $NGINX_CONF /etc/nginx/sites-enabled/"
+        echo "To setup SSL: sudo /opt/batocera-games-catalog/scripts/setup-ssl.sh <your-domain> <your-email>"
+        
+        # Check if image_filter module is available
+        if nginx -V 2>&1 | grep -q "http_image_filter_module"; then
+            echo "✓ Image filter module detected - thumbnail resizing will be available"
+        else
+            echo "⚠ Warning: Image filter module not found. Install libnginx-mod-http-image-filter for thumbnail resizing:"
+            echo "  sudo apt-get install libnginx-mod-http-image-filter"
+            echo "  sudo systemctl restart nginx"
+        fi
+    fi
+fi
+
+# Reload systemd and enable services
+systemctl daemon-reload
+systemctl enable batocera-games-catalog-backend.service || true
+
+# Only enable frontend service if nginx is not installed/configured
+# When using nginx, it serves the frontend static files directly
+if ! command -v nginx &> /dev/null || [ ! -f /etc/nginx/sites-enabled/batocera-games-catalog ]; then
+    echo "Note: Frontend service will be enabled (nginx not detected or not configured)"
+    systemctl enable batocera-games-catalog-frontend.service || true
+    FRONTEND_SERVICE_NEEDED=true
+else
+    echo "Note: Frontend service not enabled (nginx is serving static files)"
+    FRONTEND_SERVICE_NEEDED=false
+fi
+
+# Auto-restart backend service after update if it was enabled
+# The preinst script stops the service, so we restart it here if it was enabled
+if systemctl is-enabled batocera-games-catalog-backend.service >/dev/null 2>&1; then
+    echo "Restarting batocera-games-catalog-backend.service after update..."
+    systemctl restart batocera-games-catalog-backend.service || {
+        echo "Warning: Failed to restart backend service. You may need to restart it manually:"
+        echo "  sudo systemctl restart batocera-games-catalog-backend.service"
+    }
+fi
+
+echo "Batocera Games Catalog installed successfully!"
+echo ""
+echo "Next steps:"
+echo "1. Configure /opt/batocera-games-catalog/backend/.env"
+if [ "$FRONTEND_SERVICE_NEEDED" = "true" ]; then
+    echo "2. Start services: systemctl start batocera-games-catalog-backend batocera-games-catalog-frontend"
+else
+    echo "2. Backend service should be running (restarted automatically after update)"
+    echo "   (Frontend is served by nginx, no separate service needed)"
+fi
+echo "3. (Optional) Setup SSL: sudo /opt/batocera-games-catalog/scripts/setup-ssl.sh <domain> <email>"
+
+exit 0
+

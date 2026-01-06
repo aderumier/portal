@@ -1,5 +1,5 @@
 """Database configuration and models."""
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, BigInteger, Float
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, BigInteger, Float, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import func
@@ -27,10 +27,30 @@ if db_dir and not os.path.exists(db_dir):
 settings.DATABASE_URL = f'sqlite:///{os.path.abspath(db_path)}'
 
 # Create engine
+connect_args = {}
+if "sqlite" in settings.DATABASE_URL:
+    connect_args["check_same_thread"] = False
+
 engine = create_engine(
     settings.DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {}
+    connect_args=connect_args
 )
+
+# For SQLite, enable WAL (Write-Ahead Logging) mode for better concurrency
+# WAL allows multiple readers and one writer simultaneously
+if "sqlite" in settings.DATABASE_URL:
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_conn, connection_record):
+        """Enable WAL mode and performance optimizations for SQLite."""
+        # Enable WAL mode (Write-Ahead Logging) for better concurrency
+        # Note: WAL file (.wal) is created on first write operation
+        dbapi_conn.execute("PRAGMA journal_mode=WAL")
+        # Good balance between safety and speed (NORMAL is faster than FULL, safer than OFF)
+        dbapi_conn.execute("PRAGMA synchronous=NORMAL")
+        # 64MB cache (negative value means KB, so -64000 = 64MB)
+        dbapi_conn.execute("PRAGMA cache_size=-64000")
+        # Enable foreign key constraints
+        dbapi_conn.execute("PRAGMA foreign_keys=ON")
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -114,11 +134,20 @@ class Game(Base):
 
 
 class System(Base):
-    """System cache model (optional)."""
+    """System configuration model."""
     __tablename__ = "systems"
     
-    id = Column(String, primary_key=True)
-    name = Column(String, nullable=False)
+    id = Column(String, primary_key=True)  # System ID (e.g., 'nes', 'snes')
+    name = Column(String, nullable=False)  # Short name
+    fullname = Column(String, nullable=True)  # Full display name
+    hardware = Column(String, nullable=True)  # Hardware category
+    release = Column(String, nullable=True)  # Release year
+    manufacturer = Column(String, nullable=True)  # Manufacturer
+    batocera_system = Column(String, nullable=True)  # System name from es_systems.cfg for Batocera (last directory of path)
+    retrobat_system = Column(String, nullable=True)  # System name from es_systems.cfg for Retrobat (last directory of path)
+    enabled = Column(Boolean, default=True, nullable=False, index=True)  # Whether system is enabled
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class UserSession(Base):
@@ -143,6 +172,8 @@ class User(Base):
     username = Column(String, nullable=True)  # Discord username
     total_download_mb = Column(Float, default=0.0, nullable=False)  # Total downloaded MB
     total_download_number = Column(Integer, default=0, nullable=False)  # Total number of games downloaded
+    medias_upload = Column(Integer, default=0, nullable=False)  # Total number of media files uploaded
+    medias_validated = Column(Integer, default=0, nullable=False)  # Total number of media files validated
     last_login = Column(DateTime, nullable=True)  # Last login datetime
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

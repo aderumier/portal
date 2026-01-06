@@ -28,7 +28,7 @@ const GameDetails = () => {
       setError(null)
       // gameId is already URL encoded from the route parameter
       // The backend expects: system/game_path
-      const response = await client.get(`/api/game/${system}/${encodeURIComponent(gameId)}`)
+      const response = await client.get(`/api/catalog/game/${system}/${encodeURIComponent(gameId)}`)
       setGame(response.data)
       
       // Set initial selected media (prefer boxart, then thumbnail, then image)
@@ -81,6 +81,9 @@ const GameDetails = () => {
   const getMediaItems = () => {
     if (!game) return []
     
+    // Fields to exclude from display
+    const excludedFields = ['mix', 'wheel', 'screenshot', 'video']
+    
     const mediaTypes = [
       { key: 'boxart', label: 'Box Art' },
       { key: 'boxback', label: 'Box Back' },
@@ -90,18 +93,20 @@ const GameDetails = () => {
       { key: 'cartridge', label: 'Cartridge' },
       { key: 'titleshot', label: 'Title Shot' },
       { key: 'image', label: 'Screenshot' },
-      { key: 'screenshot', label: 'Screenshot' },
-      { key: 'wheel', label: 'Wheel' },
-      { key: 'mix', label: 'Mix' },
-      { key: 'video', label: 'Video' },
+      { key: 'extra1', label: 'Extra 1' },
+      { key: 'spine', label: 'Spine' },
+      // Excluded: screenshot, wheel, mix, video
     ]
     
-    return mediaTypes.map(type => ({
-      type: type.key,
-      label: type.label,
-      hasMedia: !!game[type.key],
-      url: game[type.key] ? getMediaUrl(game[type.key]) : null
-    }))
+    // Filter out excluded fields
+    return mediaTypes
+      .filter(type => !excludedFields.includes(type.key))
+      .map(type => ({
+        type: type.key,
+        label: type.label,
+        hasMedia: !!game[type.key],
+        url: game[type.key] ? getMediaUrl(game[type.key]) : null
+      }))
   }
 
   const handleUploadSuccess = () => {
@@ -155,7 +160,11 @@ const GameDetails = () => {
             {mediaItems.length > 0 && (
               <div className="media-thumbnails">
                 {mediaItems.map((media) => {
-                  if (media.hasMedia) {
+                  // Only fanart and marquee can be uploaded (for admins)
+                  const canUpload = isAdmin && (media.type === 'fanart' || media.type === 'marquee')
+                  
+                  if (media.hasMedia && !canUpload) {
+                    // Regular media thumbnail (no upload)
                     return (
                       <div
                         key={media.type}
@@ -166,7 +175,35 @@ const GameDetails = () => {
                         <span className="media-label">{media.label}</span>
                       </div>
                     )
-                  } else if (isAdmin) {
+                  } else if (media.hasMedia && canUpload) {
+                    // Media with upload option (fanart/marquee for admins)
+                    return (
+                      <div
+                        key={media.type}
+                        className={`media-thumbnail ${selectedMedia?.type === media.type ? 'active' : ''} with-upload`}
+                      >
+                        <div
+                          className="media-thumbnail-image"
+                          onClick={() => setSelectedMedia({ type: media.type, url: media.url })}
+                        >
+                          <img src={media.url} alt={media.label} />
+                        </div>
+                        <span className="media-label">{media.label}</span>
+                        <MediaUpload
+                          system={game.system}
+                          gameId={game.id}
+                          mediaType={media.type}
+                          label={media.label}
+                          onUploadSuccess={() => {
+                            handleUploadSuccess()
+                            loadGameDetails() // Reload to show new image
+                          }}
+                          compact={true}
+                        />
+                      </div>
+                    )
+                  } else if (canUpload) {
+                    // No media, but can upload (fanart/marquee for admins)
                     return (
                       <MediaUpload
                         key={media.type}
@@ -174,10 +211,14 @@ const GameDetails = () => {
                         gameId={game.id}
                         mediaType={media.type}
                         label={media.label}
-                        onUploadSuccess={handleUploadSuccess}
+                        onUploadSuccess={() => {
+                          handleUploadSuccess()
+                          loadGameDetails() // Reload to show new image
+                        }}
                       />
                     )
                   }
+                  // For other media types without media, don't show anything
                   return null
                 })}
               </div>

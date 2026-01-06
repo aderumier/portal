@@ -131,7 +131,7 @@
 }
 
 .progress-cell {
-  min-width: 150px;
+  min-width: 250px;
 }
 
 .table-progress {
@@ -155,10 +155,30 @@
   border-radius: 4px;
 }
 
+.table-progress .progress-info {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary, #999);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 .table-progress .progress-text {
   font-size: 0.85rem;
   color: var(--text-secondary, #999);
   font-weight: 500;
+}
+
+.table-progress .progress-size {
+  font-size: 0.85rem;
+  color: var(--text-secondary, #999);
+}
+
+.table-progress .progress-bandwidth {
+  font-size: 0.85rem;
+  color: var(--accent-color, #5865F2);
+  font-weight: 600;
 }
 
 .no-progress {

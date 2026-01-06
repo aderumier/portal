@@ -1,0 +1,91 @@
+name: Build Windows Executable
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'windows-build-*'
+    paths:
+      - 'services/download_service/**'
+  pull_request:
+    paths:
+      - 'services/download_service/**'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install build dependencies
+      working-directory: services/download_service
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Build executable
+      working-directory: services/download_service
+      run: |
+        pyinstaller download_service.spec --clean --noconfirm
+    
+    - name: Create distribution package
+      working-directory: services/download_service
+      run: |
+        New-Item -ItemType Directory -Force -Path dist\RGS_Download_Service | Out-Null
+        Copy-Item dist\rgs_download_service.exe dist\RGS_Download_Service\
+        "Your API token here" | Out-File -FilePath dist\RGS_Download_Service\API_TOKEN.txt -Encoding utf8
+        @"
+RGS Download Service - Windows Installation
+============================================
+
+1. Copy your API token to API_TOKEN.txt
+2. Edit config.ini if needed (optional)
+3. Run rgs_download_service.exe to test
+4. Use NSSM to install as Windows service
+
+Service Installation:
+---------------------
+1. Download NSSM from https://nssm.cc/download
+2. Extract and run: nssm install RGSDownloadService
+3. Set path to: [full path]\rgs_download_service.exe
+4. Set startup directory to: [full path]
+5. Set environment variables if needed
+6. Start service: nssm start RGSDownloadService
+
+Environment Variables (optional):
+- API_URL: Backend API URL (default: https://rgs-retro.ddns.net)
+- ROMS_PATH: Path to ROMs directory (default: C:\ProgramData\RGS\roms)
+- SERVICE_ID: Service identifier (default: hostname)
+- LOG_LEVEL: Logging level (default: INFO)
+- BANDWIDTH_UPDATE_INTERVAL: Progress update interval in seconds (default: 5)
+"@ | Out-File -FilePath dist\RGS_Download_Service\README.txt -Encoding utf8
+        @"
+[Service]
+API_URL=https://rgs-retro.ddns.net
+ROMS_PATH=C:\ProgramData\RGS\roms
+SERVICE_ID=windows-service-1
+LOG_LEVEL=INFO
+BANDWIDTH_UPDATE_INTERVAL=5
+"@ | Out-File -FilePath dist\RGS_Download_Service\config.ini -Encoding utf8
+    
+    - name: Upload executable artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: windows-executable
+        path: services/download_service/dist/RGS_Download_Service/*
+        retention-days: 30
+    
+    - name: Upload standalone executable
+      uses: actions/upload-artifact@v3
+      with:
+        name: rgs_download_service.exe
+        path: services/download_service/dist/rgs_download_service.exe
+        retention-days: 30
+

@@ -1,0 +1,85 @@
+Batocera Games Catalog - Debian Package
+
+INSTALLATION:
+=============
+1. Install the package:
+   sudo dpkg -i batocera-games-catalog_1.0.0_all.deb
+   sudo apt-get install -f  # Install missing dependencies if needed
+
+2. Configure the backend:
+   sudo nano /opt/batocera-games-catalog/backend/.env
+   
+   Required settings:
+   - DISCORD_CLIENT_ID
+   - DISCORD_CLIENT_SECRET
+   - DISCORD_BOT_TOKEN
+   - DISCORD_GUILD_ID
+   - GAMES_PATH
+   - DATABASE_URL
+   - SECRET_KEY
+
+3. Start the services:
+   sudo systemctl start batocera-games-catalog-backend
+   sudo systemctl start batocera-games-catalog-frontend
+
+4. Enable services to start on boot:
+   sudo systemctl enable batocera-games-catalog-backend
+   sudo systemctl enable batocera-games-catalog-frontend
+
+SERVICES:
+=========
+- Backend API: http://localhost:8000
+- Frontend: http://localhost:3000
+
+MANAGEMENT:
+===========
+Check status:
+  sudo systemctl status batocera-games-catalog-backend
+  sudo systemctl status batocera-games-catalog-frontend
+
+View logs:
+  sudo journalctl -u batocera-games-catalog-backend -f
+  sudo journalctl -u batocera-games-catalog-frontend -f
+
+Restart services:
+  sudo systemctl restart batocera-games-catalog-backend
+  sudo systemctl restart batocera-games-catalog-frontend
+
+NGINX & SSL SETUP:
+==================
+1. Install nginx and certbot (if not already installed):
+   sudo apt-get install nginx certbot python3-certbot-nginx
+
+2. Enable nginx site:
+   sudo ln -s /etc/nginx/sites-available/batocera-games-catalog /etc/nginx/sites-enabled/
+   sudo nginx -t
+   sudo systemctl reload nginx
+
+3. Setup SSL certificate with Let's Encrypt:
+   sudo /opt/batocera-games-catalog/scripts/setup-ssl.sh your-domain.com your-email@example.com
+
+   This will:
+   - Update nginx config with your domain
+   - Obtain SSL certificate from Let's Encrypt
+   - Configure automatic renewal
+   - Redirect HTTP to HTTPS
+
+4. Update domain in nginx config (if needed):
+   sudo /opt/batocera-games-catalog/scripts/update-nginx-domain.sh your-domain.com
+
+5. Test certificate renewal:
+   sudo certbot renew --dry-run
+
+UNINSTALLATION:
+===============
+  sudo systemctl stop batocera-games-catalog-backend
+  sudo systemctl stop batocera-games-catalog-frontend
+  sudo dpkg -r batocera-games-catalog
+
+FILES:
+======
+Installation directory: /opt/batocera-games-catalog/
+Configuration: /opt/batocera-games-catalog/backend/.env
+Logs: /opt/batocera-games-catalog/logs/
+Data: /opt/batocera-games-catalog/data/
+

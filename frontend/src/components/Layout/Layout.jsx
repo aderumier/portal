@@ -2,17 +2,33 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Outlet, Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import HeaderSearch from './HeaderSearch'
+import { refreshCatalog } from '../../api/catalog'
 import './Layout.css'
 
 const Layout = () => {
-  const { user, isAuthenticated, isAdmin, logout } = useAuth()
+  const { user, isAuthenticated, isAdmin, isDownload, isFastDownload, logout } = useAuth()
   const navigate = useNavigate()
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const accountMenuRef = useRef(null)
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
   const handleLogout = () => {
     logout()
     setAccountMenuOpen(false)
+  }
+
+  const handleRefreshCatalog = async () => {
+    setIsRefreshing(true)
+    try {
+      const result = await refreshCatalog()
+      alert(`Catalog refreshed successfully!\nSystems: ${result.systems_count}\nTotal games: ${result.total_games}`)
+      setAccountMenuOpen(false)
+    } catch (error) {
+      console.error('Error refreshing catalog:', error)
+      alert('Failed to refresh catalog. Please try again.')
+    } finally {
+      setIsRefreshing(false)
+    }
   }
 
   // Close menu when clicking outside
@@ -44,7 +60,9 @@ const Layout = () => {
             {isAuthenticated ? (
               <>
                 <Link to="/systems">Systems</Link>
-                <Link to="/downloads">Downloads</Link>
+                {(isDownload || isFastDownload) && (
+                  <Link to="/downloads">Downloads</Link>
+                )}
                 <div className="account-menu" ref={accountMenuRef}>
                   <button 
                     className="account-menu-trigger"
@@ -84,6 +102,20 @@ const Layout = () => {
                           >
                             Download Queues
                           </Link>
+                          <Link 
+                            to="/systems-configuration" 
+                            className="account-menu-item"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Systems Configuration
+                          </Link>
+                          <button 
+                            onClick={handleRefreshCatalog}
+                            className="account-menu-item"
+                            disabled={isRefreshing}
+                          >
+                            {isRefreshing ? 'Refreshing...' : 'Refresh Catalog'}
+                          </button>
                         </>
                       )}
                       <button 

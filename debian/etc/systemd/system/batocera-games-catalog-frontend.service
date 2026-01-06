@@ -1,0 +1,19 @@
+[Unit]
+Description=Batocera Games Catalog Frontend
+After=network.target batocera-games-catalog-backend.service
+Requires=batocera-games-catalog-backend.service
+
+[Service]
+Type=simple
+User=pixn
+Group=pixn
+WorkingDirectory=/opt/batocera-games-catalog/frontend
+ExecStart=/opt/batocera-games-catalog/frontend/serve.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

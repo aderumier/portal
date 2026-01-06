@@ -1,0 +1,149 @@
+# Batocera Games Catalog - Nginx Configuration
+# This file should be symlinked to /etc/nginx/sites-enabled/
+
+# HTTP server - redirect to HTTPS and handle Let's Encrypt challenges
+server {
+    listen 80;
+    listen [::]:80;
+    server_name _;  # Replace with your domain name
+
+    # Let's Encrypt ACME challenge
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        try_files $uri =404;
+    }
+
+    # Redirect all other HTTP traffic to HTTPS
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# HTTPS server
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name _;  # Replace with your domain name
+
+    # SSL certificates (managed by certbot)
+    ssl_certificate /etc/letsencrypt/live/YOUR_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/YOUR_DOMAIN/privkey.pem;
+    
+    # Include recommended SSL configuration
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Logging
+    access_log /var/log/nginx/batocera-games-catalog-access.log;
+    error_log /var/log/nginx/batocera-games-catalog-error.log;
+
+    # Dynamic thumbnail resizing with caching
+    # URL format: /media/thumbnail/WIDTHxHEIGHT/system/media/thumbnails/image.png
+    # Example: /media/thumbnail/200x200/macintosh/media/thumbnails/game.png
+    # Note: Requires libnginx-mod-http-image-filter module
+    # Use ^~ to ensure this location has priority over /media/
+    location ^~ /media/thumbnail/ {
+        # Extract dimensions and path from URL using regex
+        if ($uri ~ "^/media/thumbnail/(\d+)x(\d+)/(.+)$") {
+            set $thumb_width $1;
+            set $thumb_height $2;
+            set $image_path $3;
+        }
+        
+        # Rewrite: remove /media/thumbnail/WIDTHxHEIGHT/ prefix, keep only the image path
+        rewrite ^/media/thumbnail/\d+x\d+/(.+)$ /$1 break;
+        
+        # Serve from GAMES_PATH
+        root /home/pixn/roms;
+        try_files $uri =404;
+        
+        # Resize image using image_filter module
+        image_filter resize $thumb_width $thumb_height;
+        image_filter_jpeg_quality 85;
+        image_filter_buffer 20M;
+        image_filter_interlace on;
+        
+        # Cache headers - browser will cache the resized images
+        expires 30d;
+        add_header Cache-Control "public, immutable" always;
+        
+        # Disable directory listing
+        autoindex off;
+    }
+
+    # Media files - MUST use ^~ modifier to prevent location / from catching it
+    # Rewrite to remove /media/ prefix and serve directly from filesystem
+    # Example: /media/daphne/media/thumbnails/gpworld.png -> /daphne/media/thumbnails/gpworld.png
+    # Files are served from GAMES_PATH (e.g., /home/pixn/roms/daphne/media/thumbnails/gpworld.png)
+    # Use ^~ modifier to give this location priority over regex and prefix locations
+    location ^~ /media/ {
+        # Rewrite: remove /media/ prefix from the path
+        rewrite ^/media/(.*)$ /$1 break;
+        
+        # Serve files directly from GAMES_PATH
+        root /home/pixn/roms;
+        
+        # Disable directory listing
+        autoindex off;
+        
+        # Cache media files
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        
+        # Optional: Add authentication if needed
+        # auth_basic "Restricted";
+        # auth_basic_user_file /etc/nginx/.htpasswd;
+    }
+
+    # Backend API
+    location /api {
+        # Increase max body size for file uploads (e.g., media files)
+        client_max_body_size 50M;
+        
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        
+        # WebSocket support (if needed)
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        
+        # Timeouts (increased for large file uploads)
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        
+        # Buffer settings
+        proxy_buffering off;
+    }
+
+    # Frontend - serve static files (must be last to catch all other requests)
+    location / {
+        root /opt/batocera-games-catalog/frontend/dist;
+        try_files $uri $uri/ /index.html;
+        
+        # Cache static assets
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 30d;
+            add_header Cache-Control "public, immutable";
+        }
+    }
+
+    # Let's Encrypt renewal endpoint (keep HTTP accessible)
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        try_files $uri =404;
+    }
+}
+

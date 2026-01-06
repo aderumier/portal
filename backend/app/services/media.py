@@ -2,7 +2,7 @@
 import os
 import shutil
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import logging
 from app.config import settings
@@ -38,19 +38,27 @@ class MediaService:
         game_id: str, 
         media_type: str, 
         file_content: bytes,
-        file_extension: str = 'png'
+        file_extension: str = 'png',
+        user_id: str = None
     ) -> bool:
-        """Upload media file to pending location."""
+        """Upload media file to pending location.
+        
+        Stores files in: USERS_MEDIA_PATH/userid/system/mediafield/romfilename.png
+        """
         try:
             if not self.users_media_path:
                 logger.error("USERS_MEDIA_PATH is not configured")
                 return False
             
+            if not user_id:
+                logger.error("user_id is required for media upload")
+                return False
+            
             # Get ROM filename
             rom_filename = self.get_rom_filename(game_id)
             
-            # Create directory structure: USERS_MEDIA_PATH/system/fieldname/
-            upload_dir = Path(self.users_media_path) / system / media_type
+            # Create directory structure: USERS_MEDIA_PATH/userid/system/mediafield/
+            upload_dir = Path(self.users_media_path) / user_id / system / media_type
             upload_dir.mkdir(parents=True, exist_ok=True)
             
             # Create filename: romname.png
@@ -69,7 +77,10 @@ class MediaService:
             return False
     
     def get_pending_media(self) -> List[Dict]:
-        """Get list of all pending media uploads."""
+        """Get list of all pending media uploads.
+        
+        Scans structure: USERS_MEDIA_PATH/userid/system/mediafield/romfilename.png
+        """
         pending_media = []
         
         if not self.users_media_path or not os.path.exists(self.users_media_path):
@@ -78,37 +89,45 @@ class MediaService:
         try:
             users_media_root = Path(self.users_media_path)
             
-            # Scan all systems
-            for system_dir in users_media_root.iterdir():
-                if not system_dir.is_dir():
+            # Scan all user directories
+            for user_dir in users_media_root.iterdir():
+                if not user_dir.is_dir():
                     continue
                 
-                system = system_dir.name
+                user_id = user_dir.name
                 
-                # Scan all fieldname directories
-                for fieldname_dir in system_dir.iterdir():
-                    if not fieldname_dir.is_dir():
+                # Scan all systems
+                for system_dir in user_dir.iterdir():
+                    if not system_dir.is_dir():
                         continue
                     
-                    fieldname = fieldname_dir.name
+                    system = system_dir.name
                     
-                    # Scan all files
-                    for file_path in fieldname_dir.iterdir():
-                        if not file_path.is_file():
+                    # Scan all fieldname directories
+                    for fieldname_dir in system_dir.iterdir():
+                        if not fieldname_dir.is_dir():
                             continue
                         
-                        # Get file stats
-                        stat = file_path.stat()
-                        upload_date = datetime.fromtimestamp(stat.st_mtime)
+                        fieldname = fieldname_dir.name
                         
-                        pending_media.append({
-                            'system': system,
-                            'fieldname': fieldname,
-                            'filename': file_path.name,
-                            'filepath': str(file_path),
-                            'upload_date': upload_date.isoformat(),
-                            'size': stat.st_size
-                        })
+                        # Scan all files
+                        for file_path in fieldname_dir.iterdir():
+                            if not file_path.is_file():
+                                continue
+                            
+                            # Get file stats
+                            stat = file_path.stat()
+                            upload_date = datetime.fromtimestamp(stat.st_mtime)
+                            
+                            pending_media.append({
+                                'user_id': user_id,
+                                'system': system,
+                                'fieldname': fieldname,
+                                'filename': file_path.name,
+                                'filepath': str(file_path),
+                                'upload_date': upload_date.isoformat(),
+                                'size': stat.st_size
+                            })
             
             # Sort by upload date (newest first)
             pending_media.sort(key=lambda x: x['upload_date'], reverse=True)
@@ -119,22 +138,49 @@ class MediaService:
             logger.error(f"Error getting pending media: {e}", exc_info=True)
             return []
     
-    def validate_media(self, system: str, fieldname: str, filename: str) -> bool:
-        """Validate and move media from pending to final location."""
+    def validate_media(self, system: str, fieldname: str, filename: str, user_id: str = None) -> Tuple[bool, Optional[str]]:
+        """Validate and move media from pending to final location.
+        
+        Returns: (success: bool, user_id: str)
+        If user_id is not provided, it will be extracted from the file path.
+        """
         try:
             if not self.users_media_path or not self.games_path:
                 logger.error("USERS_MEDIA_PATH or GAMES_PATH is not configured")
-                return False
+                return False, None
             
             # Get mapped directory name
             mapped_directory = self.media_mapping.get(fieldname, fieldname)
             
-            # Source: USERS_MEDIA_PATH/system/fieldname/filename
-            source_path = Path(self.users_media_path) / system / fieldname / filename
+            # If user_id not provided, try to find the file by scanning user directories
+            if not user_id:
+                users_media_root = Path(self.users_media_path)
+                source_path = None
+                found_user_id = None
+                
+                # Scan all user directories to find the file
+                for user_dir in users_media_root.iterdir():
+                    if not user_dir.is_dir():
+                        continue
+                    
+                    potential_path = user_dir / system / fieldname / filename
+                    if potential_path.exists():
+                        source_path = potential_path
+                        found_user_id = user_dir.name
+                        break
+                
+                if not source_path:
+                    logger.error(f"Source file not found: {system}/{fieldname}/{filename}")
+                    return False, None
+                
+                user_id = found_user_id
+            else:
+                # Source: USERS_MEDIA_PATH/userid/system/fieldname/filename
+                source_path = Path(self.users_media_path) / user_id / system / fieldname / filename
             
             if not source_path.exists():
                 logger.error(f"Source file not found: {source_path}")
-                return False
+                return False, user_id
             
             # Destination: GAMES_PATH/system/media/mapped_directory/filename
             dest_dir = Path(self.games_path) / system / 'media' / mapped_directory
@@ -146,20 +192,41 @@ class MediaService:
             shutil.move(str(source_path), str(dest_path))
             
             logger.info(f"Media validated and moved: {source_path} -> {dest_path}")
-            return True
+            return True, user_id
             
         except Exception as e:
             logger.error(f"Error validating media: {e}", exc_info=True)
-            return False
+            return False, user_id if 'user_id' in locals() else None
     
-    def delete_pending_media(self, system: str, fieldname: str, filename: str) -> bool:
-        """Delete pending media file."""
+    def delete_pending_media(self, system: str, fieldname: str, filename: str, user_id: str = None) -> bool:
+        """Delete pending media file.
+        
+        If user_id is not provided, will search for the file in all user directories.
+        """
         try:
             if not self.users_media_path:
                 logger.error("USERS_MEDIA_PATH is not configured")
                 return False
             
-            file_path = Path(self.users_media_path) / system / fieldname / filename
+            if user_id:
+                file_path = Path(self.users_media_path) / user_id / system / fieldname / filename
+            else:
+                # Search for file in all user directories
+                users_media_root = Path(self.users_media_path)
+                file_path = None
+                
+                for user_dir in users_media_root.iterdir():
+                    if not user_dir.is_dir():
+                        continue
+                    
+                    potential_path = user_dir / system / fieldname / filename
+                    if potential_path.exists():
+                        file_path = potential_path
+                        break
+                
+                if not file_path:
+                    logger.error(f"File not found: {system}/{fieldname}/{filename}")
+                    return False
             
             if not file_path.exists():
                 logger.error(f"File not found: {file_path}")

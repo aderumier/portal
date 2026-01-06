@@ -6,12 +6,22 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.database import init_db
-from app.api.routes import auth, catalog, downloads, users, media
+from app.api.routes import auth, catalog, downloads, users, media, systems_config
 import logging
 import os
+import sys
 import asyncio
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import or_, and_
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +60,119 @@ async def preload_game_data():
     # Start background task for cleaning up stuck downloads
     asyncio.create_task(cleanup_stuck_downloads())
 
-# Add session middleware (in-memory sessions)
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=settings.SECRET_KEY,
-    max_age=3600 * 24 * 7,  # 7 days
-    same_site="lax"
-)
+# Add session middleware (configurable: memory, redis, file, or database)
+session_storage = settings.SESSION_STORAGE.lower()
+logger.info(f"=== Session storage configuration ===")
+logger.info(f"SESSION_STORAGE from settings: '{session_storage}'")
+logger.info(f"REDIS_URL: {settings.REDIS_URL}")
+logger.info(f"REDIS_SESSION_KEY_PREFIX: {settings.REDIS_SESSION_KEY_PREFIX}")
+
+redis_configured = False
+
+if session_storage == 'redis':
+    logger.info("Attempting to configure Redis session storage...")
+    try:
+        from app.middleware.redis_session_middleware import RedisSessionMiddleware
+        import redis.asyncio as aioredis
+        
+        # Parse Redis URL from settings
+        redis_url = settings.REDIS_URL
+        key_prefix = settings.REDIS_SESSION_KEY_PREFIX
+        
+        logger.info(f"Using custom RedisSessionMiddleware implementation")
+        logger.info(f"Initializing Redis session storage (URL: {redis_url})")
+        
+        # Create Redis connection pool
+        redis_client = aioredis.from_url(
+            redis_url,
+            decode_responses=False,  # Sessions are binary data
+            encoding='utf-8'
+        )
+        
+        # Test connection asynchronously
+        async def test_redis_connection():
+            try:
+                await redis_client.ping()
+                logger.info("Redis connection test successful")
+                return True
+            except Exception as e:
+                logger.warning(f"Redis connection test failed: {e}")
+                return False
+        
+        # Try to test connection if possible
+        try:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                # Loop is already running, create a task for testing
+                logger.info("Event loop already running, will test Redis connection on first request")
+            except RuntimeError:
+                # No loop running, test synchronously
+                if asyncio.run(test_redis_connection()):
+                    logger.info("Redis connection verified")
+        except Exception as conn_error:
+            logger.warning(f"Could not test Redis connection: {conn_error}")
+            logger.warning("Will attempt to connect on first request")
+        
+        # Use our custom Redis session middleware
+        app.add_middleware(
+            RedisSessionMiddleware,
+            redis=redis_client,
+            secret_key=settings.SECRET_KEY,
+            max_age=settings.SESSION_MAX_AGE,  # 24 hours (configurable via SESSION_MAX_AGE env var)
+            same_site='lax',
+            key_prefix=key_prefix if key_prefix and key_prefix != "session:" else None
+        )
+        logger.info(f"✓✓✓ Custom Redis session middleware added successfully (URL: {redis_url}, prefix: {key_prefix}) ✓✓✓")
+        redis_configured = True
+        logger.info(f"redis_configured flag set to: {redis_configured}")
+    except ImportError as e:
+        logger.error(f"✗ redis library or RedisSessionMiddleware not available: {e}")
+        logger.warning("Falling back to in-memory sessions")
+        logger.warning("Install with: pip install redis")
+        session_storage = 'memory'
+        redis_configured = False
+    except Exception as e:
+        logger.error(f"✗ Failed to initialize Redis session store: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        logger.warning("Falling back to in-memory sessions")
+        session_storage = 'memory'
+        redis_configured = False
+
+if session_storage == 'memory' and not redis_configured:
+    # Default: in-memory sessions (Starlette's SessionMiddleware)
+    logger.info(f"Configuring in-memory sessions (session_storage='{session_storage}', redis_configured={redis_configured})")
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.SECRET_KEY,
+        max_age=settings.SESSION_MAX_AGE,  # 24 hours (configurable via SESSION_MAX_AGE env var)
+        same_site="lax"
+    )
+    logger.info("✓ Using in-memory session storage")
+elif session_storage == 'database':
+    # Use database-backed sessions
+    from app.middleware.persistent_session import PersistentSessionMiddleware
+    app.add_middleware(
+        PersistentSessionMiddleware,
+        secret_key=settings.SECRET_KEY,
+        max_age=settings.SESSION_MAX_AGE,  # 24 hours (configurable via SESSION_MAX_AGE env var)
+        same_site="lax"
+    )
+    logger.info("Using database for session storage")
+elif session_storage == 'file':
+    # Use file-based sessions
+    from app.services.session_store import FileSessionStore
+    from app.middleware.file_session_middleware import FileSessionMiddleware
+    file_store = FileSessionStore()
+    app.add_middleware(
+        FileSessionMiddleware,
+        session_store=file_store,
+        secret_key=settings.SECRET_KEY,
+        max_age=settings.SESSION_MAX_AGE,  # 24 hours (configurable via SESSION_MAX_AGE env var)
+        same_site="lax"
+    )
+    logger.info("Using file-based session storage")
 
 # Add CORS middleware
 app.add_middleware(
@@ -69,9 +185,10 @@ app.add_middleware(
 
 # Include routers
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-app.include_router(catalog.router, prefix="/api", tags=["catalog"])
+app.include_router(catalog.router, prefix="/api/catalog", tags=["catalog"])
 app.include_router(downloads.router, prefix="/api/download", tags=["downloads"])
 app.include_router(users.router, prefix="/api", tags=["users"])
+app.include_router(systems_config.router, prefix="/api/admin", tags=["systems-config"])
 
 # Include media router
 app.include_router(media.router, prefix="/api/media", tags=["media"])

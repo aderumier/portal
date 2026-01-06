@@ -16,10 +16,27 @@ router = APIRouter()
 @router.get("/login")
 async def login(request: Request):
     """Redirect to Discord OAuth login."""
-    discord_service = DiscordService()
-    auth_url = discord_service.get_auth_url()
-    await discord_service.close()
-    return RedirectResponse(url=auth_url)
+    discord_service = None
+    try:
+        logger.info("Login endpoint called")
+        discord_service = DiscordService()
+        logger.info("DiscordService created successfully")
+        auth_url = discord_service.get_auth_url()
+        logger.info(f"Auth URL generated: {auth_url[:50]}...")
+        await discord_service.close()
+        logger.info("DiscordService closed successfully")
+        return RedirectResponse(url=auth_url)
+    except Exception as e:
+        logger.error(f"Error in login endpoint: {e}", exc_info=True)
+        if discord_service:
+            try:
+                await discord_service.close()
+            except:
+                pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initiate login: {str(e)}"
+        )
 
 @router.get("/callback")
 async def callback(
@@ -150,9 +167,28 @@ async def callback(
 
 @router.get("/logout")
 async def logout(request: Request):
-    """Logout and clear session."""
+    """Logout and clear session.
+    
+    This clears the session data, and the middleware will handle:
+    - Deleting the session from storage (Redis/database/file)
+    - Deleting the session cookie
+    """
+    # Clear session data - middleware will handle deletion and cookie removal
     request.session.clear()
-    return RedirectResponse(url=f"{settings.FRONTEND_URL}/", status_code=302)
+    
+    # Create redirect response
+    # Note: The middleware will detect the empty session and delete the cookie
+    redirect_response = RedirectResponse(url=f"{settings.FRONTEND_URL}/", status_code=302)
+    
+    # Also explicitly delete cookie here as a backup
+    redirect_response.delete_cookie(
+        key='session',
+        path='/',
+        httponly=True,
+        samesite='lax'
+    )
+    
+    return redirect_response
 
 @router.get("/me")
 async def get_current_user_info(

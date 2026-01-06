@@ -3,7 +3,7 @@ import { Navigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 
 const ProtectedRoute = ({ children, requireDownload = false, requireAdmin = false }) => {
-  const { isAuthenticated, isGuildMember, isDownload, isAdmin, loading } = useAuth()
+  const { isAuthenticated, isGuildMember, isDownload, isFastDownload, isAdmin, loading } = useAuth()
 
   if (loading) {
     return (
@@ -22,7 +22,7 @@ const ProtectedRoute = ({ children, requireDownload = false, requireAdmin = fals
     return <Navigate to="/login" replace />
   }
 
-  if (requireDownload && !isDownload) {
+  if (requireDownload && !isDownload && !isFastDownload) {
     return <Navigate to="/unauthorized" replace />
   }
 

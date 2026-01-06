@@ -24,3 +24,4 @@ echo "Starting services..."
 "$SCRIPT_DIR/start.sh"
 
 
+

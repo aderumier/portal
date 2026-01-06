@@ -1,38 +1,115 @@
 import os
+import sys
 import time
 import json
 import requests
 import threading
 import socket
 import xml.etree.ElementTree as ET
+import subprocess
+import logging
+import platform
 from pathlib import Path
-from loguru import logger
-from dotenv import load_dotenv
+from logging.handlers import RotatingFileHandler
 
-# Load environment variables from .env file in the same directory as this script
-env_path = Path(__file__).parent / '.env'
-if env_path.exists():
-    load_dotenv(env_path)
-    logger.info(f"Loaded environment variables from {env_path}")
+# Setup logging
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+
+# Determine paths based on platform
+if platform.system() == 'Windows':
+    # Windows paths
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        SERVICE_DIR = Path(sys.executable).parent
+    else:
+        # Running as script
+        SERVICE_DIR = Path(__file__).parent
+    
+    # Use AppData for logs (user-specific)
+    appdata = os.getenv('APPDATA', os.path.expanduser('~'))
+    log_dir = os.path.join(appdata, 'RGS', 'logs')
+    log_file_path = os.path.abspath(os.getenv('LOG_FILE', os.path.join(log_dir, 'rgs_download.log')))
 else:
-    logger.warning(f"No .env file found at {env_path}. Using system environment variables or defaults.")
+    # Linux/Batocera paths
+    SERVICE_DIR = Path(__file__).parent
+    log_file_path = os.path.abspath(os.getenv('LOG_FILE', '/userdata/system/logs/rgs_download.log'))
+
+# Ensure log directory exists
+log_dir = os.path.dirname(log_file_path)
+os.makedirs(log_dir, exist_ok=True)
+
+# Configure root logger with file handler only (no console output)
+logger = logging.getLogger()
+logger.setLevel(getattr(logging, log_level, logging.INFO))
+
+# Remove any existing handlers to avoid duplicates
+for handler in logger.handlers[:]:
+    logger.removeHandler(handler)
+
+# Add rotating file handler
+file_handler = RotatingFileHandler(
+    log_file_path,
+    maxBytes=500 * 1024 * 1024,  # 500 MB
+    backupCount=10
+)
+file_handler.setLevel(getattr(logging, log_level, logging.INFO))
+file_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+))
+logger.addHandler(file_handler)
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
+logger.info(f"Logging initialized. Log file: {log_file_path}")
+
+# Environment variables are read from system environment (os.getenv)
+# No .env file loading - use system environment variables or set them before running
 
 # Configuration
-API_URL = os.getenv('API_URL', 'http://localhost:8000')
-DOWNLOAD_PATH = os.getenv('DOWNLOAD_PATH', '/var/downloads')
-GAMES_PATH = os.getenv('GAMES_PATH', '/var/roms')
-API_TOKEN = os.getenv('API_TOKEN', 'a7a9437939b5cdf3f9a902dcaf2e36ce6cc65231fd27ffb928dca272d9cdc565')
-POLLING_INTERVAL = int(os.getenv('POLLING_INTERVAL', '10'))
+API_URL = os.getenv('API_URL', 'https://rgs-retro.ddns.net')
+
+# Set ROMS_PATH based on platform
+if platform.system() == 'Windows':
+    DEFAULT_ROMS_PATH = os.path.join(os.getenv('PROGRAMDATA', 'C:\\ProgramData'), 'RGS', 'roms')
+else:
+    DEFAULT_ROMS_PATH = '/userdata/roms'
+
+ROMS_PATH = os.getenv('ROMS_PATH', DEFAULT_ROMS_PATH)
+
+# POLLING_INTERVAL will be fetched from backend on first request_download call
+# No fallback - must be set by backend
+POLLING_INTERVAL = None
 BANDWIDTH_UPDATE_INTERVAL = int(os.getenv('BANDWIDTH_UPDATE_INTERVAL', '5'))
 SERVICE_ID = os.getenv('SERVICE_ID', socket.gethostname())
+
+# Read API_TOKEN from API_TOKEN.txt file in the service root directory
+# Use SERVICE_DIR which is set based on platform above
+api_token_path = SERVICE_DIR / 'API_TOKEN.txt'
+API_TOKEN = None
+if api_token_path.exists():
+    try:
+        with open(api_token_path, 'r', encoding='utf-8') as f:
+            API_TOKEN = f.read().strip()
+        if not API_TOKEN:
+            logger.error(f"API_TOKEN.txt file is empty at {api_token_path}")
+        else:
+            logger.info(f"API_TOKEN loaded from {api_token_path} (length: {len(API_TOKEN)} characters)")
+    except Exception as e:
+        logger.error(f"Failed to read API_TOKEN from {api_token_path}: {e}")
+else:
+    logger.warning(f"API_TOKEN.txt file not found at {api_token_path}")
+    logger.warning("API token must be provided in API_TOKEN.txt file")
+
+if not API_TOKEN:
+    raise ValueError("API_TOKEN is required. Please create API_TOKEN.txt file in the download service directory with your API token.")
 
 # Log configuration on startup
 logger.info(f"Download service configuration:")
 logger.info(f"  API_URL: {API_URL}")
-logger.info(f"  DOWNLOAD_PATH: {DOWNLOAD_PATH}")
-logger.info(f"  GAMES_PATH: {GAMES_PATH}")
+logger.info(f"  ROMS_PATH: {ROMS_PATH}")
 logger.info(f"  SERVICE_ID: {SERVICE_ID}")
-logger.info(f"  POLLING_INTERVAL: {POLLING_INTERVAL}s")
+logger.info(f"  POLLING_INTERVAL: Will be set from backend on first connection")
 logger.info(f"  BANDWIDTH_UPDATE_INTERVAL: {BANDWIDTH_UPDATE_INTERVAL}s")
 
 # Validate API_URL is not pointing to frontend
@@ -40,14 +117,6 @@ if ':3000' in API_URL:
     logger.error(f"WARNING: API_URL is set to {API_URL} which appears to be the frontend URL!")
     logger.error(f"API_URL should point to the backend API (typically http://localhost:8000)")
     logger.error(f"Please check your .env file and update API_URL to the correct backend URL")
-
-# Setup logging
-logger.add(
-    "download_service.log",
-    rotation="500 MB",
-    retention="10 days",
-    level=os.getenv('LOG_LEVEL', 'INFO')
-)
 
 # Create a global HTTP session with keep-alive enabled
 # This reuses TCP connections, improving performance for frequent API calls
@@ -70,46 +139,37 @@ logger.info("HTTP session with keep-alive enabled")
 
 def ensure_directories():
     """Ensure all required directories exist."""
-    Path(DOWNLOAD_PATH).mkdir(parents=True, exist_ok=True)
-    logger.info(f"Download directory ensured: {DOWNLOAD_PATH}")
+    Path(ROMS_PATH).mkdir(parents=True, exist_ok=True)
+    logger.info(f"ROMs directory ensured: {ROMS_PATH}")
 
-def test_api_connection():
-    """Test connection to the API and verify it's accessible."""
-    try:
-        logger.info(f"Testing API connection to {API_URL}...")
-        response = http_session.get(
-            f"{API_URL}/health",
-            timeout=5
-        )
-        response.raise_for_status()
-        logger.info(f"✓ Successfully connected to API at {API_URL}")
-        return True
-    except requests.exceptions.ConnectionError as e:
-        logger.warning(f"⚠ Cannot connect to API at {API_URL}")
-        logger.debug(f"  Connection error: {e}")
-        logger.debug(f"  Will retry in main loop. Please verify:")
-        logger.debug(f"    1. The backend API is running")
-        logger.debug(f"    2. API_URL in .env is correct (should be backend URL, typically http://localhost:8000)")
-        logger.debug(f"    3. The backend is accessible from this machine")
-        return False
-    except requests.exceptions.Timeout:
-        logger.warning(f"⚠ Connection to API at {API_URL} timed out")
-        logger.debug(f"  Will retry in main loop. Please verify the backend is running and accessible")
-        return False
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"API health check returned error: {e}")
-        logger.warning(f"  This might be OK if the /health endpoint doesn't exist")
-        # Try a simple request to see if API is reachable
-        try:
-            response = http_session.get(f"{API_URL}/", timeout=5)
-            logger.info(f"✓ API is reachable at {API_URL} (health endpoint may not exist)")
-            return True
-        except:
-            logger.warning(f"⚠ API at {API_URL} is not reachable, will retry in main loop")
-            return False
+def update_polling_interval(new_interval):
+    """Update the global POLLING_INTERVAL value.
+    
+    Args:
+        new_interval: New polling interval in seconds (int)
+    """
+    global POLLING_INTERVAL
+    if isinstance(new_interval, int) and new_interval > 0:
+        if POLLING_INTERVAL is None:
+            logger.info(f"Setting POLLING_INTERVAL to {new_interval} seconds (from backend)")
+            POLLING_INTERVAL = new_interval
+        elif POLLING_INTERVAL != new_interval:
+            logger.info(f"Updating POLLING_INTERVAL from {POLLING_INTERVAL} to {new_interval} seconds")
+            POLLING_INTERVAL = new_interval
+    else:
+        logger.warning(f"Invalid polling interval received: {new_interval}, keeping current value: {POLLING_INTERVAL}")
 
 def request_download(queue_type=None):
-    """Request next available download from the API."""
+    """Request next available download from the API.
+    
+    Also updates POLLING_INTERVAL from the backend response.
+    
+    Returns:
+        dict: Download info dict, or None if no download available
+    
+    Raises:
+        SystemExit: If API token is invalid (401 Unauthorized)
+    """
     try:
         headers = {
             'Content-Type': 'application/json'
@@ -128,7 +188,35 @@ def request_download(queue_type=None):
         )
         response.raise_for_status()
         result = response.json()
+        
+        # Always update polling interval from backend response (required, no fallback)
+        polling_interval = result.get('polling_interval')
+        if polling_interval is not None:
+            update_polling_interval(int(polling_interval))
+        else:
+            logger.error("Backend did not return polling_interval in response!")
+        
         return result.get('download')
+    except requests.exceptions.HTTPError as e:
+        # Check for 401 Unauthorized - invalid API token
+        if hasattr(e, 'response') and e.response is not None:
+            if e.response.status_code == 401:
+                logger.critical("=" * 80)
+                logger.critical("FATAL ERROR: API token is invalid or expired (401 Unauthorized)")
+                logger.critical("=" * 80)
+                logger.critical(f"Response: {e.response.text[:200]}")
+                logger.critical("The download service will now stop.")
+                logger.critical("Please verify your API_TOKEN.txt file contains a valid token.")
+                logger.critical("=" * 80)
+                sys.exit(1)
+        # For other HTTP errors, log and return None
+        logger.error(f"Failed to request download: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"  Response status: {e.response.status_code}")
+            # Don't log response body for server errors (5xx) to avoid noise
+            if e.response.status_code < 500:
+                logger.error(f"  Response body: {e.response.text[:200]}")
+        return None
     except requests.exceptions.ConnectionError as e:
         logger.error(f"Failed to connect to API at {API_URL}")
         logger.error(f"  Error: {e}")
@@ -141,7 +229,9 @@ def request_download(queue_type=None):
         logger.error(f"Failed to request download: {e}")
         if hasattr(e, 'response') and e.response is not None:
             logger.error(f"  Response status: {e.response.status_code}")
-            logger.error(f"  Response body: {e.response.text[:200]}")
+            # Don't log response body for server errors (5xx) to avoid noise
+            if e.response.status_code < 500:
+                logger.error(f"  Response body: {e.response.text[:200]}")
         return None
 
 def check_download_status(download_id):
@@ -167,6 +257,9 @@ def report_progress(download_id, bytes_transferred, bytes_per_second):
         True: Progress reported successfully
         False: Download is paused
         None: Download was removed from queue (should stop downloading)
+    
+    Raises:
+        SystemExit: If API token is invalid (401 Unauthorized)
     """
     try:
         headers = {
@@ -186,6 +279,16 @@ def report_progress(download_id, bytes_transferred, bytes_per_second):
         response.raise_for_status()
         return True
     except requests.exceptions.HTTPError as e:
+        # Check for 401 Unauthorized - invalid API token
+        if e.response and e.response.status_code == 401:
+            logger.critical("=" * 80)
+            logger.critical("FATAL ERROR: API token is invalid or expired (401 Unauthorized)")
+            logger.critical("=" * 80)
+            logger.critical(f"Response: {e.response.text[:200]}")
+            logger.critical("The download service will now stop.")
+            logger.critical("Please verify your API_TOKEN.txt file contains a valid token.")
+            logger.critical("=" * 80)
+            sys.exit(1)
         # If it's a 410 Gone, the download was removed from queue (likely completed) - this is expected
         if e.response and e.response.status_code == 410:
             logger.debug(f"Progress report returned 410 Gone - download {download_id} was removed from queue (likely completed)")
@@ -434,7 +537,8 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
             time.sleep(BANDWIDTH_UPDATE_INTERVAL)
             elapsed = time.time() - last_report_time
             if elapsed > 0:
-                total_bytes_downloaded = bytes_already_transferred + bytes_transferred_this_session[0]
+                # Accumulate bytes from this session into total
+                total_bytes_downloaded += bytes_transferred_this_session[0]
                 
                 if bytes_transferred_this_session[0] > 0:
                     bytes_per_second = int(bytes_transferred_this_session[0] / elapsed)
@@ -512,11 +616,10 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
             
             # Check if file not found (404)
             if success is None:
-                logger.error(f"File not found (404) for {relative_path} in download {download_id}, removing from queue")
+                logger.error(f"File not found (404) for {relative_path} in download {download_id}")
+                logger.info("Backend will handle removal of this download from queue")
                 progress_thread_running = False
                 progress_thread.join(timeout=1)
-                # Remove download from queue
-                remove_download_from_queue(download_id)
                 return False
             
             if not success:
@@ -577,6 +680,16 @@ def get_game_details_from_api(download_id):
         logger.info(f"Successfully fetched game details for download {download_id}")
         return game_data
     except requests.exceptions.HTTPError as e:
+        # Check for 401 Unauthorized - invalid API token
+        if e.response and e.response.status_code == 401:
+            logger.critical("=" * 80)
+            logger.critical("FATAL ERROR: API token is invalid or expired (401 Unauthorized)")
+            logger.critical("=" * 80)
+            logger.critical(f"Response: {e.response.text[:200]}")
+            logger.critical("The download service will now stop.")
+            logger.critical("Please verify your API_TOKEN.txt file contains a valid token.")
+            logger.critical("=" * 80)
+            sys.exit(1)
         if e.response and e.response.status_code == 404:
             logger.warning(f"Game details not found for download {download_id}")
         else:
@@ -617,17 +730,63 @@ def normalize_media_path(path):
     normalized = path.lstrip('./')
     return normalized
 
-def download_game_media(system, game_id, download_id):
+def format_path_for_xml(path):
+    """Format path for gamelist.xml <path> field.
+    
+    Rules:
+    - Always add './' prefix: "game.zip" -> "./game.zip"
+    - Also for subdirectories: "subdir/game.zip" -> "./subdir/game.zip"
+    
+    Args:
+        path: Game path (e.g., "game.zip" or "subdir/game.zip")
+    
+    Returns:
+        str: Formatted path for XML with './' prefix
+    """
+    if not path:
+        return ''
+    # Remove leading ./ if present
+    normalized = path.lstrip('./')
+    # Always add ./ prefix (always relative path)
+    return f'./{normalized}'
+
+def format_media_path_for_xml(path):
+    """Format media path for gamelist.xml media fields (boxart, thumbnail, etc.).
+    
+    Rules:
+    - Always add './' prefix if not already present: "media/thumbnails/2010.jpg" -> "./media/thumbnails/2010.jpg"
+    - If already has './', keep as is: "./media/thumbnails/2010.jpg" -> "./media/thumbnails/2010.jpg"
+    
+    Args:
+        path: Media path (e.g., "media/thumbnails/2010.jpg")
+    
+    Returns:
+        str: Formatted path for XML with './' prefix
+    """
+    if not path:
+        return ''
+    # Remove leading ./ if present
+    normalized = path.lstrip('./')
+    # Always add ./ prefix for media paths
+    return f'./{normalized}'
+
+def download_game_media(system, game_id, download_id, batocera_system):
     """Download all media files for a game.
     
     Args:
-        system: System ID (e.g., "atari2600")
+        system: System ID (e.g., "atari2600") - used for API calls and parsing paths
         game_id: Game ID (rompath, e.g., "apshai.zip")
         download_id: Download ID for logging
+        batocera_system: Batocera system directory name - used for local destination paths (required)
     
     Returns:
-        list: List of successfully downloaded media file paths (relative to system directory)
+        tuple: (downloaded_media_list, game_data_dict) or ([], None) if failed
     """
+    if not batocera_system:
+        logger.error(f"batocera_system is required for download_game_media")
+        return [], None
+    
+    target_system = batocera_system
     downloaded_media = []
     
     try:
@@ -635,7 +794,7 @@ def download_game_media(system, game_id, download_id):
         game_data = get_game_details_from_api(download_id)
         if not game_data:
             logger.warning(f"Could not fetch game details for {game_id}, skipping media download")
-            return downloaded_media
+            return downloaded_media, None
         
         # List of media types to download
         media_types = [
@@ -667,8 +826,8 @@ def download_game_media(system, game_id, download_id):
             if normalized_path.startswith(f"{system}/"):
                 normalized_path = normalized_path[len(system) + 1:]
             
-            # Destination path: DOWNLOAD_PATH/system/{normalized_path}
-            dest_path = os.path.join(DOWNLOAD_PATH, system, normalized_path)
+            # Destination path: ROMS_PATH/batocera_system/{normalized_path}
+            dest_path = os.path.join(ROMS_PATH, target_system, normalized_path)
             
             # Ensure destination directory exists
             dest_dir = os.path.dirname(dest_path)
@@ -708,17 +867,17 @@ def download_game_media(system, game_id, download_id):
                 continue
         
         logger.info(f"Downloaded {len(downloaded_media)} media files for {game_id}")
-        return downloaded_media
+        return downloaded_media, game_data
         
     except Exception as e:
         logger.error(f"Error in download_game_media: {e}", exc_info=True)
-        return downloaded_media
+        return downloaded_media, None
 
-def update_gamelist_xml(system, game_id, game_data, media_paths):
+def update_gamelist_xml(batocera_system, game_id, game_data, media_paths):
     """Update or create gamelist.xml with the downloaded game entry.
     
     Args:
-        system: System ID (e.g., "atari2600")
+        batocera_system: Batocera system directory name (e.g., "atari2600")
         game_id: Game ID (rompath, e.g., "apshai.zip")
         game_data: Full game data from API (dict)
         media_paths: Dict mapping media types to downloaded paths (relative to system directory)
@@ -727,7 +886,7 @@ def update_gamelist_xml(system, game_id, game_data, media_paths):
         bool: True if successful, False otherwise
     """
     try:
-        gamelist_path = os.path.join(DOWNLOAD_PATH, system, 'gamelist.xml')
+        gamelist_path = os.path.join(ROMS_PATH, batocera_system, 'gamelist.xml')
         
         # Parse existing XML or create new
         if os.path.exists(gamelist_path):
@@ -761,12 +920,12 @@ def update_gamelist_xml(system, game_id, game_data, media_paths):
             game_element = ET.SubElement(root, 'game')
             logger.info(f"Creating new game entry in gamelist.xml: {game_id}")
         
-        # Update game path (use normalized form without leading ./)
-        normalized_game_id = normalize_media_path(game_id)
+        # Update game path (format correctly: add ./ for root files, keep subdirectory paths as is)
+        formatted_path = format_path_for_xml(game_id)
         path_elem = game_element.find('path')
         if path_elem is None:
             path_elem = ET.SubElement(game_element, 'path')
-        path_elem.text = normalized_game_id
+        path_elem.text = formatted_path
         
         # Update name
         name_elem = game_element.find('name')
@@ -817,20 +976,26 @@ def update_gamelist_xml(system, game_id, game_data, media_paths):
             'mix': 'mix'
         }
         
+        # Get system ID from game_data for parsing media paths
+        system = game_data.get('system', '')
+        
         for api_field, xml_field in media_fields.items():
             # Get path from game_data
             media_path = game_data.get(api_field, '')
             if media_path:
                 # Normalize the path (remove system prefix and leading ./)
                 normalized = normalize_media_path(media_path)
-                if normalized.startswith(f"{system}/"):
+                if system and normalized.startswith(f"{system}/"):
                     normalized = normalized[len(system) + 1:]
                 
-                # Use normalized path in XML (relative to system directory)
+                # Format path for XML (add ./ prefix for media paths)
+                formatted_media_path = format_media_path_for_xml(normalized)
+                
+                # Use formatted path in XML (relative to system directory)
                 elem = game_element.find(xml_field)
                 if elem is None:
                     elem = ET.SubElement(game_element, xml_field)
-                elem.text = normalized
+                elem.text = formatted_media_path
         
         # Ensure directory exists
         ensure_directory_exists(os.path.dirname(gamelist_path))
@@ -857,7 +1022,8 @@ def download_game(download_info):
     try:
         download_id = download_info['download_id']
         game_id = download_info['game_id']  # This is the rompath (e.g., "apshai.zip" or "board/chess/")
-        system = download_info.get('system', '')  # System ID (e.g., "atari2600")
+        system = download_info.get('system', '')  # System ID (e.g., "atari2600") - used for API calls
+        batocera_system = download_info.get('batocera_system', '')  # Batocera system directory name - used for local paths
         expected_file_size = download_info.get('file_size')
         bytes_already_transferred = download_info.get('bytes_transferred', 0)
         http_url = download_info.get('file_url')  # HTTP URL provided by backend
@@ -871,19 +1037,26 @@ def download_game(download_info):
             logger.error(f"Missing system or game_id: system={system}, game_id={game_id}")
             return False
         
+        if not batocera_system:
+            logger.error(f"Missing batocera_system in download_info for system: {system}")
+            return False
+        
+        target_system = batocera_system
+        
         logger.info(f"Downloading via HTTP")
         logger.info(f"  HTTP URL: {http_url}")
         logger.info(f"  Download ID: {download_id}")
         logger.info(f"  Game ID: {game_id}")
         logger.info(f"  System: {system}")
+        logger.info(f"  Batocera System: {target_system}")
         
-        # Determine destination base path: DOWNLOAD_PATH/system/rompath
-        if system:
-            dest_base_path = os.path.join(DOWNLOAD_PATH, system, game_id)
+        # Determine destination base path: ROMS_PATH/batocera_system/rompath
+        if target_system:
+            dest_base_path = os.path.join(ROMS_PATH, target_system, game_id)
             logger.info(f"Destination base path: {dest_base_path}")
         else:
-            logger.warning(f"System not provided in download_info, using game_id only: {game_id}")
-            dest_base_path = os.path.join(DOWNLOAD_PATH, game_id)
+            logger.warning(f"Target system not provided in download_info, using game_id only: {game_id}")
+            dest_base_path = os.path.join(ROMS_PATH, game_id)
             logger.info(f"Destination base path: {dest_base_path}")
         
         # First, check if it's a directory by checking Content-Type header
@@ -949,19 +1122,44 @@ def download_game(download_info):
                         )
                         if success:
                             # Download media files and update gamelist.xml after successful game download
+                            media_and_gamelist_success = False
                             try:
                                 logger.info(f"Download completed successfully, downloading media files for {game_id}")
-                                downloaded_media = download_game_media(system, game_id, download_id)
+                                downloaded_media, game_data = download_game_media(system, game_id, download_id, batocera_system=target_system)
                                 
-                                # Get full game details for gamelist.xml update (use same endpoint)
-                                game_data = get_game_details_from_api(download_id)
+                                # Use game_data returned from download_game_media (avoids duplicate API call)
                                 if game_data:
                                     # Update gamelist.xml with game entry
-                                    update_gamelist_xml(system, game_id, game_data, downloaded_media)
+                                    gamelist_success = update_gamelist_xml(target_system, game_id, game_data, downloaded_media)
+                                    if gamelist_success:
+                                        media_and_gamelist_success = True
+                                        logger.info(f"Media download and gamelist.xml update completed successfully for {game_id}")
+                                    else:
+                                        logger.warning(f"Gamelist.xml update failed for {game_id}")
                                 else:
                                     logger.warning(f"Could not fetch game details for gamelist.xml update: download {download_id}")
                             except Exception as e:
                                 logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
+                            
+                            # Restart emulationstation if media and gamelist.xml were successfully updated
+                            if media_and_gamelist_success:
+                                try:
+                                    logger.info("Restarting emulationstation after successful download with media and gamelist.xml")
+                                    result = subprocess.run(
+                                        ['killall', '-9', 'emulationstation'],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=5
+                                    )
+                                    if result.returncode == 0:
+                                        logger.info("Successfully restarted emulationstation")
+                                    else:
+                                        # killall returns non-zero if process not found, which is OK
+                                        logger.debug(f"killall emulationstation returned {result.returncode}: {result.stderr}")
+                                except subprocess.TimeoutExpired:
+                                    logger.warning("Timeout while trying to restart emulationstation")
+                                except Exception as e:
+                                    logger.error(f"Error restarting emulationstation: {e}", exc_info=True)
                         return success
                 except (ValueError, requests.exceptions.JSONDecodeError) as json_err:
                     # Failed to parse as JSON, treat as file
@@ -996,19 +1194,44 @@ def download_game(download_info):
                 
                 # Download media files and update gamelist.xml even if file already exists
                 # (media might not be downloaded yet)
+                media_and_gamelist_success = False
                 try:
                     logger.info(f"File already complete, downloading media files for {game_id}")
-                    downloaded_media = download_game_media(system, game_id, download_id)
+                    downloaded_media, game_data = download_game_media(system, game_id, download_id, batocera_system=target_system)
                     
-                    # Get full game details for gamelist.xml update (use same endpoint)
-                    game_data = get_game_details_from_api(download_id)
+                    # Use game_data returned from download_game_media (avoids duplicate API call)
                     if game_data:
                         # Update gamelist.xml with game entry
-                        update_gamelist_xml(system, game_id, game_data, downloaded_media)
+                        gamelist_success = update_gamelist_xml(target_system, game_id, game_data, downloaded_media)
+                        if gamelist_success:
+                            media_and_gamelist_success = True
+                            logger.info(f"Media download and gamelist.xml update completed successfully for {game_id}")
+                        else:
+                            logger.warning(f"Gamelist.xml update failed for {game_id}")
                     else:
                         logger.warning(f"Could not fetch game details for gamelist.xml update: download {download_id}")
                 except Exception as e:
                     logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
+                
+                # Restart emulationstation if media and gamelist.xml were successfully updated
+                if media_and_gamelist_success:
+                    try:
+                        logger.info("Restarting emulationstation after successful download with media and gamelist.xml")
+                        result = subprocess.run(
+                            ['killall', '-9', 'emulationstation'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            logger.info("Successfully restarted emulationstation")
+                        else:
+                            # killall returns non-zero if process not found, which is OK
+                            logger.debug(f"killall emulationstation returned {result.returncode}: {result.stderr}")
+                    except subprocess.TimeoutExpired:
+                        logger.warning("Timeout while trying to restart emulationstation")
+                    except Exception as e:
+                        logger.error(f"Error restarting emulationstation: {e}", exc_info=True)
                 
                 return True
         
@@ -1042,7 +1265,8 @@ def download_game(download_info):
                 time.sleep(BANDWIDTH_UPDATE_INTERVAL)
                 elapsed = time.time() - last_report_time
                 if elapsed > 0:
-                    total_bytes_transferred = resume_from + bytes_transferred_this_session[0]
+                    # Accumulate bytes from this session into total
+                    total_bytes_transferred += bytes_transferred_this_session[0]
                     
                     if bytes_transferred_this_session[0] > 0:
                         bytes_per_second = int(bytes_transferred_this_session[0] / elapsed)
@@ -1086,11 +1310,10 @@ def download_game(download_info):
             
             # Check if file not found (404)
             if success is None:
-                logger.error(f"File not found (404) for download {download_id}, removing from queue")
+                logger.error(f"File not found (404) for download {download_id}")
+                logger.info("Backend will handle removal of this download from queue")
                 progress_thread_running = False
                 progress_thread.join(timeout=1)
-                # Remove download from queue
-                remove_download_from_queue(download_id)
                 return False
             
             if not success:
@@ -1143,19 +1366,44 @@ def download_game(download_info):
             logger.info(f"  Resumed from: {resume_from} bytes")
             
             # Download media files and update gamelist.xml after successful game download
+            media_and_gamelist_success = False
             try:
                 logger.info(f"Download completed successfully, downloading media files for {game_id}")
-                downloaded_media = download_game_media(system, game_id, download_id)
+                downloaded_media, game_data = download_game_media(system, game_id, download_id, batocera_system=target_system)
                 
-                # Get full game details for gamelist.xml update (use same endpoint)
-                game_data = get_game_details_from_api(download_id)
+                # Use game_data returned from download_game_media (avoids duplicate API call)
                 if game_data:
                     # Update gamelist.xml with game entry
-                    update_gamelist_xml(system, game_id, game_data, downloaded_media)
+                    gamelist_success = update_gamelist_xml(target_system, game_id, game_data, downloaded_media)
+                    if gamelist_success:
+                        media_and_gamelist_success = True
+                        logger.info(f"Media download and gamelist.xml update completed successfully for {game_id}")
+                    else:
+                        logger.warning(f"Gamelist.xml update failed for {game_id}")
                 else:
                     logger.warning(f"Could not fetch game details for gamelist.xml update: download {download_id}")
             except Exception as e:
                 logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
+            
+            # Restart emulationstation if media and gamelist.xml were successfully updated
+            if media_and_gamelist_success:
+                try:
+                    logger.info("Restarting emulationstation after successful download with media and gamelist.xml")
+                    result = subprocess.run(
+                        ['killall', '-9', 'emulationstation'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        logger.info("Successfully restarted emulationstation")
+                    else:
+                        # killall returns non-zero if process not found, which is OK
+                        logger.debug(f"killall emulationstation returned {result.returncode}: {result.stderr}")
+                except subprocess.TimeoutExpired:
+                    logger.warning("Timeout while trying to restart emulationstation")
+                except Exception as e:
+                    logger.error(f"Error restarting emulationstation: {e}", exc_info=True)
             
             return True
         else:
@@ -1164,29 +1412,6 @@ def download_game(download_info):
             
     except Exception as e:
         logger.error(f"Failed to download {game_id}: {e}", exc_info=True)
-        return False
-
-def remove_download_from_queue(download_id):
-    """Remove a download from the queue (e.g., when file doesn't exist)."""
-    try:
-        headers = {
-            'Content-Type': 'application/json'
-        }
-        # Use the remove endpoint which doesn't update statistics
-        response = http_session.post(
-            f"{API_URL}/api/download/remove",
-            json={'download_id': download_id},
-            headers=headers
-        )
-        # Even if it fails (already deleted), log it
-        if response.status_code == 404:
-            logger.warning(f"Download {download_id} already removed from queue")
-        else:
-            response.raise_for_status()
-        logger.info(f"Removed download {download_id} from queue (file not found)")
-        return True
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to remove download from queue: {e}")
         return False
 
 def mark_completed(download_id):
@@ -1209,12 +1434,8 @@ def mark_completed(download_id):
 
 def process_queue():
     """Process downloads from the queue."""
-    logger.info("Requesting next download...")
-    
-    # Try fast queue first, then slow queue
-    download_info = request_download(queue_type='fast')
-    if not download_info:
-        download_info = request_download(queue_type='slow')
+    # Request download - backend will determine queue type from user's role
+    download_info = request_download(queue_type=None)
     
     if not download_info:
         logger.debug("No downloads available")
@@ -1236,44 +1457,28 @@ def main():
 
     logger.info(f"Starting download service (Service ID: {SERVICE_ID})...")
     ensure_directories()
-
-    # Test API connection before starting (but don't exit if it fails)
-    api_connected = test_api_connection()
-    if not api_connected:
-        logger.warning("API connection failed on startup, but continuing. Will retry in main loop.")
     
     # Main loop: poll for downloads
-    last_connection_check = time.time()
-    connection_check_interval = 60  # Check connection every 60 seconds
-    
     while True:
         try:
-            # Periodically check API connection
-            current_time = time.time()
-            if current_time - last_connection_check >= connection_check_interval:
-                if test_api_connection():
-                    if not api_connected:
-                        logger.info("✓ API connection restored!")
-                        api_connected = True
-                else:
-                    if api_connected:
-                        logger.warning("⚠ API connection lost, will retry...")
-                        api_connected = False
-                last_connection_check = current_time
+            # Process queue - connection errors will be handled by request_download
+            process_queue()
             
-            # Only try to process queue if API is connected
-            if api_connected:
-                process_queue()
+            # POLLING_INTERVAL is dynamically updated from backend responses
+            # Wait for POLLING_INTERVAL to be set from backend before sleeping
+            if POLLING_INTERVAL is None:
+                logger.warning("POLLING_INTERVAL not yet set by backend, using temporary 60s interval")
+                time.sleep(60)
             else:
-                logger.debug("Skipping queue processing - API not connected")
-            
-            time.sleep(POLLING_INTERVAL)
+                time.sleep(POLLING_INTERVAL)
         except KeyboardInterrupt:
             logger.info("Shutting down download service...")
             break
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
-            time.sleep(POLLING_INTERVAL)
+            # Use POLLING_INTERVAL if set, otherwise temporary fallback
+            sleep_interval = POLLING_INTERVAL if POLLING_INTERVAL is not None else 60
+            time.sleep(sleep_interval)
 
 if __name__ == "__main__":
     main() 

@@ -49,7 +49,7 @@ const HeaderSearch = () => {
   const performSearch = async (searchQuery) => {
     try {
       setLoading(true)
-      const response = await client.get('/api/search/quick', {
+      const response = await client.get('/api/catalog/search/quick', {
         params: {
           q: searchQuery,
           limit: 10

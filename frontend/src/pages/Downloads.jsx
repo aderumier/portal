@@ -5,28 +5,32 @@ import './Downloads.css'
 
 const Downloads = () => {
   const [queue, setQueue] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [initialLoading, setInitialLoading] = useState(true)
 
   useEffect(() => {
-    loadQueue()
+    loadQueue(true)
     
-    // Poll for updates every 2 seconds
+    // Poll for updates every 10 seconds
     const interval = setInterval(() => {
-      loadQueue()
-    }, 2000) // Poll every 2 seconds
+      loadQueue(false) // Don't show loading on refresh
+    }, 10000) // Poll every 10 seconds
     
     return () => clearInterval(interval)
   }, [])
 
-  const loadQueue = async () => {
+  const loadQueue = async (isInitialLoad = false) => {
     try {
-      setLoading(true)
+      if (isInitialLoad) {
+        setInitialLoading(true)
+      }
       const response = await client.get('/api/download/queue')
       setQueue(response.data || [])
     } catch (error) {
       console.error('Error loading queue:', error)
     } finally {
-      setLoading(false)
+      if (isInitialLoad) {
+        setInitialLoading(false)
+      }
     }
   }
 
@@ -75,8 +79,23 @@ const Downloads = () => {
     }
   }
 
+  const formatBytes = (bytes) => {
+    if (!bytes || bytes === 0) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i]
+  }
 
-  if (loading) {
+  const formatBytesPerSecond = (bytesPerSecond) => {
+    if (!bytesPerSecond || bytesPerSecond === 0) return '0 Mbits/s'
+    // Convert bytes/s to Mbits/s (1 Mbit = 125,000 bytes)
+    const mbitsPerSecond = bytesPerSecond / 125000
+    return `${mbitsPerSecond.toFixed(2)} Mbits/s`
+  }
+
+
+  if (initialLoading) {
     return <div className="loading">Loading downloads...</div>
   }
 
@@ -139,15 +158,27 @@ const Downloads = () => {
                     </span>
                   </td>
                   <td className="progress-cell">
-                    {(item.status === 'downloading' || item.status === 'paused') && item.progress_percent !== undefined ? (
+                    {(item.status === 'downloading' || item.status === 'paused') && (item.progress_percent !== undefined || item.file_size) ? (
                       <div className="table-progress">
                         <div className="progress-bar">
                           <div 
                             className="progress-fill" 
-                            style={{ width: `${item.progress_percent}%` }}
+                            style={{ width: `${item.progress_percent || 0}%` }}
                           ></div>
                         </div>
-                        <span className="progress-text">{item.progress_percent}%</span>
+                        <div className="progress-info">
+                          {item.progress_percent !== undefined && (
+                            <span className="progress-text">{item.progress_percent}%</span>
+                          )}
+                          {item.file_size && (
+                            <span className="progress-size">
+                              {formatBytes(item.bytes_transferred || 0)} / {formatBytes(item.file_size)}
+                            </span>
+                          )}
+                          {item.bandwidth_used > 0 && (
+                            <span className="progress-bandwidth">{formatBytesPerSecond(item.bandwidth_used)}</span>
+                          )}
+                        </div>
                       </div>
                     ) : (
                       <span className="no-progress">-</span>

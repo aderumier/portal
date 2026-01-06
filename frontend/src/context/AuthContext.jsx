@@ -39,6 +39,7 @@ export const AuthProvider = ({ children }) => {
   }
 
   const login = () => {
+    // Use relative URL so it works with nginx proxy
     window.location.href = '/api/auth/login'
   }
 

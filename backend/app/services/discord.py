@@ -20,6 +20,13 @@ class DiscordService:
     
     def get_auth_url(self) -> str:
         """Generate Discord OAuth2 authorization URL."""
+        if not self.client_id:
+            logger.error("DISCORD_CLIENT_ID is not set")
+            raise ValueError("DISCORD_CLIENT_ID is not configured")
+        if not self.redirect_uri:
+            logger.error("DISCORD_REDIRECT_URI is not set")
+            raise ValueError("DISCORD_REDIRECT_URI is not configured")
+        
         params = {
             'client_id': self.client_id,
             'redirect_uri': self.redirect_uri,
