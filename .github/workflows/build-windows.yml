@@ -16,7 +16,7 @@ jobs:
     runs-on: windows-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -62,7 +62,7 @@ jobs:
         $configText | Out-File -FilePath dist\RGS_Download_Service\config.ini -Encoding utf8
     
     - name: Upload executable artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: windows-executable
         path: services/download_service/dist/RGS_Download_Service/*
