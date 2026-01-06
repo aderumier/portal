@@ -176,6 +176,7 @@ class User(Base):
     medias_validated = Column(Integer, default=0, nullable=False)  # Total number of media files validated
     bandwidth_limit = Column(Integer, nullable=True)  # User's custom bandwidth limit in bytes/s (capped at role limit)
     last_login = Column(DateTime, nullable=True)  # Last login datetime
+    last_login_ip = Column(String, nullable=True)  # IP address from last login
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     

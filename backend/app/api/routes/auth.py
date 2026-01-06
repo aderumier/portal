@@ -13,6 +13,35 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+def get_client_ip(request: Request) -> Optional[str]:
+    """Get client IP address from request, checking proxy headers first.
+    
+    Args:
+        request: FastAPI Request object
+        
+    Returns:
+        Client IP address as string, or None if not available
+    """
+    # Check X-Forwarded-For header (used by reverse proxies)
+    # Format: "client, proxy1, proxy2" - we want the first (original client)
+    forwarded_for = request.headers.get('X-Forwarded-For', '').strip()
+    if forwarded_for:
+        # Take the first IP if multiple are present
+        client_ip = forwarded_for.split(',')[0].strip()
+        if client_ip:
+            return client_ip
+    
+    # Check X-Real-IP header (alternative proxy header)
+    real_ip = request.headers.get('X-Real-IP', '').strip()
+    if real_ip:
+        return real_ip
+    
+    # Fall back to direct connection IP
+    if request.client:
+        return request.client.host
+    
+    return None
+
 @router.get("/login")
 async def login(request: Request):
     """Redirect to Discord OAuth login."""
@@ -120,10 +149,13 @@ async def callback(
             'is_admin': is_admin
         }
         
-        # Update or create user record in database with username and last_login
+        # Update or create user record in database with username, last_login, and IP address
         if is_guild_member:
             from app.database import User
             from datetime import datetime, timezone
+            
+            # Get client IP address
+            client_ip = get_client_ip(request)
             
             db_user = db.query(User).filter(User.user_id == user['id']).first()
             current_time = datetime.now(timezone.utc)
@@ -132,8 +164,9 @@ async def callback(
                 # Update existing user
                 db_user.username = user.get('username', '')
                 db_user.last_login = current_time
+                db_user.last_login_ip = client_ip
                 db_user.updated_at = current_time
-                logger.info(f"Updated user {user['id']} username and last_login")
+                logger.info(f"Updated user {user['id']} username, last_login, and IP: {client_ip}")
             else:
                 # Create new user record
                 db_user = User(
@@ -142,11 +175,12 @@ async def callback(
                     total_download_mb=0.0,
                     total_download_number=0,
                     last_login=current_time,
+                    last_login_ip=client_ip,
                     created_at=current_time,
                     updated_at=current_time
                 )
                 db.add(db_user)
-                logger.info(f"Created new user record for {user['id']} with username {user.get('username', '')}")
+                logger.info(f"Created new user record for {user['id']} with username {user.get('username', '')} and IP: {client_ip}")
             
             db.commit()
         
