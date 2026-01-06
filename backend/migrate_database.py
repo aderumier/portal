@@ -130,6 +130,7 @@ def migrate_database():
         ("medias_validated", "INTEGER NOT NULL DEFAULT 0"),
         ("bandwidth_limit", "INTEGER"),
         ("last_login_ip", "TEXT"),
+        ("country", "TEXT"),
     ]
     
     for col_name, col_def in columns_to_add:

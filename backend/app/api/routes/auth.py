@@ -8,6 +8,7 @@ from app.services.discord import DiscordService
 from app.api.middleware.api_token import get_current_user
 from app.config import settings
 import logging
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,39 @@ def get_client_ip(request: Request) -> Optional[str]:
     # Fall back to direct connection IP
     if request.client:
         return request.client.host
+    
+    return None
+
+async def get_country_from_ip(ip_address: Optional[str]) -> Optional[str]:
+    """Get country code from IP address using GeoIP service.
+    
+    Args:
+        ip_address: IP address to lookup
+        
+    Returns:
+        Two-letter country code (e.g., 'US', 'FR'), or None if lookup fails
+    """
+    if not ip_address:
+        return None
+    
+    # Skip localhost/private IPs
+    if ip_address in ('127.0.0.1', 'localhost', '::1') or ip_address.startswith(('192.168.', '10.', '172.')):
+        return None
+    
+    try:
+        # Use ip-api.com free service (no API key required, 45 requests/minute limit)
+        # Alternative: ipapi.co (requires API key for production)
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"http://ip-api.com/json/{ip_address}?fields=status,countryCode")
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('status') == 'success':
+                    country_code = data.get('countryCode')
+                    if country_code:
+                        logger.debug(f"GeoIP lookup for {ip_address}: {country_code}")
+                        return country_code
+    except Exception as e:
+        logger.warning(f"Failed to get country from IP {ip_address}: {e}")
     
     return None
 
@@ -160,11 +194,31 @@ async def callback(
             db_user = db.query(User).filter(User.user_id == user['id']).first()
             current_time = datetime.now(timezone.utc)
             
+            # Determine if we should update country (if IP is empty or changed)
+            should_update_country = False
+            country = None
+            
+            if client_ip:
+                if not db_user or not db_user.last_login_ip or db_user.last_login_ip != client_ip:
+                    should_update_country = True
+                    country = await get_country_from_ip(client_ip)
+                    if country:
+                        logger.info(f"GeoIP lookup for {client_ip}: {country}")
+            
             if db_user:
                 # Update existing user
                 db_user.username = user.get('username', '')
                 db_user.last_login = current_time
+                previous_ip = db_user.last_login_ip
                 db_user.last_login_ip = client_ip
+                
+                # Update country if IP was empty or changed
+                if should_update_country and country:
+                    db_user.country = country
+                    logger.info(f"Updated user {user['id']} country to {country} (IP changed from {previous_ip} to {client_ip})")
+                elif should_update_country and not country:
+                    logger.debug(f"Could not determine country for IP {client_ip}, keeping existing country: {db_user.country}")
+                
                 db_user.updated_at = current_time
                 logger.info(f"Updated user {user['id']} username, last_login, and IP: {client_ip}")
             else:
@@ -176,11 +230,12 @@ async def callback(
                     total_download_number=0,
                     last_login=current_time,
                     last_login_ip=client_ip,
+                    country=country,
                     created_at=current_time,
                     updated_at=current_time
                 )
                 db.add(db_user)
-                logger.info(f"Created new user record for {user['id']} with username {user.get('username', '')} and IP: {client_ip}")
+                logger.info(f"Created new user record for {user['id']} with username {user.get('username', '')}, IP: {client_ip}, country: {country}")
             
             db.commit()
         

@@ -187,6 +187,7 @@ async def get_users_stats(
                 'bandwidth_limit': user.bandwidth_limit,
                 'last_login': user.last_login.isoformat() if user.last_login else None,
                 'last_login_ip': user.last_login_ip,
+                'country': user.country,
                 'created_at': user.created_at.isoformat() if user.created_at else None,
                 'updated_at': user.updated_at.isoformat() if user.updated_at else None
             })
