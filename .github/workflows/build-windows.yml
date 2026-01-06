@@ -58,7 +58,7 @@ jobs:
     - name: Create config template
       working-directory: services/download_service
       run: |
-        $configText = "[Service]`r`nAPI_URL=https://rgs-retro.ddns.net`r`nROMS_PATH=C:\ProgramData\RGS\roms`r`nSERVICE_ID=windows-service-1`r`nLOG_LEVEL=INFO`r`nLOG_DIR=C:\ProgramData\RGS\logs`r`nBANDWIDTH_UPDATE_INTERVAL=5"
+        $configText = "[Service]`r`nAPI_URL=https://rgs-retro.ddns.net`r`nROMS_PATH=C:\ProgramData\RGS\roms`r`nSERVICE_ID=windows-service-1`r`nLOG_LEVEL=INFO`r`nLOG_DIR=C:\ProgramData\RGS\logs`r`nBANDWIDTH_UPDATE_INTERVAL=5`r`n# BANDWIDTH_LIMIT=12500000  # Optional: Client-side bandwidth limit in bytes/s (e.g., 12500000 = 100 Mbits/s). Never exceeds backend limit."
         $configText | Out-File -FilePath dist\RGS_Download_Service\config.ini -Encoding utf8
     
     - name: Upload executable artifact
