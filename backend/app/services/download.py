@@ -563,7 +563,7 @@ class DownloadService:
                 # Determine which system prefix to use based on client platform
                 is_windows = self._is_windows_client(service_id)
                 if is_windows:
-                    target_system = db_system.retrobat_system or db_system.batocera_system
+                    target_system = db_system.retrobat_system
                     system_type = 'retrobat_system'
                 else:
                     target_system = db_system.batocera_system
@@ -698,7 +698,7 @@ class DownloadService:
             # Determine which system prefix to use based on client platform
             is_windows = self._is_windows_client(service_id)
             if is_windows:
-                target_system = db_system.retrobat_system or db_system.batocera_system
+                target_system = db_system.retrobat_system
                 system_type = 'retrobat_system'
             else:
                 target_system = db_system.batocera_system
