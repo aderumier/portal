@@ -135,6 +135,17 @@ ROMS_PATH = config.get('ROMS_PATH') or os.getenv('ROMS_PATH', DEFAULT_ROMS_PATH)
 # No fallback - must be set by backend
 POLLING_INTERVAL = None
 BANDWIDTH_UPDATE_INTERVAL = int(config.get('BANDWIDTH_UPDATE_INTERVAL') or os.getenv('BANDWIDTH_UPDATE_INTERVAL', '5'))
+# Optional client-side bandwidth limit (bytes per second). If set, will never exceed backend's allocated_bandwidth
+BANDWIDTH_LIMIT = None
+bandwidth_limit_str = config.get('BANDWIDTH_LIMIT') or os.getenv('BANDWIDTH_LIMIT')
+if bandwidth_limit_str:
+    try:
+        BANDWIDTH_LIMIT = int(bandwidth_limit_str)
+        if BANDWIDTH_LIMIT <= 0:
+            logger.warning(f"Invalid BANDWIDTH_LIMIT value: {bandwidth_limit_str}, ignoring")
+            BANDWIDTH_LIMIT = None
+    except ValueError:
+        logger.warning(f"Invalid BANDWIDTH_LIMIT value: {bandwidth_limit_str}, ignoring")
 SERVICE_ID = config.get('SERVICE_ID') or os.getenv('SERVICE_ID', socket.gethostname())
 
 # Read API_TOKEN from API_TOKEN.txt file in the service root directory
@@ -165,6 +176,10 @@ logger.info(f"  ROMS_PATH: {ROMS_PATH}")
 logger.info(f"  SERVICE_ID: {SERVICE_ID}")
 logger.info(f"  POLLING_INTERVAL: Will be set from backend on first connection")
 logger.info(f"  BANDWIDTH_UPDATE_INTERVAL: {BANDWIDTH_UPDATE_INTERVAL}s")
+if BANDWIDTH_LIMIT:
+    logger.info(f"  BANDWIDTH_LIMIT: {BANDWIDTH_LIMIT} bytes/s ({BANDWIDTH_LIMIT / 125000:.2f} Mbits/s)")
+else:
+    logger.info(f"  BANDWIDTH_LIMIT: Not set (using backend allocated bandwidth only)")
 
 # Validate API_URL is not pointing to frontend
 if ':3000' in API_URL:
@@ -236,6 +251,8 @@ def request_download(queue_type=None):
         }
         if queue_type:
             data['queue_type'] = queue_type
+        if BANDWIDTH_LIMIT:
+            data['bandwidth_limit'] = BANDWIDTH_LIMIT
         
         response = http_session.post(
             f"{API_URL}/api/download/request",
