@@ -290,6 +290,18 @@ async def get_current_user_info(
             detail="Not authenticated"
         )
     
+    # Determine which role names to return
+    download_role_name = None
+    fastdownload_role_name = None
+    admin_role_name = None
+    
+    if current_user.get('is_download', False):
+        download_role_name = settings.DISCORD_DOWNLOAD_ROLE
+    if current_user.get('is_fastdownload', False):
+        fastdownload_role_name = settings.DISCORD_FASTDOWNLOAD_ROLE
+    if current_user.get('is_admin', False):
+        admin_role_name = settings.DISCORD_ADMIN_ROLE
+    
     return {
         'id': current_user.get('id'),
         'username': current_user.get('username'),
@@ -297,7 +309,10 @@ async def get_current_user_info(
         'is_guild_member': current_user.get('is_guild_member', False),
         'is_download': current_user.get('is_download', False),
         'is_fastdownload': current_user.get('is_fastdownload', False),
-        'is_admin': current_user.get('is_admin', False)
+        'is_admin': current_user.get('is_admin', False),
+        'download_role_name': download_role_name,
+        'fastdownload_role_name': fastdownload_role_name,
+        'admin_role_name': admin_role_name
     }
 
 @router.post("/refresh-roles")

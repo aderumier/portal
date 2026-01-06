@@ -81,9 +81,11 @@ const Account = () => {
           <p><strong>Username:</strong> {user?.username}</p>
           <p><strong>User ID:</strong> {user?.id}</p>
           <p><strong>Guild Member:</strong> {user?.is_guild_member ? 'Yes' : 'No'}</p>
-          <p><strong>Download Role:</strong> {(user?.is_download || user?.is_fastdownload) ? 'Yes' : 'No'}</p>
-          <p><strong>Fast Download Role:</strong> {user?.is_fastdownload ? 'Yes' : 'No'}</p>
-          <p><strong>Admin Role:</strong> {user?.is_admin ? 'Yes' : 'No'}</p>
+          <p><strong>Download Role:</strong> {user?.download_role_name || user?.fastdownload_role_name || 'No'}</p>
+          {user?.fastdownload_role_name && (
+            <p><strong>Fast Download Role:</strong> {user?.fastdownload_role_name}</p>
+          )}
+          <p><strong>Admin Role:</strong> {user?.admin_role_name || 'No'}</p>
         </div>
       </div>
 
