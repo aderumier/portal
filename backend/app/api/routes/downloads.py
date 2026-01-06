@@ -31,7 +31,6 @@ class RequestDownloadRequest(BaseModel):
     queue_type: Optional[str] = None  # 'fast', 'slow', or None for both
     service_id: Optional[str] = 'default'
     platform: Optional[str] = None  # 'windows' or 'linux'
-    bandwidth_limit: Optional[int] = None  # Client-side bandwidth limit (bytes per second)
 
 class ProgressRequest(BaseModel):
     download_id: int
@@ -188,7 +187,6 @@ async def request_download(
     queue_type = request.queue_type
     service_id = request.service_id or 'default'
     platform = request.platform  # 'windows' or 'linux'
-    client_bandwidth_limit = request.bandwidth_limit  # Client-side bandwidth limit (bytes per second)
     
     # Get token_id from request state (set by API token middleware)
     token_id = getattr(http_request.state, 'token_id', None)
@@ -201,7 +199,7 @@ async def request_download(
     
     # If queue_type is not specified, search all queues for downloads with this token_id
     # The backend will search both fast and slow queues and return the first available download
-    download_info = download_service.get_next_download(queue_type, service_id, token_id=token_id, platform=platform, client_bandwidth_limit=client_bandwidth_limit)
+    download_info = download_service.get_next_download(queue_type, service_id, token_id=token_id, platform=platform)
     
     if not download_info:
         return {

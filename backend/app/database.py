@@ -174,6 +174,7 @@ class User(Base):
     total_download_number = Column(Integer, default=0, nullable=False)  # Total number of games downloaded
     medias_upload = Column(Integer, default=0, nullable=False)  # Total number of media files uploaded
     medias_validated = Column(Integer, default=0, nullable=False)  # Total number of media files validated
+    bandwidth_limit = Column(Integer, nullable=True)  # User's custom bandwidth limit in bytes/s (capped at role limit)
     last_login = Column(DateTime, nullable=True)  # Last login datetime
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

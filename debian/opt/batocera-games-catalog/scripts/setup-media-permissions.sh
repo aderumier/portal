@@ -64,3 +64,4 @@ echo "2. Verify nginx user can access the directory: sudo -u $NGINX_USER test -r
 echo "3. Check nginx error logs: sudo tail -f /var/log/nginx/error.log"
 
 
+

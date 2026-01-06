@@ -6,9 +6,14 @@ import './Downloads.css'
 const Downloads = () => {
   const [queue, setQueue] = useState([])
   const [initialLoading, setInitialLoading] = useState(true)
+  const [bandwidthLimit, setBandwidthLimit] = useState(null)
+  const [maxBandwidthLimit, setMaxBandwidthLimit] = useState(null)
+  const [editingBandwidth, setEditingBandwidth] = useState(false)
+  const [bandwidthInput, setBandwidthInput] = useState('')
 
   useEffect(() => {
     loadQueue(true)
+    loadBandwidthLimit()
     
     // Poll for updates every 10 seconds
     const interval = setInterval(() => {
@@ -17,6 +22,49 @@ const Downloads = () => {
     
     return () => clearInterval(interval)
   }, [])
+
+  const loadBandwidthLimit = async () => {
+    try {
+      const response = await client.get('/api/users/bandwidth-limit')
+      setBandwidthLimit(response.data.bandwidth_limit)
+      setMaxBandwidthLimit(response.data.max_bandwidth_limit)
+    } catch (error) {
+      console.error('Error loading bandwidth limit:', error)
+    }
+  }
+
+  const handleBandwidthSave = async () => {
+    try {
+      let limit = null
+      if (bandwidthInput !== '') {
+        const mbits = parseFloat(bandwidthInput)
+        if (isNaN(mbits) || mbits < 0) {
+          alert('Invalid bandwidth value')
+          return
+        }
+        // Convert Mbits/s to bytes/s
+        limit = Math.round(mbits * 125000)
+      }
+      await client.put('/api/users/bandwidth-limit', { bandwidth_limit: limit })
+      setBandwidthLimit(limit)
+      setEditingBandwidth(false)
+      setBandwidthInput('')
+      alert('Bandwidth limit updated successfully')
+    } catch (error) {
+      console.error('Error updating bandwidth limit:', error)
+      alert(error.response?.data?.detail || 'Failed to update bandwidth limit')
+    }
+  }
+
+  const handleBandwidthCancel = () => {
+    setEditingBandwidth(false)
+    setBandwidthInput('')
+  }
+
+  const formatMbits = (bytes) => {
+    if (!bytes) return '0'
+    return (bytes / 125000).toFixed(2)
+  }
 
   const loadQueue = async (isInitialLoad = false) => {
     try {
@@ -104,6 +152,41 @@ const Downloads = () => {
       <div className="downloads-header">
         <h1>My Downloads</h1>
         <div className="downloads-actions">
+          <div className="bandwidth-limit-section">
+            {!editingBandwidth ? (
+              <>
+                <span className="bandwidth-label">
+                  Bandwidth Limit: {bandwidthLimit ? `${formatMbits(bandwidthLimit)} Mbits/s` : 'Not set'}
+                  {maxBandwidthLimit && ` (Max: ${formatMbits(maxBandwidthLimit)} Mbits/s)`}
+                </span>
+                <button className="edit-bandwidth-btn" onClick={() => {
+                  setEditingBandwidth(true)
+                  setBandwidthInput(bandwidthLimit ? formatMbits(bandwidthLimit) : '')
+                }}>
+                  Edit
+                </button>
+              </>
+            ) : (
+              <>
+                <input
+                  type="number"
+                  className="bandwidth-input"
+                  placeholder={maxBandwidthLimit ? `Max: ${formatMbits(maxBandwidthLimit)} Mbits/s` : 'Mbits/s'}
+                  value={bandwidthInput}
+                  onChange={(e) => setBandwidthInput(e.target.value)}
+                  min="0"
+                  max={maxBandwidthLimit ? formatMbits(maxBandwidthLimit) : undefined}
+                  step="0.01"
+                />
+                <button className="save-bandwidth-btn" onClick={handleBandwidthSave}>
+                  Save
+                </button>
+                <button className="cancel-bandwidth-btn" onClick={handleBandwidthCancel}>
+                  Cancel
+                </button>
+              </>
+            )}
+          </div>
           <button className="clear-queue-btn" onClick={handleClear}>
             Clear Queue
           </button>

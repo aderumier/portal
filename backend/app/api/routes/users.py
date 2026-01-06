@@ -60,6 +60,112 @@ async def revoke_token(
     
     return {"success": True}
 
+@router.get("/bandwidth-limit")
+async def get_bandwidth_limit(
+    current_user: dict = Depends(require_guild_member),
+    db: Session = Depends(get_db)
+):
+    """Get current user's bandwidth limit and max allowed limit based on role."""
+    from app.config import settings
+    
+    user_id = current_user['id']
+    db_user = db.query(User).filter(User.user_id == user_id).first()
+    
+    # Determine max limit based on user's role
+    is_fastdownload = current_user.get('is_fastdownload', False)
+    is_download = current_user.get('is_download', False)
+    
+    # Get role-based max limit
+    max_limit = None
+    if is_fastdownload:
+        max_limit = getattr(settings, 'PER_USER_FAST_QUEUE_LIMIT', None)
+    elif is_download:
+        max_limit = getattr(settings, 'PER_USER_SLOW_QUEUE_LIMIT', None)
+    
+    current_limit = db_user.bandwidth_limit if db_user else None
+    
+    return {
+        "bandwidth_limit": current_limit,
+        "max_bandwidth_limit": max_limit,
+        "has_fastdownload_role": is_fastdownload,
+        "has_download_role": is_download
+    }
+
+@router.put("/bandwidth-limit")
+async def update_bandwidth_limit(
+    request: Dict,
+    current_user: dict = Depends(require_guild_member),
+    db: Session = Depends(get_db)
+):
+    """Update current user's bandwidth limit (capped at role-based limit)."""
+    from app.config import settings
+    from datetime import datetime, timezone
+    
+    user_id = current_user['id']
+    new_limit = request.get('bandwidth_limit')
+    
+    # Validate input
+    if new_limit is not None:
+        try:
+            new_limit = int(new_limit)
+            if new_limit < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Bandwidth limit must be non-negative"
+                )
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid bandwidth limit value"
+            )
+    
+    # Determine max limit based on user's role
+    is_fastdownload = current_user.get('is_fastdownload', False)
+    is_download = current_user.get('is_download', False)
+    
+    # Get role-based max limit
+    max_limit = None
+    if is_fastdownload:
+        max_limit = getattr(settings, 'PER_USER_FAST_QUEUE_LIMIT', None)
+    elif is_download:
+        max_limit = getattr(settings, 'PER_USER_SLOW_QUEUE_LIMIT', None)
+    
+    # Cap the new limit at the role-based max
+    if new_limit is not None and max_limit is not None:
+        if new_limit > max_limit:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Bandwidth limit cannot exceed {max_limit} bytes/s ({max_limit / 125000:.2f} Mbits/s) for your role"
+            )
+    
+    # Get or create user
+    db_user = db.query(User).filter(User.user_id == user_id).first()
+    if not db_user:
+        db_user = User(
+            user_id=user_id,
+            username=current_user.get('username'),
+            total_download_mb=0.0,
+            total_download_number=0,
+            bandwidth_limit=new_limit,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
+        )
+        db.add(db_user)
+    else:
+        db_user.bandwidth_limit = new_limit
+        db_user.updated_at = datetime.now(timezone.utc)
+    
+    db.commit()
+    
+    logger.info(f"Updated bandwidth limit for user {user_id}: {new_limit} bytes/s (max allowed: {max_limit})")
+    
+    return {
+        "bandwidth_limit": new_limit,
+        "max_bandwidth_limit": max_limit,
+        "has_fastdownload_role": is_fastdownload,
+        "has_download_role": is_download
+    }
+
 @router.get("/users/stats")
 async def get_users_stats(
     current_user: dict = Depends(require_admin_role),

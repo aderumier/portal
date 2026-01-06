@@ -7,3 +7,4 @@ cd /opt/batocera-games-catalog/frontend/dist
 exec python3 -m http.server 3000
 
 
+

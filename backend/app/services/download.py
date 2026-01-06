@@ -451,7 +451,7 @@ class DownloadService:
             self.db.rollback()
             return False
     
-    def get_next_download(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None, platform: Optional[str] = None, client_bandwidth_limit: Optional[int] = None) -> Optional[Dict]:
+    def get_next_download(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None, platform: Optional[str] = None) -> Optional[Dict]:
         """Get next available download from queue, including resumable interrupted downloads.
         
         Only returns downloads associated with the specified token_id.
@@ -542,10 +542,13 @@ class DownloadService:
                 # Calculate available bandwidth
                 allocated_bandwidth = self.bandwidth_manager.allocate_bandwidth(resumable_download.queue_type)
                 
-                # Apply client-side bandwidth limit if provided (never exceed backend limit)
-                if client_bandwidth_limit and client_bandwidth_limit > 0:
-                    allocated_bandwidth = min(allocated_bandwidth, client_bandwidth_limit)
-                    logger.info(f"Applied client bandwidth limit: {client_bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
+                # Get user's custom bandwidth limit if set (capped at role-based limit)
+                from app.database import User
+                db_user = self.db.query(User).filter(User.user_id == resumable_download.user_id).first()
+                if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
+                    # Cap user's bandwidth_limit at the role-based limit
+                    allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
+                    logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
                 
                 # Get system info from System table - use retrobat_system for Windows, batocera_system for Linux
                 db_system = self.db.query(System).filter(System.id == system).first()
@@ -629,10 +632,13 @@ class DownloadService:
             # Check if we can allocate bandwidth for this queue
             allocated_bandwidth = self.bandwidth_manager.allocate_bandwidth(pending_download.queue_type)
             
-            # Apply client-side bandwidth limit if provided (never exceed backend limit)
-            if client_bandwidth_limit and client_bandwidth_limit > 0:
-                allocated_bandwidth = min(allocated_bandwidth, client_bandwidth_limit)
-                logger.info(f"Applied client bandwidth limit: {client_bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
+            # Get user's custom bandwidth limit if set (capped at role-based limit)
+            from app.database import User
+            db_user = self.db.query(User).filter(User.user_id == pending_download.user_id).first()
+            if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
+                # Cap user's bandwidth_limit at the role-based limit
+                allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
+                logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
             
             if allocated_bandwidth <= 0:
                 logger.debug(f"No bandwidth available for {pending_download.queue_type} queue")
