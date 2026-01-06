@@ -451,6 +451,15 @@ class DownloadService:
             self.db.rollback()
             return False
     
+    def _is_windows_client(self, service_id: str) -> bool:
+        """Detect if the client is Windows based on service_id.
+        
+        Windows services typically have 'windows' in their service_id or are named like
+        'COMPUTERNAME-RGSDownloadService' or 'windows-service-*'.
+        """
+        service_id_lower = service_id.lower()
+        return 'windows' in service_id_lower or service_id_lower.startswith('rgsdownloadservice')
+    
     def get_next_download(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None) -> Optional[Dict]:
         """Get next available download from queue, including resumable interrupted downloads.
         
@@ -542,7 +551,7 @@ class DownloadService:
                 # Calculate available bandwidth
                 allocated_bandwidth = self.bandwidth_manager.allocate_bandwidth(resumable_download.queue_type)
                 
-                # Get batocera_system from System table
+                # Get system info from System table - use retrobat_system for Windows, batocera_system for Linux
                 db_system = self.db.query(System).filter(System.id == system).first()
                 if not db_system:
                     logger.error(f"System not found in database: {system}")
@@ -551,13 +560,23 @@ class DownloadService:
                     self.db.commit()
                     return None
                 
-                batocera_system = db_system.batocera_system
-                if not batocera_system:
-                    logger.error(f"batocera_system not set for system: {system}")
+                # Determine which system prefix to use based on client platform
+                is_windows = self._is_windows_client(service_id)
+                if is_windows:
+                    target_system = db_system.retrobat_system or db_system.batocera_system
+                    system_type = 'retrobat_system'
+                else:
+                    target_system = db_system.batocera_system
+                    system_type = 'batocera_system'
+                
+                if not target_system:
+                    logger.error(f"{system_type} not set for system: {system}")
                     self.archive_download(resumable_download.id, 'error')
                     self.db.delete(resumable_download)
                     self.db.commit()
                     return None
+                
+                logger.info(f"Using {system_type}='{target_system}' for client platform (service_id={service_id}, is_windows={is_windows})")
                 
                 # Construct HTTP URL for the file
                 import urllib.parse
@@ -580,7 +599,7 @@ class DownloadService:
                     'queue_type': resumable_download.queue_type,
                     'game_name': game.get('name', ''),
                     'system': game.get('system', ''),  # Include system for download service
-                    'batocera_system': batocera_system,  # Include batocera_system for destination path
+                    'batocera_system': target_system,  # Include system prefix for destination path (batocera_system for Linux, retrobat_system for Windows)
                     'game_details': game  # Include full game details for media download
                 }
                 
@@ -667,7 +686,7 @@ class DownloadService:
             pending_download.assigned_to_service = service_id
             self.db.commit()
             
-            # Get batocera_system from System table
+            # Get system info from System table - use retrobat_system for Windows, batocera_system for Linux
             db_system = self.db.query(System).filter(System.id == system).first()
             if not db_system:
                 logger.error(f"System not found in database: {system}")
@@ -676,13 +695,23 @@ class DownloadService:
                 self.db.commit()
                 return None
             
-            batocera_system = db_system.batocera_system
-            if not batocera_system:
-                logger.error(f"batocera_system not set for system: {system}")
+            # Determine which system prefix to use based on client platform
+            is_windows = self._is_windows_client(service_id)
+            if is_windows:
+                target_system = db_system.retrobat_system or db_system.batocera_system
+                system_type = 'retrobat_system'
+            else:
+                target_system = db_system.batocera_system
+                system_type = 'batocera_system'
+            
+            if not target_system:
+                logger.error(f"{system_type} not set for system: {system}")
                 self.archive_download(pending_download.id, 'error')
                 self.db.delete(pending_download)
                 self.db.commit()
                 return None
+            
+            logger.info(f"Using {system_type}='{target_system}' for client platform (service_id={service_id}, is_windows={is_windows})")
             
             # Construct HTTP URL for the file
             import urllib.parse
@@ -705,7 +734,7 @@ class DownloadService:
                 'queue_type': pending_download.queue_type,
                 'game_name': game.get('name', ''),
                 'system': game.get('system', ''),
-                'batocera_system': batocera_system,  # Include batocera_system for destination path
+                'batocera_system': target_system,  # Include system prefix for destination path (batocera_system for Linux, retrobat_system for Windows)
                 'game_details': game  # Include full game details for media download
             }
             
