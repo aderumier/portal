@@ -42,52 +42,52 @@ jobs:
         Copy-Item dist\rgs_download_service.exe dist\RGS_Download_Service\
         "Your API token here" | Out-File -FilePath dist\RGS_Download_Service\API_TOKEN.txt -Encoding utf8
         
-        # Copy installation scripts
         if (Test-Path "install_windows_service.ps1") {
-            Copy-Item install_windows_service.ps1 dist\RGS_Download_Service\
+          Copy-Item install_windows_service.ps1 dist\RGS_Download_Service\
         }
         if (Test-Path "install_windows_service.bat") {
-            Copy-Item install_windows_service.bat dist\RGS_Download_Service\
+          Copy-Item install_windows_service.bat dist\RGS_Download_Service\
         }
         if (Test-Path "README_WINDOWS.md") {
-            Copy-Item README_WINDOWS.md dist\RGS_Download_Service\README.txt
+          Copy-Item README_WINDOWS.md dist\RGS_Download_Service\README.txt
         } else {
-            # Create basic README if markdown doesn't exist
-            @"
-RGS Download Service - Windows Installation
-============================================
-
-1. Copy your API token to API_TOKEN.txt
-2. Edit config.ini if needed (optional)
-3. Run rgs_download_service.exe to test
-4. Use install_windows_service.ps1 or install_windows_service.bat to install as service
-
-Quick Start:
-------------
-- Run install_windows_service.ps1 (PowerShell) or install_windows_service.bat
-- Or manually use NSSM: https://nssm.cc/download
-
-Configuration:
---------------
-Set environment variables via NSSM or create config.ini:
-- API_URL: Backend API URL (default: https://rgs-retro.ddns.net)
-- ROMS_PATH: Path to ROMs directory (default: C:\ProgramData\RGS\roms)
-- SERVICE_ID: Service identifier (default: hostname)
-- LOG_LEVEL: Logging level (default: INFO)
-"@ | Out-File -FilePath dist\RGS_Download_Service\README.txt -Encoding utf8
+          $readmeLines = @(
+            "RGS Download Service - Windows Installation",
+            "============================================",
+            "",
+            "1. Copy your API token to API_TOKEN.txt",
+            "2. Edit config.ini if needed (optional)",
+            "3. Run rgs_download_service.exe to test",
+            "4. Use install_windows_service.ps1 or install_windows_service.bat to install as service",
+            "",
+            "Quick Start:",
+            "------------",
+            "- Run install_windows_service.ps1 (PowerShell) or install_windows_service.bat",
+            "- Or manually use NSSM: https://nssm.cc/download",
+            "",
+            "Configuration:",
+            "--------------",
+            "Set environment variables via NSSM or create config.ini:",
+            "- API_URL: Backend API URL (default: https://rgs-retro.ddns.net)",
+            "- ROMS_PATH: Path to ROMs directory (default: C:\ProgramData\RGS\roms)",
+            "- SERVICE_ID: Service identifier (default: hostname)",
+            "- LOG_LEVEL: Logging level (default: INFO)"
+          )
+          $readmeLines -join "`r`n" | Out-File -FilePath dist\RGS_Download_Service\README.txt -Encoding utf8
         }
     
     - name: Create config template
       working-directory: services/download_service
       run: |
-        @"
-[Service]
-API_URL=https://rgs-retro.ddns.net
-ROMS_PATH=C:\ProgramData\RGS\roms
-SERVICE_ID=windows-service-1
-LOG_LEVEL=INFO
-BANDWIDTH_UPDATE_INTERVAL=5
-"@ | Out-File -FilePath dist\RGS_Download_Service\config.ini -Encoding utf8
+        $configLines = @(
+          "[Service]",
+          "API_URL=https://rgs-retro.ddns.net",
+          "ROMS_PATH=C:\ProgramData\RGS\roms",
+          "SERVICE_ID=windows-service-1",
+          "LOG_LEVEL=INFO",
+          "BANDWIDTH_UPDATE_INTERVAL=5"
+        )
+        $configLines -join "`r`n" | Out-File -FilePath dist\RGS_Download_Service\config.ini -Encoding utf8
     
     - name: Upload executable artifact
       uses: actions/upload-artifact@v3
