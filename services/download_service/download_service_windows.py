@@ -16,6 +16,9 @@ if platform.system() != 'Windows':
 if getattr(sys, 'frozen', False):
     # Running as compiled executable
     EXE_DIR = Path(sys.executable).parent
+    # Add EXE_DIR to Python path so we can import download_service
+    if str(EXE_DIR) not in sys.path:
+        sys.path.insert(0, str(EXE_DIR))
 else:
     # Running as script
     EXE_DIR = Path(__file__).parent
@@ -39,36 +42,43 @@ if 'ROMS_PATH' not in os.environ:
     roms_path, _ = get_windows_paths()
     os.environ['ROMS_PATH'] = roms_path
 
-# Import download_service module
-# We need to modify paths before the module initializes logging
-import importlib.util
-
-# Load download_service as a module
-service_file = EXE_DIR / "download_service.py"
-if not service_file.exists():
-    # Try relative to current file
-    service_file = Path(__file__).parent / "download_service.py"
-
-spec = importlib.util.spec_from_file_location("download_service", service_file)
-download_service = importlib.util.module_from_spec(spec)
-
-# Patch environment before module execution
+# Set log file path before importing download_service
 _, log_file_path = get_windows_paths()
 os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 os.environ['LOG_FILE'] = log_file_path
 
-# Execute the module
-spec.loader.exec_module(download_service)
+# Import download_service module
+# When frozen, download_service.py should be in the same directory as the exe
+try:
+    import download_service
+except ImportError:
+    # Try loading from file if import fails
+    import importlib.util
+    service_file = EXE_DIR / "download_service.py"
+    if not service_file.exists():
+        service_file = Path(__file__).parent / "download_service.py"
+    
+    if not service_file.exists():
+        print(f"ERROR: download_service.py not found in {EXE_DIR}")
+        sys.exit(1)
+    
+    spec = importlib.util.spec_from_file_location("download_service", service_file)
+    download_service = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(download_service)
 
 # Patch paths after module load
 if hasattr(download_service, 'log_file_path'):
     download_service.log_file_path = log_file_path
 
-# Patch API_TOKEN path
+# Patch API_TOKEN path to look in executable directory
 if hasattr(download_service, 'api_token_path'):
     download_service.api_token_path = EXE_DIR / 'API_TOKEN.txt'
+elif hasattr(download_service, 'SERVICE_DIR'):
+    # Update SERVICE_DIR if it exists
+    download_service.SERVICE_DIR = EXE_DIR
+    download_service.api_token_path = EXE_DIR / 'API_TOKEN.txt'
 
-# Reconfigure logging with Windows path
+# Reconfigure logging with Windows path (in case module already configured it)
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -84,21 +94,39 @@ file_handler = RotatingFileHandler(
     maxBytes=500 * 1024 * 1024,  # 500 MB
     backupCount=10
 )
-file_handler.setLevel(logging.INFO)
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+file_handler.setLevel(getattr(logging, log_level, logging.INFO))
 file_handler.setFormatter(logging.Formatter(
     '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 ))
 root_logger.addHandler(file_handler)
-root_logger.setLevel(logging.INFO)
+root_logger.setLevel(getattr(logging, log_level, logging.INFO))
 
 # Update the module's logger
-download_service.logger = logging.getLogger(__name__)
-download_service.logger.info(f"Windows wrapper initialized. Log file: {log_file_path}")
+if hasattr(download_service, 'logger'):
+    download_service.logger = logging.getLogger('download_service')
+    download_service.logger.info(f"Windows wrapper initialized. Log file: {log_file_path}")
+else:
+    logger = logging.getLogger('download_service')
+    logger.info(f"Windows wrapper initialized. Log file: {log_file_path}")
 
 # Patch ROMS_PATH in the module
 if hasattr(download_service, 'ROMS_PATH'):
     download_service.ROMS_PATH = os.environ.get('ROMS_PATH', get_windows_paths()[0])
+
+# Verify API_TOKEN can be loaded
+if hasattr(download_service, 'API_TOKEN'):
+    if not download_service.API_TOKEN:
+        api_token_file = EXE_DIR / 'API_TOKEN.txt'
+        if api_token_file.exists():
+            try:
+                with open(api_token_file, 'r', encoding='utf-8') as f:
+                    download_service.API_TOKEN = f.read().strip()
+                if download_service.API_TOKEN:
+                    logging.getLogger('download_service').info(f"API_TOKEN loaded from {api_token_file}")
+            except Exception as e:
+                logging.getLogger('download_service').error(f"Failed to read API_TOKEN: {e}")
 
 # Now run the main function
 if __name__ == "__main__":

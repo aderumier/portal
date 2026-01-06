@@ -41,23 +41,31 @@ jobs:
         New-Item -ItemType Directory -Force -Path dist\RGS_Download_Service | Out-Null
         Copy-Item dist\rgs_download_service.exe dist\RGS_Download_Service\
         "Your API token here" | Out-File -FilePath dist\RGS_Download_Service\API_TOKEN.txt -Encoding utf8
-        @"
+        
+        # Copy installation scripts
+        if (Test-Path "install_windows_service.ps1") {
+            Copy-Item install_windows_service.ps1 dist\RGS_Download_Service\
+        }
+        if (Test-Path "install_windows_service.bat") {
+            Copy-Item install_windows_service.bat dist\RGS_Download_Service\
+        }
+        if (Test-Path "README_WINDOWS.md") {
+            Copy-Item README_WINDOWS.md dist\RGS_Download_Service\README.txt
+        } else {
+            # Create basic README if markdown doesn't exist
+            @"
 RGS Download Service - Windows Installation
 ============================================
 
 1. Copy your API token to API_TOKEN.txt
 2. Edit config.ini if needed (optional)
 3. Run rgs_download_service.exe to test
-4. Use NSSM to install as Windows service
+4. Use install_windows_service.ps1 or install_windows_service.bat to install as service
 
-Service Installation:
----------------------
-1. Download NSSM from https://nssm.cc/download
-2. Extract and run: nssm install RGSDownloadService
-3. Set path to: [path to]\rgs_download_service.exe
-4. Set startup directory to: [path to service folder]
-5. Set environment variables if needed
-6. Start service: nssm start RGSDownloadService
+Quick Start:
+------------
+- Run install_windows_service.ps1 (PowerShell) or install_windows_service.bat
+- Or manually use NSSM: https://nssm.cc/download
 
 Configuration:
 --------------
@@ -67,6 +75,7 @@ Set environment variables via NSSM or create config.ini:
 - SERVICE_ID: Service identifier (default: hostname)
 - LOG_LEVEL: Logging level (default: INFO)
 "@ | Out-File -FilePath dist\RGS_Download_Service\README.txt -Encoding utf8
+        }
     
     - name: Create config template
       working-directory: services/download_service

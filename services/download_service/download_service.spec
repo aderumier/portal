@@ -19,6 +19,10 @@ a = Analysis(
     datas=[
         # Include download_service.py as data (it will be imported)
         (str(spec_dir / 'download_service.py'), '.'),
+        # Include installation scripts in the distribution
+        (str(spec_dir / 'install_windows_service.ps1'), '.'),
+        (str(spec_dir / 'install_windows_service.bat'), '.'),
+        (str(spec_dir / 'README_WINDOWS.md'), '.'),
     ],
     hiddenimports=[
         'requests',
