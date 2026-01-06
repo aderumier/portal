@@ -451,16 +451,7 @@ class DownloadService:
             self.db.rollback()
             return False
     
-    def _is_windows_client(self, service_id: str) -> bool:
-        """Detect if the client is Windows based on service_id.
-        
-        Windows services typically have 'windows' in their service_id or are named like
-        'COMPUTERNAME-RGSDownloadService' or 'windows-service-*'.
-        """
-        service_id_lower = service_id.lower()
-        return 'windows' in service_id_lower or service_id_lower.startswith('rgsdownloadservice')
-    
-    def get_next_download(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None) -> Optional[Dict]:
+    def get_next_download(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None, platform: Optional[str] = None) -> Optional[Dict]:
         """Get next available download from queue, including resumable interrupted downloads.
         
         Only returns downloads associated with the specified token_id.
@@ -561,7 +552,7 @@ class DownloadService:
                     return None
                 
                 # Determine which system prefix to use based on client platform
-                is_windows = self._is_windows_client(service_id)
+                is_windows = platform and platform.lower() == 'windows'
                 if is_windows:
                     target_system = db_system.retrobat_system
                     system_type = 'retrobat_system'
@@ -696,7 +687,7 @@ class DownloadService:
                 return None
             
             # Determine which system prefix to use based on client platform
-            is_windows = self._is_windows_client(service_id)
+            is_windows = platform and platform.lower() == 'windows'
             if is_windows:
                 target_system = db_system.retrobat_system
                 system_type = 'retrobat_system'

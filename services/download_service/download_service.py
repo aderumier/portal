@@ -228,8 +228,11 @@ def request_download(queue_type=None):
         headers = {
             'Content-Type': 'application/json'
         }
+        # Determine platform based on system
+        client_platform = 'windows' if platform.system() == 'Windows' else 'linux'
         data = {
-            'service_id': SERVICE_ID
+            'service_id': SERVICE_ID,
+            'platform': client_platform
         }
         if queue_type:
             data['queue_type'] = queue_type
