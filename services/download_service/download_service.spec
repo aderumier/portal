@@ -81,4 +81,3 @@ exe = EXE(
     icon=None,
     version=None,
 )
-

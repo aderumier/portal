@@ -39,15 +39,17 @@ if 'ROMS_PATH' not in os.environ:
     roms_path, _ = get_windows_paths()
     os.environ['ROMS_PATH'] = roms_path
 
-# Override paths in download_service module
-# We need to modify the module-level variables before the module executes
+# Import download_service module
+# We need to modify paths before the module initializes logging
 import importlib.util
 
 # Load download_service as a module
-spec = importlib.util.spec_from_file_location(
-    "download_service",
-    EXE_DIR / "download_service.py"
-)
+service_file = EXE_DIR / "download_service.py"
+if not service_file.exists():
+    # Try relative to current file
+    service_file = Path(__file__).parent / "download_service.py"
+
+spec = importlib.util.spec_from_file_location("download_service", service_file)
 download_service = importlib.util.module_from_spec(spec)
 
 # Patch environment before module execution
@@ -59,38 +61,44 @@ os.environ['LOG_FILE'] = log_file_path
 spec.loader.exec_module(download_service)
 
 # Patch paths after module load
-if hasattr(download_service, 'ROMS_PATH'):
-    download_service.ROMS_PATH = os.environ.get('ROMS_PATH', get_windows_paths()[0])
-
 if hasattr(download_service, 'log_file_path'):
     download_service.log_file_path = log_file_path
-    # Reconfigure logging with Windows path
-    import logging
-    from logging.handlers import RotatingFileHandler
-    
-    # Remove existing handlers
-    root_logger = logging.getLogger()
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-    
-    # Add new handler with Windows path
-    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-    file_handler = RotatingFileHandler(
-        log_file_path,
-        maxBytes=500 * 1024 * 1024,  # 500 MB
-        backupCount=10
-    )
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    ))
-    root_logger.addHandler(file_handler)
-    root_logger.setLevel(logging.INFO)
 
-# Patch API_TOKEN path to look in executable directory
+# Patch API_TOKEN path
 if hasattr(download_service, 'api_token_path'):
     download_service.api_token_path = EXE_DIR / 'API_TOKEN.txt'
+
+# Reconfigure logging with Windows path
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Remove existing handlers
+root_logger = logging.getLogger()
+for handler in root_logger.handlers[:]:
+    root_logger.removeHandler(handler)
+
+# Add new handler with Windows path
+os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+file_handler = RotatingFileHandler(
+    log_file_path,
+    maxBytes=500 * 1024 * 1024,  # 500 MB
+    backupCount=10
+)
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+))
+root_logger.addHandler(file_handler)
+root_logger.setLevel(logging.INFO)
+
+# Update the module's logger
+download_service.logger = logging.getLogger(__name__)
+download_service.logger.info(f"Windows wrapper initialized. Log file: {log_file_path}")
+
+# Patch ROMS_PATH in the module
+if hasattr(download_service, 'ROMS_PATH'):
+    download_service.ROMS_PATH = os.environ.get('ROMS_PATH', get_windows_paths()[0])
 
 # Now run the main function
 if __name__ == "__main__":
@@ -104,4 +112,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
-

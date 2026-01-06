@@ -54,18 +54,23 @@ Service Installation:
 ---------------------
 1. Download NSSM from https://nssm.cc/download
 2. Extract and run: nssm install RGSDownloadService
-3. Set path to: [full path]\rgs_download_service.exe
-4. Set startup directory to: [full path]
+3. Set path to: [path to]\rgs_download_service.exe
+4. Set startup directory to: [path to service folder]
 5. Set environment variables if needed
 6. Start service: nssm start RGSDownloadService
 
-Environment Variables (optional):
+Configuration:
+--------------
+Set environment variables via NSSM or create config.ini:
 - API_URL: Backend API URL (default: https://rgs-retro.ddns.net)
 - ROMS_PATH: Path to ROMs directory (default: C:\ProgramData\RGS\roms)
 - SERVICE_ID: Service identifier (default: hostname)
 - LOG_LEVEL: Logging level (default: INFO)
-- BANDWIDTH_UPDATE_INTERVAL: Progress update interval in seconds (default: 5)
 "@ | Out-File -FilePath dist\RGS_Download_Service\README.txt -Encoding utf8
+    
+    - name: Create config template
+      working-directory: services/download_service
+      run: |
         @"
 [Service]
 API_URL=https://rgs-retro.ddns.net
@@ -82,10 +87,12 @@ BANDWIDTH_UPDATE_INTERVAL=5
         path: services/download_service/dist/RGS_Download_Service/*
         retention-days: 30
     
-    - name: Upload standalone executable
-      uses: actions/upload-artifact@v3
+    - name: Create release on tag
+      if: startsWith(github.ref, 'refs/tags/windows-build-')
+      uses: softprops/action-gh-release@v1
       with:
-        name: rgs_download_service.exe
-        path: services/download_service/dist/rgs_download_service.exe
-        retention-days: 30
-
+        files: services/download_service/dist/RGS_Download_Service/*
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
