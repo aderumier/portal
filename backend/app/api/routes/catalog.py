@@ -79,7 +79,7 @@ async def get_games(
     
     # Get system download_enabled status from database and add to each game
     db_system = db.query(System).filter(System.id == system).first()
-    download_enabled = db_system.download_enabled if db_system else True
+    download_enabled = db_system.download_enabled if db_system else False
     
     # Add download_enabled to each game
     for game in games:
@@ -110,11 +110,11 @@ async def search_games(
     systems_download_enabled = {}
     for system_id in systems_in_results:
         db_system = db.query(System).filter(System.id == system_id).first()
-        systems_download_enabled[system_id] = db_system.download_enabled if db_system else True
+        systems_download_enabled[system_id] = db_system.download_enabled if db_system else False
     
     # Add download_enabled to each game
     for game in all_results:
-        game['download_enabled'] = systems_download_enabled.get(game['system'], True)
+        game['download_enabled'] = systems_download_enabled.get(game['system'], False)
     
     # Apply pagination
     offset = (page - 1) * limit
@@ -142,11 +142,11 @@ async def quick_search(
     systems_download_enabled = {}
     for system_id in systems_in_results:
         db_system = db.query(System).filter(System.id == system_id).first()
-        systems_download_enabled[system_id] = db_system.download_enabled if db_system else True
+        systems_download_enabled[system_id] = db_system.download_enabled if db_system else False
     
     # Add download_enabled to each game
     for game in games:
-        game['download_enabled'] = systems_download_enabled.get(game['system'], True)
+        game['download_enabled'] = systems_download_enabled.get(game['system'], False)
     
     return {
         "results": games,
@@ -198,8 +198,8 @@ async def get_game_details(
     if db_system:
         game['download_enabled'] = db_system.download_enabled
     else:
-        # Default to True if system not found in database
-        game['download_enabled'] = True
+        # No fallback - downloads disabled if system not found in database
+        game['download_enabled'] = False
     
     return game
 
