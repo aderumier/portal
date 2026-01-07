@@ -556,7 +556,7 @@ async def download_file(
                 'total_size': sum(f['size'] for f in files_list)
             })
         
-        # If relative_path is provided, this is a file within a directory
+        # If relative_path is provided, this is a file within a directory or .m3u file
         if relative_path:
             # Sanitize relative_path to prevent directory traversal
             relative_path = relative_path.lstrip('/').lstrip('\\')
@@ -565,20 +565,40 @@ async def download_file(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid relative path"
                 )
-            file_path = os.path.join(base_path, relative_path)
-            # Ensure the file is actually within the base_path (prevent directory traversal)
-            try:
-                if not os.path.commonpath([os.path.abspath(base_path), os.path.abspath(file_path)]) == os.path.abspath(base_path):
+            
+            # Check if base_path is a .m3u file - if so, relative_path is relative to the .m3u file's directory
+            if os.path.isfile(base_path) and base_path.lower().endswith('.m3u'):
+                # For .m3u files, relative_path is relative to the .m3u file's directory
+                m3u_dir = os.path.dirname(base_path)
+                file_path = os.path.normpath(os.path.join(m3u_dir, relative_path))
+                # Ensure the file is within the games directory (security check)
+                try:
+                    if not os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_path)]) == os.path.abspath(settings.GAMES_PATH):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid relative path (outside games directory)"
+                        )
+                except ValueError:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Invalid relative path (directory traversal detected)"
+                        detail="Invalid relative path"
                     )
-            except ValueError:
-                # Paths don't share a common base
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid relative path"
-                )
+            else:
+                # For directories, relative_path is relative to the directory
+                file_path = os.path.join(base_path, relative_path)
+                # Ensure the file is actually within the base_path (prevent directory traversal)
+                try:
+                    if not os.path.commonpath([os.path.abspath(base_path), os.path.abspath(file_path)]) == os.path.abspath(base_path):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid relative path (directory traversal detected)"
+                        )
+                except ValueError:
+                    # Paths don't share a common base
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Invalid relative path"
+                    )
         else:
             file_path = base_path
         
