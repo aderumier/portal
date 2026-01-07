@@ -31,9 +31,9 @@ def get_geoip_instance():
         # Create directory if it doesn't exist
         geoip_dir.mkdir(parents=True, exist_ok=True)
         
-        # Path to geoip2fast data file
+        # Path to geoip2fast IPv6 data file
         # The library will auto-download if the file doesn't exist
-        geoip_data_file = geoip_dir / 'geoip2fast.dat.gz'
+        geoip_data_file = geoip_dir / 'geoip2fast-ipv6.dat.gz'
         
         # Initialize GeoIP2Fast with custom data file path
         _geoip_instance = GeoIP2Fast(
