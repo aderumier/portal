@@ -162,16 +162,32 @@ async def callback(
             db_user = db.query(User).filter(User.user_id == user['id']).first()
             current_time = datetime.now(timezone.utc)
             
-            # Determine if we should update country (if IP is empty or changed)
-            should_update_country = False
+            # Get country from IP if we have an IP address
+            # Update country if: IP changed, IP is new, or country is currently None
             country = None
+            should_update_country = False
             
             if client_ip:
-                if not db_user or not db_user.last_login_ip or db_user.last_login_ip != client_ip:
+                # Check if we should update country
+                if not db_user:
+                    # New user - always try to get country
                     should_update_country = True
+                elif not db_user.last_login_ip:
+                    # Existing user but no IP recorded - get country
+                    should_update_country = True
+                elif db_user.last_login_ip != client_ip:
+                    # IP changed - update country
+                    should_update_country = True
+                elif not db_user.country:
+                    # IP hasn't changed but country is missing - try to get it
+                    should_update_country = True
+                
+                if should_update_country:
                     country = get_country_from_ip(client_ip)
                     if country:
                         logger.info(f"GeoIP lookup for {client_ip}: {country}")
+                    else:
+                        logger.debug(f"Could not determine country for IP {client_ip}")
             
             if db_user:
                 # Update existing user
@@ -180,12 +196,13 @@ async def callback(
                 previous_ip = db_user.last_login_ip
                 db_user.last_login_ip = client_ip
                 
-                # Update country if IP was empty or changed
-                if should_update_country and country:
-                    db_user.country = country
-                    logger.info(f"Updated user {user['id']} country to {country} (IP changed from {previous_ip} to {client_ip})")
-                elif should_update_country and not country:
-                    logger.debug(f"Could not determine country for IP {client_ip}, keeping existing country: {db_user.country}")
+                # Update country if we determined we should
+                if should_update_country:
+                    db_user.country = country  # This can be None if lookup failed
+                    if country:
+                        logger.info(f"Updated user {user['id']} country to {country} (IP: {client_ip})")
+                    elif previous_ip != client_ip:
+                        logger.info(f"Updated user {user['id']} IP from {previous_ip} to {client_ip} (country lookup failed)")
                 
                 db_user.updated_at = current_time
                 logger.info(f"Updated user {user['id']} username, last_login, and IP: {client_ip}")
@@ -198,7 +215,7 @@ async def callback(
                     total_download_number=0,
                     last_login=current_time,
                     last_login_ip=client_ip,
-                    country=country,
+                    country=country,  # Can be None if lookup failed
                     created_at=current_time,
                     updated_at=current_time
                 )
