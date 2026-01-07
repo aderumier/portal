@@ -36,6 +36,31 @@ def _is_game_hidden(game: ET.Element) -> bool:
     
     return False
 
+def _is_folder_hidden(folder: ET.Element) -> bool:
+    """Check if a folder is hidden by checking both attribute and element.
+    
+    Supports both formats:
+    - <folder hidden="true">...</folder> (attribute)
+    - <folder><hidden>true</hidden></folder> (element)
+    
+    Args:
+        folder: XML Element representing a folder
+        
+    Returns:
+        bool: True if the folder is hidden, False otherwise
+    """
+    # Check attribute first (most common format)
+    hidden_attr = folder.get('hidden', '').lower()
+    if hidden_attr in ['true', '1']:
+        return True
+    
+    # Check element (alternative format: <hidden>true</hidden>)
+    hidden_elem = folder.findtext('hidden', '').lower()
+    if hidden_elem in ['true', '1']:
+        return True
+    
+    return False
+
 class GameService:
     """Service for managing game catalog from gamelist.xml files."""
     
@@ -516,17 +541,19 @@ class GameService:
                 extra1_path = get_media_path('extra1')
                 image_path = get_media_path('image')
                 
-                # Prefer thumbnail, fallback to boxart, then extra1, then image
-                display_image = thumbnail_path if thumbnail_path else (boxart_path if boxart_path else (extra1_path if extra1_path else image_path))
+                # Select best image using priority: thumbnail > boxart > extra1 > image
+                # (matching frontend priority in GameCard.jsx)
+                display_image = (thumbnail_path if thumbnail_path else 
+                                (boxart_path if boxart_path else 
+                                (extra1_path if extra1_path else image_path)))
                 
+                # For games list, only return the selected image to reduce response size
+                # Game details endpoint uses get_game_by_id which returns all fields
                 game_data = {
                     'id': game.findtext('path', ''),
                     'name': game.findtext('name', ''),
                     'description': game.findtext('desc', ''),
-                    'image': display_image,
-                    'thumbnail': thumbnail_path,
-                    'boxart': boxart_path,
-                    'extra1': extra1_path,
+                    'image': display_image,  # Only the selected image (priority: thumbnail > boxart > extra1 > image)
                     'system': system,
                     'systemName': self.get_system_name(system)
                 }
@@ -608,14 +635,24 @@ class GameService:
                     
                     name = game.findtext('name', '')
                     if query.lower() in name.lower():
-                        thumbnail_path = game.findtext('thumbnail', '')
-                        image_path = game.findtext('image', '')
+                        # Get game data with image priority: thumbnail > boxart > extra1 > image
+                        def get_media_path(media_type):
+                            path = game.findtext(media_type, '')
+                            if path:
+                                path = path.lstrip('./')
+                                if not path.startswith(f"{system_id}/"):
+                                    path = f"{system_id}/{path}"
+                            return path
                         
-                        display_image = thumbnail_path if thumbnail_path else image_path
-                        display_image = display_image.lstrip('./')
+                        thumbnail_path = get_media_path('thumbnail')
+                        boxart_path = get_media_path('boxart')
+                        extra1_path = get_media_path('extra1')
+                        image_path = get_media_path('image')
                         
-                        if display_image and not display_image.startswith(f"{system_id}/"):
-                            display_image = f"{system_id}/{display_image}"
+                        # Select best image using priority: thumbnail > boxart > extra1 > image
+                        display_image = (thumbnail_path if thumbnail_path else 
+                                        (boxart_path if boxart_path else 
+                                        (extra1_path if extra1_path else image_path)))
                         
                         results.append({
                             'id': game.findtext('path', ''),
@@ -774,6 +811,22 @@ class GameService:
         counts = {}
         root = self.gamelists[system_id]
         
+        # First pass: collect all hidden folder paths
+        hidden_directories = set()
+        for folder in root.findall('.//folder'):
+            if _is_folder_hidden(folder):
+                folder_path = folder.findtext('path', '')
+                if folder_path:
+                    # Normalize the path
+                    path = folder_path.lstrip('./')
+                    if path.startswith(f"{system_id}/"):
+                        path = path[len(system_id) + 1:]
+                    # Remove trailing slash if present
+                    path = path.rstrip('/')
+                    hidden_directories.add(path)
+                    logger.debug(f"Found hidden folder: {path} in system {system_id}")
+        
+        # Second pass: count games, skipping hidden games and games in hidden directories
         for game in root.findall('.//game'):
             # Skip hidden games
             if _is_game_hidden(game):
@@ -783,7 +836,19 @@ class GameService:
             if not game_path:
                 continue
             
+            # Check if game is inside a hidden directory
             subdir = self._get_game_subdirectory(game_path, system_id)
+            if subdir:
+                # Check if subdirectory matches any hidden directory or is nested inside one
+                is_in_hidden_dir = False
+                for hidden_dir in hidden_directories:
+                    if subdir == hidden_dir or subdir.startswith(hidden_dir + '/'):
+                        # Game is inside a hidden directory, skip it
+                        is_in_hidden_dir = True
+                        break
+                if is_in_hidden_dir:
+                    continue
+            
             key = subdir if subdir else '(root)'
             counts[key] = counts.get(key, 0) + 1
         
@@ -1006,14 +1071,24 @@ class GameService:
                     if first_letter not in index:
                         index[first_letter] = {}
                     
-                    # Get game data
-                    thumbnail_path = game.findtext('thumbnail', '')
-                    image_path = game.findtext('image', '')
-                    display_image = thumbnail_path if thumbnail_path else image_path
-                    display_image = display_image.lstrip('./')
+                    # Get game data with image priority: thumbnail > boxart > extra1 > image
+                    def get_media_path(media_type):
+                        path = game.findtext(media_type, '')
+                        if path:
+                            path = path.lstrip('./')
+                            if not path.startswith(f"{system_id}/"):
+                                path = f"{system_id}/{path}"
+                        return path
                     
-                    if display_image and not display_image.startswith(f"{system_id}/"):
-                        display_image = f"{system_id}/{display_image}"
+                    thumbnail_path = get_media_path('thumbnail')
+                    boxart_path = get_media_path('boxart')
+                    extra1_path = get_media_path('extra1')
+                    image_path = get_media_path('image')
+                    
+                    # Select best image using priority: thumbnail > boxart > extra1 > image
+                    display_image = (thumbnail_path if thumbnail_path else 
+                                    (boxart_path if boxart_path else 
+                                    (extra1_path if extra1_path else image_path)))
                     
                     game_data = {
                         'id': game.findtext('path', ''),

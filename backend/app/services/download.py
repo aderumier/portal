@@ -928,6 +928,51 @@ class DownloadService:
             self.db.rollback()
             return False
     
+    def get_user_download_history(self, user_id: str, limit: int = 100) -> List[Dict]:
+        """Get download history for a specific user from archive."""
+        try:
+            from app.database import DownloadArchive
+            
+            # Get archived downloads for this user, ordered by most recent first
+            archive_items = self.db.query(DownloadArchive).filter(
+                DownloadArchive.user_id == user_id
+            ).order_by(DownloadArchive.timestamp.desc()).limit(limit).all()
+            
+            history = []
+            for item in archive_items:
+                # Get game information if available
+                game = self.game_service.get_game_by_id(item.rompath) if item.rompath else None
+                
+                history_item = {
+                    'id': item.id,
+                    'download_id': item.download_id,
+                    'game_name': item.game_name,
+                    'system': item.system or '',
+                    'system_name': self.game_service.get_system_name(item.system) if item.system else '',
+                    'rompath': item.rompath,
+                    'status': item.download_status,
+                    'bytes_transferred': item.bytes_transferred or 0,
+                    'file_size': item.file_size,
+                    'timestamp': item.timestamp.isoformat() if item.timestamp else None,
+                    'image': ''
+                }
+                
+                # Add game image if available
+                if game:
+                    history_item['image'] = self._normalize_media_path_for_frontend(
+                        game.get('image', ''), 
+                        game.get('system', '')
+                    )
+                
+                history.append(history_item)
+            
+            return history
+        except Exception as e:
+            logger.error(f"Error getting download history for user {user_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+
     def remove_download(self, download_id: int) -> bool:
         """Remove download from queue without updating statistics (e.g., when file doesn't exist)."""
         try:

@@ -4,24 +4,22 @@ import { useAuth } from '../../context/AuthContext'
 import { getMediaUrl } from '../../utils/constants'
 import './GameCard.css'
 
-const GameCard = ({ game, onDownload }) => {
+const GameCard = ({ game, onDownload, onGameClick }) => {
   const navigate = useNavigate()
   const { isDownload, isFastDownload } = useAuth()
   
-  // Get game image with priority: thumbnail > boxart > extra1 > image
-  const getGameImage = (game) => {
-    if (game.thumbnail) return getMediaUrl(game.thumbnail)
-    if (game.boxart) return getMediaUrl(game.boxart)
-    if (game.extra1) return getMediaUrl(game.extra1)
-    if (game.image) return getMediaUrl(game.image)
-    return '/assets/images/no-image.png'
-  }
-  
-  const imageUrl = getGameImage(game)
+  // Backend now returns the selected image in the 'image' field (priority: thumbnail > boxart > extra1 > image)
+  const imageUrl = game.image ? getMediaUrl(game.image) : '/assets/images/no-image.png'
 
   const handleCardClick = (e) => {
     // Don't navigate if clicking the download button
     if (e.target.closest('.download-btn')) {
+      return
+    }
+    
+    // If onGameClick is provided, use it (for saving game ID)
+    if (onGameClick) {
+      onGameClick(game)
       return
     }
     

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import GameCard from './GameCard'
 import TokenSelectorDropdown from '../TokenSelector/TokenSelectorDropdown'
 import { useDownloadWithToken } from '../../hooks/useDownloadWithToken'
@@ -8,20 +8,31 @@ import { getMediaUrl } from '../../utils/constants'
 import client from '../../api/client'
 import './SystemGames.css'
 
-const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
-  const [games, setGames] = useState([])
+const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '' }) => {
+  const [allGames, setAllGames] = useState([]) // All games loaded from API
+  const [displayedGamesCount, setDisplayedGamesCount] = useState(24) // Number of games to display (frontend pagination)
   const [loading, setLoading] = useState(true)
-  const [hasMore, setHasMore] = useState(true)
-  const [page, setPage] = useState(1)
   const [error, setError] = useState(null)
+  // systemName is derived from games response (all games have the same systemName)
+  const [systemName, setSystemName] = useState(propSystemName || '')
   const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
   const [selectedSubdirectory, setSelectedSubdirectory] = useState(null) // null = all, or specific subdirectory
   const [subdirectoryCounts, setSubdirectoryCounts] = useState({}) // Pre-computed counts from backend
+  const [selectedLetter, setSelectedLetter] = useState(null) // null = all, or specific letter (A-Z)
   const observerRef = useRef(null)
   const loadingRef = useRef(null)
+  const scrollRestoredRef = useRef(false)
+  const gameElementsRef = useRef({}) // Store refs to game elements by game ID
   const navigate = useNavigate()
+  const location = useLocation()
   const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
   const { isDownload, isFastDownload } = useAuth()
+
+  // Get storage key for this system/search combination
+  const getStorageKey = useCallback((suffix) => {
+    return `systemGames_${suffix}_${systemId}_${searchQuery || 'no-search'}`
+  }, [systemId, searchQuery])
+
 
   // Load view preference from localStorage
   useEffect(() => {
@@ -31,20 +42,69 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
     }
   }, [])
 
+  // Restore filter state from localStorage on mount (only once per system/search)
+  const filtersRestoredRef = useRef(false)
+  useEffect(() => {
+    const filtersKey = getStorageKey('filters')
+    const savedFilters = localStorage.getItem(filtersKey)
+    if (savedFilters && !filtersRestoredRef.current) {
+      try {
+        const { subdirectory, letter } = JSON.parse(savedFilters)
+        setSelectedSubdirectory(subdirectory)
+        setSelectedLetter(letter)
+        filtersRestoredRef.current = true
+      } catch (e) {
+        console.error('Error restoring filters:', e)
+        filtersRestoredRef.current = true
+      }
+    } else if (!savedFilters) {
+      filtersRestoredRef.current = true
+    }
+  }, [systemId, searchQuery, getStorageKey])
+
+  // Save filter state to localStorage whenever it changes
+  useEffect(() => {
+    // Only save if filters have been restored (to avoid overwriting with null on initial mount)
+    if (filtersRestoredRef.current) {
+      const filtersKey = getStorageKey('filters')
+      localStorage.setItem(filtersKey, JSON.stringify({
+        subdirectory: selectedSubdirectory,
+        letter: selectedLetter
+      }))
+    }
+  }, [selectedSubdirectory, selectedLetter, getStorageKey])
+
   // Save view preference to localStorage
   const handleViewChange = (mode) => {
     setViewMode(mode)
     localStorage.setItem('systemGamesViewMode', mode)
   }
 
-  const loadGames = useCallback(async (pageNum, append = false) => {
+  // Track if we're currently loading to prevent duplicate calls
+  const isLoadingRef = useRef(false)
+  const lastLoadKeyRef = useRef('') // Track what we last loaded to prevent duplicate loads
+
+  // Load all games for the system in one call
+  const loadAllGames = useCallback(async () => {
+    // Create a unique key for this load request
+    const loadKey = `${systemId}_${searchQuery || 'no-search'}`
+    
+    // Prevent duplicate calls (especially in React StrictMode)
+    if (isLoadingRef.current && lastLoadKeyRef.current === loadKey) {
+      return
+    }
+    
     try {
+      isLoadingRef.current = true
+      lastLoadKeyRef.current = loadKey
       setLoading(true)
       setError(null)
+      setDisplayedGamesCount(24) // Reset displayed count
       
+      // Fetch all games in one call with a very high limit
       const params = {
-        page: pageNum,
-        limit: 12,
+        page: 1,
+        limit: 10000, // Request all games at once
       }
       
       if (searchQuery) {
@@ -52,62 +112,131 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
       }
       
       const response = await client.get(`/api/catalog/games/${systemId}`, { params })
-      const newGames = response.data.games || []
+      const games = response.data.games || []
       
-      if (append) {
-        setGames(prev => [...prev, ...newGames])
-      } else {
-        setGames(newGames)
-        // Update subdirectory counts from backend (only on first page load)
-        if (response.data.subdirectory_counts) {
-          setSubdirectoryCounts(response.data.subdirectory_counts)
-        }
+      // Get systemName from the first game (all games have the same systemName)
+      if (games.length > 0 && games[0].systemName) {
+        setSystemName(games[0].systemName)
       }
       
-      setHasMore(response.data.hasMore || false)
+      // Update subdirectory counts from backend
+      if (response.data.subdirectory_counts) {
+        setSubdirectoryCounts(response.data.subdirectory_counts)
+      }
+      
+      setAllGames(games)
     } catch (err) {
       console.error('Error loading games:', err)
       setError('Failed to load games')
+      lastLoadKeyRef.current = '' // Reset on error so it can retry
     } finally {
       setLoading(false)
+      isLoadingRef.current = false
     }
   }, [systemId, searchQuery])
 
+  // Scroll to the viewed game after games are loaded and filtered
+  const isRestoringScrollRef = useRef(false)
+  
   useEffect(() => {
-    setPage(1)
-    setGames([])
-    setSelectedSubdirectory(null) // Reset filter when system or search changes
-    loadGames(1, false)
-  }, [systemId, searchQuery, loadGames])
-
-  useEffect(() => {
-    if (observerRef.current) {
-      observerRef.current.disconnect()
-    }
-
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && hasMore && !loading) {
-          const nextPage = page + 1
-          setPage(nextPage)
-          loadGames(nextPage, true)
+    if (!loading && allGames.length > 0 && !scrollRestoredRef.current) {
+      const viewedGameKey = getStorageKey('viewedGame')
+      const viewedGameId = localStorage.getItem(viewedGameKey)
+      
+      if (viewedGameId) {
+        // Check if the viewed game is in the loaded games
+        const gameExists = allGames.some(game => game.id === viewedGameId)
+        
+        if (gameExists) {
+          // Make sure the game is displayed (increase displayed count if needed)
+          // Increase displayed count to ensure the game is visible after filtering
+          if (displayedGamesCount < 100) {
+            setDisplayedGamesCount(100) // Show more games to ensure the target is visible
+          }
+          
+          // Game is loaded, wait for DOM to be fully rendered
+          isRestoringScrollRef.current = true
+          requestAnimationFrame(() => {
+            setTimeout(() => {
+              // Find the game element in the filtered games
+              const gameElement = gameElementsRef.current[viewedGameId]
+              if (gameElement) {
+                // Scroll to the game element with some offset for sticky header
+                const headerOffset = 180 // Account for sticky header and filters
+                const elementPosition = gameElement.getBoundingClientRect().top
+                const offsetPosition = elementPosition + window.pageYOffset - headerOffset
+                
+                window.scrollTo({
+                  top: offsetPosition,
+                  behavior: 'smooth'
+                })
+                
+                // Clear the viewed game from storage after scrolling
+                localStorage.removeItem(viewedGameKey)
+              }
+              scrollRestoredRef.current = true
+              isRestoringScrollRef.current = false
+            }, 800) // Increased delay to ensure DOM is ready
+          })
+        } else {
+          // Game not found
+          scrollRestoredRef.current = true
+          isRestoringScrollRef.current = false
+          localStorage.removeItem(viewedGameKey) // Clean up
         }
-      },
-      { rootMargin: '100px' }
-    )
-
-    if (loadingRef.current) {
-      observerRef.current.observe(loadingRef.current)
-    }
-
-    return () => {
-      if (observerRef.current) {
-        observerRef.current.disconnect()
+      } else {
+        scrollRestoredRef.current = true
       }
     }
-  }, [hasMore, loading, page, loadGames])
+  }, [loading, allGames.length, displayedGamesCount, selectedSubdirectory, selectedLetter, getStorageKey])
 
-  // Extract subdirectory from game ID - must be before early returns
+  // Track previous systemId and searchQuery to detect actual changes
+  const prevSystemIdRef = useRef(systemId)
+  const prevSearchQueryRef = useRef(searchQuery)
+  const isInitialMountRef = useRef(true)
+
+  useEffect(() => {
+    const oldSystemId = prevSystemIdRef.current
+    const oldSearchQuery = prevSearchQueryRef.current
+    const systemChanged = oldSystemId !== systemId
+    const searchChanged = oldSearchQuery !== searchQuery
+    
+    // On initial mount, don't reset filters (they'll be restored from sessionStorage)
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false
+      prevSystemIdRef.current = systemId
+      prevSearchQueryRef.current = searchQuery
+      setAllGames([])
+      setDisplayedGamesCount(24)
+      scrollRestoredRef.current = false
+      isRestoringScrollRef.current = false
+      loadAllGames()
+      return
+    }
+    
+    prevSystemIdRef.current = systemId
+    prevSearchQueryRef.current = searchQuery
+
+    setAllGames([])
+    setDisplayedGamesCount(24)
+    scrollRestoredRef.current = false // Reset scroll restoration flag
+    isRestoringScrollRef.current = false // Reset scroll restoration state
+    
+    // Only reset filters if system or search actually changed
+    // (not when just remounting after coming back from game detail)
+    if (systemChanged || searchChanged) {
+      setSelectedSubdirectory(null) // Reset filter when system or search changes
+      setSelectedLetter(null) // Reset letter filter when system or search changes
+      filtersRestoredRef.current = false // Allow filters to be restored for new system/search
+      // Clear saved filters for old system/search
+      const oldFiltersKey = `systemGames_filters_${oldSystemId}_${oldSearchQuery || 'no-search'}`
+      localStorage.removeItem(oldFiltersKey)
+    }
+    
+    loadAllGames()
+  }, [systemId, searchQuery, loadAllGames])
+
+  // Extract subdirectory from game ID - must be before filteredGames
   const getGameSubdirectory = useCallback((gameId) => {
     // Remove leading ./
     let path = gameId.replace(/^\.\//, '')
@@ -123,23 +252,93 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
     return path.substring(0, lastSlashIndex)
   }, [systemId])
 
+  // Filter games based on selected subdirectory and letter
+  const filteredGames = React.useMemo(() => {
+    let filtered = allGames
+    
+    // Apply subdirectory filter
+    if (selectedSubdirectory !== null) {
+      // Special value "(root)" means show only root directory games
+      if (selectedSubdirectory === '(root)') {
+        filtered = filtered.filter(game => {
+          const subdir = getGameSubdirectory(game.id)
+          return subdir === null // Root directory games have no subdirectory
+        })
+      } else {
+        filtered = filtered.filter(game => {
+          const subdir = getGameSubdirectory(game.id)
+          return subdir === selectedSubdirectory
+        })
+      }
+    }
+    
+    // Apply letter filter
+    if (selectedLetter !== null) {
+      filtered = filtered.filter(game => {
+        const firstChar = game.name?.charAt(0).toUpperCase() || ''
+        if (selectedLetter === '#') {
+          // Show games that don't start with a letter
+          return !firstChar.match(/[A-Z]/)
+        } else {
+          // Show games that start with the selected letter
+          return firstChar === selectedLetter
+        }
+      })
+    }
+    
+    return filtered
+  }, [allGames, selectedSubdirectory, selectedLetter, getGameSubdirectory])
+
+  // Get displayed games (frontend pagination)
+  const displayedGames = React.useMemo(() => {
+    return filteredGames.slice(0, displayedGamesCount)
+  }, [filteredGames, displayedGamesCount])
+
+  const hasMoreGames = filteredGames.length > displayedGamesCount
+
+  // Frontend-side infinite scroll - load more games from already loaded data
+  useEffect(() => {
+    if (observerRef.current) {
+      observerRef.current.disconnect()
+    }
+
+    // Don't set up infinite scroll observer if we're restoring scroll position
+    if (isRestoringScrollRef.current) {
+      return
+    }
+
+    observerRef.current = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMoreGames && !loading && !isRestoringScrollRef.current) {
+          // Load 24 more games (frontend pagination)
+          setDisplayedGamesCount(prev => prev + 24)
+        }
+      },
+      { rootMargin: '100px' }
+    )
+
+    if (loadingRef.current) {
+      observerRef.current.observe(loadingRef.current)
+    }
+
+    return () => {
+      if (observerRef.current) {
+        observerRef.current.disconnect()
+      }
+    }
+  }, [hasMoreGames, loading])
+
   // Get unique subdirectories from backend counts (excluding root) - must be before early returns
   const subdirectories = React.useMemo(() => {
     return Object.keys(subdirectoryCounts)
       .filter(key => key !== '(root)')
       .sort()
   }, [subdirectoryCounts])
-
-  // Filter games based on selected subdirectory
-  const filteredGames = React.useMemo(() => {
-    if (selectedSubdirectory === null) {
-      return games
-    }
-    return games.filter(game => {
-      const subdir = getGameSubdirectory(game.id)
-      return subdir === selectedSubdirectory
-    })
-  }, [games, selectedSubdirectory, getGameSubdirectory])
+  
+  // Generate letters # and A-Z for filter
+  const letters = React.useMemo(() => {
+    return ['#', ...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i))] // #, A-Z
+  }, [])
 
   const handleDownload = async (gameId) => {
     try {
@@ -161,19 +360,25 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
   }
 
   const handleGameClick = (game) => {
+    // Save the game ID so we can scroll to it when coming back
+    const viewedGameKey = getStorageKey('viewedGame')
+    localStorage.setItem(viewedGameKey, game.id)
+    
     let gameId = game.id.replace(/^\.\//, '')
     if (gameId.startsWith(`${game.system}/`)) {
       gameId = gameId.substring(game.system.length + 1)
     }
-    navigate(`/game/${game.system}/${encodeURIComponent(gameId)}`)
+    navigate(`/game/${game.system}/${encodeURIComponent(gameId)}`, {
+      state: { fromSystemGames: true }
+    })
   }
 
   // Early returns must come AFTER all hooks
-  if (loading && games.length === 0) {
+  if (loading && allGames.length === 0) {
     return <div className="loading">Loading games...</div>
   }
 
-  if (error && games.length === 0) {
+  if (error && allGames.length === 0) {
     return <div className="error">{error}</div>
   }
 
@@ -212,41 +417,83 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
         </div>
       </div>
 
-      {/* Subdirectory Filter Bar - only show if there are subdirectories */}
-      {subdirectories.length > 0 && (
-        <div className="subdirectory-filter-bar">
+      {/* Filters Container - Sticky */}
+      <div className="filters-container">
+        {/* Subdirectory Filter Bar - only show if there are subdirectories */}
+        {subdirectories.length > 0 && (
+          <div className="subdirectory-filter-bar">
+            <button
+              className={`subdirectory-filter-btn ${selectedSubdirectory === null ? 'active' : ''}`}
+              onClick={() => setSelectedSubdirectory(null)}
+            >
+              All
+              {subdirectoryCounts['(root)'] && <span className="subdirectory-count">({Object.values(subdirectoryCounts).reduce((sum, count) => sum + count, 0)})</span>}
+            </button>
+            {subdirectoryCounts['(root)'] && subdirectoryCounts['(root)'] > 0 && (
+              <button
+                className={`subdirectory-filter-btn ${selectedSubdirectory === '(root)' ? 'active' : ''}`}
+                onClick={() => setSelectedSubdirectory('(root)')}
+              >
+                Main
+                <span className="subdirectory-count">({subdirectoryCounts['(root)'] || 0})</span>
+              </button>
+            )}
+            {subdirectories.map((subdir) => (
+              <button
+                key={subdir}
+                className={`subdirectory-filter-btn ${selectedSubdirectory === subdir ? 'active' : ''}`}
+                onClick={() => setSelectedSubdirectory(subdir)}
+              >
+                {subdir}
+                <span className="subdirectory-count">({subdirectoryCounts[subdir] || 0})</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Letter Filter Bar */}
+        <div className="letter-filter-bar">
           <button
-            className={`subdirectory-filter-btn ${selectedSubdirectory === null ? 'active' : ''}`}
-            onClick={() => setSelectedSubdirectory(null)}
+            className={`letter-filter-btn ${selectedLetter === null ? 'active' : ''}`}
+            onClick={() => setSelectedLetter(null)}
           >
             All
-            {subdirectoryCounts['(root)'] && <span className="subdirectory-count">({Object.values(subdirectoryCounts).reduce((sum, count) => sum + count, 0)})</span>}
           </button>
-          {subdirectories.map((subdir) => (
+          {letters.map((letter) => (
             <button
-              key={subdir}
-              className={`subdirectory-filter-btn ${selectedSubdirectory === subdir ? 'active' : ''}`}
-              onClick={() => setSelectedSubdirectory(subdir)}
+              key={letter}
+              className={`letter-filter-btn ${selectedLetter === letter ? 'active' : ''}`}
+              onClick={() => setSelectedLetter(letter)}
             >
-              {subdir}
-              <span className="subdirectory-count">({subdirectoryCounts[subdir] || 0})</span>
+              {letter}
             </button>
           ))}
         </div>
-      )}
+      </div>
       
-      {games.length === 0 ? (
+      {allGames.length === 0 ? (
         <div className="no-games">No games found</div>
       ) : (
         <>
           {viewMode === 'grid' ? (
             <div className="games-grid">
-              {filteredGames.map((game) => (
-                <GameCard 
-                  key={game.id} 
-                  game={game} 
-                  onDownload={handleDownload}
-                />
+              {displayedGames.map((game) => (
+                <div
+                  key={game.id}
+                  ref={(el) => {
+                    if (el) {
+                      gameElementsRef.current[game.id] = el
+                    } else {
+                      delete gameElementsRef.current[game.id]
+                    }
+                  }}
+                >
+                  <GameCard 
+                    game={game} 
+                    onDownload={handleDownload}
+                    onGameClick={handleGameClick}
+                  />
+                </div>
               ))}
             </div>
           ) : (
@@ -260,23 +507,27 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredGames.map((game) => {
-                    // Get game image with priority: thumbnail > boxart > extra1 > image
-                    const getGameImage = (game) => {
-                      if (game.thumbnail) return getMediaUrl(game.thumbnail)
-                      if (game.boxart) return getMediaUrl(game.boxart)
-                      if (game.extra1) return getMediaUrl(game.extra1)
-                      if (game.image) return getMediaUrl(game.image)
-                      return '/assets/images/no-image.png'
-                    }
-                    const imageUrl = getGameImage(game)
+                  {displayedGames.map((game) => {
+                    // Backend now returns the selected image in the 'image' field (priority: thumbnail > boxart > extra1 > image)
+                    const imageUrl = game.image ? getMediaUrl(game.image) : '/assets/images/no-image.png'
                     let gameId = game.id.replace(/^\.\//, '')
                     if (gameId.startsWith(`${game.system}/`)) {
                       gameId = gameId.substring(game.system.length + 1)
                     }
                     
                     return (
-                      <tr key={game.id} onClick={() => handleGameClick(game)} className="game-table-row">
+                      <tr
+                        key={game.id}
+                        ref={(el) => {
+                          if (el) {
+                            gameElementsRef.current[game.id] = el
+                          } else {
+                            delete gameElementsRef.current[game.id]
+                          }
+                        }}
+                        onClick={() => handleGameClick(game)}
+                        className="game-table-row"
+                      >
                         <td className="game-image-cell">
                           <img 
                             src={imageUrl} 
@@ -309,9 +560,9 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
             </div>
           )}
           
-          {hasMore && (
+          {hasMoreGames && (
             <div ref={loadingRef} className="load-more-trigger">
-              {loading && <p>Loading more games...</p>}
+              <p>Loading more games...</p>
             </div>
           )}
         </>

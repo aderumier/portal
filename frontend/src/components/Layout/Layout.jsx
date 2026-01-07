@@ -61,7 +61,13 @@ const Layout = () => {
               <>
                 <Link to="/systems">Systems</Link>
                 {(isDownload || isFastDownload) && (
-                  <Link to="/downloads">Downloads</Link>
+                  <div className="downloads-menu">
+                    <Link to="/downloads" className="downloads-menu-trigger">Downloads</Link>
+                    <div className="downloads-menu-dropdown">
+                      <Link to="/downloads" className="downloads-menu-item">Queue</Link>
+                      <Link to="/downloads/history" className="downloads-menu-item">History</Link>
+                    </div>
+                  </div>
                 )}
                 <div className="account-menu" ref={accountMenuRef}>
                   <button 

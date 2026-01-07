@@ -67,15 +67,20 @@ async def get_systems(
 async def get_games(
     system: str,
     page: int = Query(1, ge=1),
-    limit: int = Query(12, ge=1, le=100),
+    limit: int = Query(12, ge=1, le=10000),
     search: Optional[str] = Query(None),
     current_user: dict = Depends(require_guild_member),
     game_service: GameService = Depends(get_game_service),
     db: Session = Depends(get_db)
 ):
     """Get games for a specific system."""
-    games = game_service.get_games_by_system(system, page, limit, search or '')
-    has_more = game_service.has_more_games(system, page, limit)
+    # If limit is very large, get all games in one call
+    if limit >= 10000:
+        games = game_service.get_games_by_system(system, 1, 100000, search or '')
+        has_more = False
+    else:
+        games = game_service.get_games_by_system(system, page, limit, search or '')
+        has_more = game_service.has_more_games(system, page, limit)
     
     # Get system download_enabled status from database and add to each game
     db_system = db.query(System).filter(System.id == system).first()

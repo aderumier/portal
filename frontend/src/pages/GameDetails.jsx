@@ -135,7 +135,11 @@ const GameDetails = () => {
         <button className="back-btn" onClick={() => navigate(-1)}>
           ← Back
         </button>
-        <Link to={`/system/${game.system}`} className="back-to-system">
+        <Link 
+          to={`/system/${game.system}`} 
+          className="back-to-system"
+          state={{ fromGameDetail: true }}
+        >
           Back to {game.systemName}
         </Link>
       </div>

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react'
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react'
 import client from '../api/client'
 
 const AuthContext = createContext(null)
@@ -14,14 +14,21 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
+  const hasCheckedRef = useRef(false)
 
   useEffect(() => {
+    // Prevent duplicate calls on initial mount (especially in React StrictMode)
+    if (hasCheckedRef.current) {
+      return
+    }
+    hasCheckedRef.current = true
     // Check if user is authenticated
     checkAuth()
   }, [])
 
   const checkAuth = async () => {
     try {
+      setLoading(true)
       const response = await client.get('/api/auth/me')
       setUser(response.data)
     } catch (error) {

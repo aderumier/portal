@@ -53,6 +53,17 @@ async def get_queue(
     queue = download_service.get_queue(user_id)
     return queue
 
+@router.get("/history")
+async def get_download_history(
+    current_user: dict = Depends(require_download_role),
+    download_service: DownloadService = Depends(get_download_service),
+    limit: int = Query(100, ge=1, le=1000)
+):
+    """Get download history for current user."""
+    user_id = current_user['id']
+    history = download_service.get_user_download_history(user_id, limit)
+    return {"history": history}
+
 @router.post("/queue")
 async def add_to_queue(
     request: AddToQueueRequest,
