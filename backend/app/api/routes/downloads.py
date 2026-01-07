@@ -403,6 +403,53 @@ async def get_download_game_details(
             detail="Game not found"
         )
     
+    # Store original paths before normalizing (needed for Batocera API)
+    # The download service needs normalized paths for downloading, but original paths for Batocera API
+    game_system = game.get('system', '')
+    original_media_paths = {}
+    
+    def is_media_path(value):
+        """Check if a value looks like a media file path by checking for common media extensions."""
+        if not value or not isinstance(value, str):
+            return False
+        # Common media file extensions
+        media_extensions = [
+            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',  # Images
+            '.mp4', '.avi', '.mkv', '.mov', '.webm', '.flv',  # Videos
+            '.pdf', '.svg', '.ico'  # Other media
+        ]
+        # Check if the value ends with a media extension (case-insensitive)
+        value_lower = value.lower()
+        return any(value_lower.endswith(ext) for ext in media_extensions)
+    
+    def normalize_media_path_for_download(path_value, system_id):
+        """Normalize media path to include system prefix for download URLs."""
+        if not path_value:
+            return ''
+        # Remove leading ./
+        path = path_value.lstrip('./')
+        # Add system prefix if not already present
+        if path and not path.startswith(f"{system_id}/"):
+            path = f"{system_id}/{path}"
+        return path
+    
+    # Normalize media paths for downloading (store originals first)
+    for field_name, field_value in game.items():
+        # Skip system metadata fields
+        if field_name in ['id', 'system', 'systemName']:
+            continue
+        # Check if this field value looks like a media path
+        if field_value and is_media_path(field_value):
+            # Store original path
+            original_media_paths[field_name] = field_value
+            # Normalize for download URLs
+            normalized_path = normalize_media_path_for_download(field_value, game_system)
+            game[field_name] = normalized_path
+    
+    # Store original paths in a special field for Batocera API
+    if original_media_paths:
+        game['_original_media_paths'] = original_media_paths
+    
     return game
 
 @router.get("/file")

@@ -458,7 +458,16 @@ class GameService:
         # Get root from memory cache
         if system not in self.gamelists:
             logger.warning(f"gamelist.xml not found in memory for system: {system}")
-            return []
+            logger.warning(f"Available systems in memory: {list(self.gamelists.keys())[:20]}")  # Log first 20 systems
+            # Try case-insensitive match
+            system_lower = system.lower()
+            for loaded_system in self.gamelists.keys():
+                if loaded_system.lower() == system_lower:
+                    logger.info(f"Found case-insensitive match: '{system}' -> '{loaded_system}'")
+                    system = loaded_system
+                    break
+            else:
+                return []
         
         games = []
         root = self.gamelists[system]
@@ -483,6 +492,9 @@ class GameService:
             
             total_games = len(visible_games)
             logger.info(f"Total visible games found: {total_games}")
+            
+            # Sort games by name (case-insensitive)
+            visible_games.sort(key=lambda g: g.findtext('name', '').lower())
             
             # Apply pagination
             offset = (page - 1) * limit
@@ -701,33 +713,14 @@ class GameService:
             
             # Get ALL child elements from the game XML element
             # This ensures we capture every field from gamelist.xml
-            # Use original field names, but normalize media paths to include system prefix
-            def normalize_media_path_for_api(path_value, system_id):
-                """Normalize media path to include system prefix for API consistency."""
-                if not path_value:
-                    return ''
-                # Remove leading ./
-                path = path_value.lstrip('./')
-                # Add system prefix if not already present
-                if path and not path.startswith(f"{system_id}/"):
-                    path = f"{system_id}/{path}"
-                return path
-            
-            # List of media field names that need path normalization
-            media_fields = ['thumbnail', 'image', 'boxart', 'boxback', 'marquee', 'fanart',
-                          'cartridge', 'titleshot', 'video', 'screenshot', 'wheel', 'mix',
-                          'spine', 'extra1']
-            
+            # Use original field names and values exactly as they appear in the XML (100% original)
             for child in found_game:
                 tag = child.tag
                 text = child.text or ''
                 
-                # Normalize media paths to include system prefix
-                if tag in media_fields:
-                    game_data[tag] = normalize_media_path_for_api(text, system_id)
-                else:
-                    # Use original XML tag name and value as-is for non-media fields
-                    game_data[tag] = text
+                # Use original XML tag name and value as-is (no normalization)
+                # This includes media paths - they should be exactly as in the original gamelist.xml
+                game_data[tag] = text
             
             # Ensure required fields exist (with defaults if missing)
             if 'name' not in game_data:

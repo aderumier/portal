@@ -65,6 +65,17 @@ class DownloadService:
         self.game_service = game_service
         self.bandwidth_manager = BandwidthManager(db)
     
+    def _normalize_media_path_for_frontend(self, path_value: str, system_id: str) -> str:
+        """Normalize media path to include system prefix for frontend display."""
+        if not path_value:
+            return ''
+        # Remove leading ./
+        path = path_value.lstrip('./')
+        # Add system prefix if not already present
+        if path and not path.startswith(f"{system_id}/"):
+            path = f"{system_id}/{path}"
+        return path
+    
     def add_to_queue(self, user_id: str, game_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None) -> bool:
         """Add a game to the user's FIFO queue."""
         try:
@@ -186,7 +197,7 @@ class DownloadService:
                         'created_at': item.created_at.isoformat() if item.created_at else None,
                         'started_at': item.started_at.isoformat() if item.started_at else None,
                         'game_name': game['name'],
-                        'image': game.get('image', ''),
+                        'image': self._normalize_media_path_for_frontend(game.get('image', ''), game.get('system', '')),
                         'system_name': self.game_service.get_system_name(game.get('system', '')),
                         'progress_percent': progress_percent,
                         'bytes_transferred': item.bytes_transferred,
@@ -245,7 +256,7 @@ class DownloadService:
                     'game_name': game.get('name', ''),
                     'system': game.get('system', ''),
                     'system_name': self.game_service.get_system_name(game.get('system', '')),
-                    'image': game.get('image', ''),
+                    'image': self._normalize_media_path_for_frontend(game.get('image', ''), game.get('system', '')),
                     'status': item.status,
                     'queue_type': item.queue_type,
                     'active_download': item.active_download,
@@ -426,7 +437,7 @@ class DownloadService:
             if game:
                 enriched_item = item.copy()
                 enriched_item['game_name'] = game['name']
-                enriched_item['image'] = game.get('image', '').lstrip('/')
+                enriched_item['image'] = self._normalize_media_path_for_frontend(game.get('image', ''), game.get('system', ''))
                 enriched_item['system_name'] = self.game_service.get_system_name(game.get('system', ''))
                 enriched.append(enriched_item)
             else:

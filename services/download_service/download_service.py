@@ -936,17 +936,15 @@ def download_game_media(system, game_id, download_id, batocera_system):
             if not media_path:
                 continue  # Skip missing media
             
-            # Normalize the media path
+            # The API now returns normalized paths (with system prefix) for downloading
+            # e.g., "bbcmicro/media/thumbnails/game.png"
+            # Construct HTTP URL: {API_URL}/media/{normalized_path}
+            media_url = f"{API_URL}/media/{media_path}"
+            
+            # Normalize the media path for local storage (remove system prefix and ./)
             normalized_path = normalize_media_path(media_path)
             if not normalized_path:
                 continue
-            
-            # Construct HTTP URL for media file
-            # Media files are served at /media endpoint
-            # The path from API is like "system/media/thumbnails/game.png"
-            # We need to construct: {API_URL}/media/system/media/thumbnails/game.png
-            # Use the original media_path for the URL (it already has the system prefix)
-            media_url = f"{API_URL}/media/{media_path}"
             
             # Remove system prefix from normalized_path for local storage
             # We need just the relative path from the system directory for local storage
@@ -1022,19 +1020,28 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
         # Fields to exclude from the API call (system-specific metadata)
         exclude_fields = {'id', 'system', 'systemName'}
         
+        # Restore original media paths if available (for Batocera API)
+        # The API returns normalized paths for downloading, but we need original paths for Batocera
+        original_media_paths = game_data.get('_original_media_paths', {})
+        
         # Add ALL fields from game_data to batocera_game
         # Use original gamelist.xml field names and values as-is (100% original)
         for field_name, value in game_data.items():
-            # Skip excluded fields
-            if field_name in exclude_fields:
+            # Skip excluded fields and internal metadata
+            if field_name in exclude_fields or field_name == '_original_media_paths':
                 continue
             
             # Skip empty values
             if not value:
                 continue
             
-            # Use original value as-is (including original "path" field from gamelist.xml)
-            batocera_game[field_name] = str(value)
+            # Use original media path if available, otherwise use the value as-is
+            if field_name in original_media_paths:
+                # Use original path from gamelist.xml for Batocera API
+                batocera_game[field_name] = str(original_media_paths[field_name])
+            else:
+                # Use value as-is (for non-media fields or if original not available)
+                batocera_game[field_name] = str(value)
         
         # Create XML structure
         root = ET.Element("gameList")

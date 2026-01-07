@@ -196,6 +196,54 @@ async def get_game_details(
             detail="Game not found"
         )
     
+    # Normalize media paths for frontend display (add system prefix)
+    # The frontend expects paths like "bbcmicro/media/thumbnails/game.png"
+    # but get_game_by_id returns original paths like "./media/thumbnails/game.png"
+    # Use the system from game data to ensure we use the correct system ID
+    game_system = game.get('system', system)
+    if not game_system:
+        logger.warning(f"No system found in game data or route parameter for game {decoded_game_id}")
+        game_system = system
+    
+    def normalize_media_path_for_frontend(path_value, system_id):
+        """Normalize media path to include system prefix for frontend display."""
+        if not path_value:
+            return ''
+        # Remove leading ./
+        path = path_value.lstrip('./')
+        # Add system prefix if not already present
+        if path and not path.startswith(f"{system_id}/"):
+            path = f"{system_id}/{path}"
+        logger.debug(f"Normalized media path: '{path_value}' -> '{path}' (system: {system_id})")
+        return path
+    
+    def is_media_path(value):
+        """Check if a value looks like a media file path by checking for common media extensions."""
+        if not value or not isinstance(value, str):
+            return False
+        # Common media file extensions
+        media_extensions = [
+            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',  # Images
+            '.mp4', '.avi', '.mkv', '.mov', '.webm', '.flv',  # Videos
+            '.pdf', '.svg', '.ico'  # Other media
+        ]
+        # Check if the value ends with a media extension (case-insensitive)
+        value_lower = value.lower()
+        return any(value_lower.endswith(ext) for ext in media_extensions)
+    
+    # Normalize media paths for frontend - detect by file extension instead of field name
+    for field_name, field_value in game.items():
+        # Skip system metadata fields
+        if field_name in ['id', 'system', 'systemName', 'download_enabled']:
+            continue
+        # Check if this field value looks like a media path
+        if field_value and is_media_path(field_value):
+            original_path = field_value
+            normalized_path = normalize_media_path_for_frontend(original_path, game_system)
+            game[field_name] = normalized_path
+            if original_path != normalized_path:
+                logger.debug(f"Normalized {field_name}: '{original_path}' -> '{normalized_path}'")
+    
     # Get system download_enabled status from database
     from app.database import System
     db_system = db.query(System).filter(System.id == system).first()

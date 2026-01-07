@@ -4,12 +4,15 @@ import client from '../api/client'
 import './Account.css'
 
 const Account = () => {
-  const { user } = useAuth()
+  const { user, isDownload, isFastDownload } = useAuth()
   const [tokens, setTokens] = useState([])
   const [loading, setLoading] = useState(true)
   const [newTokenName, setNewTokenName] = useState('')
   const [generating, setGenerating] = useState(false)
   const [newToken, setNewToken] = useState(null)
+  
+  // Check if user has download or fastdownload role
+  const hasDownloadAccess = isDownload || isFastDownload
 
   useEffect(() => {
     loadTokens()
@@ -89,107 +92,117 @@ const Account = () => {
         </div>
       </div>
 
-      <div className="account-section">
-        <h2>API Tokens</h2>
-        <p className="section-description">
-          Generate API tokens to authenticate with the download service.
-        </p>
+      {hasDownloadAccess && (
+        <div className="account-section">
+          <h2>API Tokens</h2>
+          <p className="section-description">
+            Generate API tokens to authenticate with the download service.
+          </p>
 
-        {newToken && (
-          <div className="new-token-alert">
-            <p><strong>New token generated! Copy it now - you won't be able to see it again:</strong></p>
-            <div className="token-display">
-              <code>{newToken}</code>
+          <div className="token-warning">
+            <p>
+              <strong>⚠️ Important:</strong> Each token is bound to a single device/IP address. 
+              Do not share your token with different machines or use it from multiple IP addresses 
+              simultaneously, as it will be automatically blocked for security reasons.
+            </p>
+          </div>
+
+          {newToken && (
+            <div className="new-token-alert">
+              <p><strong>New token generated! Copy it now - you won't be able to see it again:</strong></p>
+              <div className="token-display">
+                <code>{newToken}</code>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(newToken)
+                    alert('Token copied to clipboard!')
+                  }}
+                >
+                  Copy
+                </button>
+              </div>
               <button
-                onClick={() => {
-                  navigator.clipboard.writeText(newToken)
-                  alert('Token copied to clipboard!')
-                }}
+                className="dismiss-btn"
+                onClick={() => setNewToken(null)}
               >
-                Copy
+                Dismiss
               </button>
             </div>
-            <button
-              className="dismiss-btn"
-              onClick={() => setNewToken(null)}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        <form onSubmit={handleGenerate} className="token-form">
-          <input
-            type="text"
-            placeholder="Token name (e.g., Download Service)"
-            value={newTokenName}
-            onChange={(e) => setNewTokenName(e.target.value)}
-            className="token-input"
-          />
-          <button
-            type="submit"
-            disabled={generating || !newTokenName.trim()}
-            className="generate-btn"
-          >
-            {generating ? 'Generating...' : 'Generate Token'}
-          </button>
-        </form>
-
-        <div className="tokens-list">
-          <h3>Your Tokens</h3>
-          {tokens.length === 0 ? (
-            <p className="no-tokens">No tokens generated yet</p>
-          ) : (
-            <table className="tokens-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Token Preview</th>
-                  <th>Created</th>
-                  <th>Last Used</th>
-                  <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tokens.map((token) => (
-                  <tr key={token.id}>
-                    <td>{token.name}</td>
-                    <td>
-                      <code>{token.token_preview}</code>
-                    </td>
-                    <td>
-                      {token.created_at
-                        ? new Date(token.created_at).toLocaleDateString()
-                        : 'N/A'}
-                    </td>
-                    <td>
-                      {token.last_used_at
-                        ? new Date(token.last_used_at).toLocaleDateString()
-                        : 'Never'}
-                    </td>
-                    <td>
-                      <span className={`status-badge ${token.revoked ? 'revoked' : 'active'}`}>
-                        {token.revoked ? 'Revoked' : 'Active'}
-                      </span>
-                    </td>
-                    <td>
-                      {!token.revoked && (
-                        <button
-                          className="revoke-btn"
-                          onClick={() => handleRevoke(token.id)}
-                        >
-                          Revoke
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           )}
+
+          <form onSubmit={handleGenerate} className="token-form">
+            <input
+              type="text"
+              placeholder="Device Name (E.G., Batocera-home, ArcadeCabinet,Retrobat-Tv, ...)"
+              value={newTokenName}
+              onChange={(e) => setNewTokenName(e.target.value)}
+              className="token-input"
+            />
+            <button
+              type="submit"
+              disabled={generating || !newTokenName.trim()}
+              className="generate-btn"
+            >
+              {generating ? 'Generating...' : 'Generate Token'}
+            </button>
+          </form>
+
+          <div className="tokens-list">
+            <h3>Your Tokens</h3>
+            {tokens.length === 0 ? (
+              <p className="no-tokens">No tokens generated yet</p>
+            ) : (
+              <table className="tokens-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Token Preview</th>
+                    <th>Created</th>
+                    <th>Last Used</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tokens.map((token) => (
+                    <tr key={token.id}>
+                      <td>{token.name}</td>
+                      <td>
+                        <code>{token.token_preview}</code>
+                      </td>
+                      <td>
+                        {token.created_at
+                          ? new Date(token.created_at).toLocaleDateString()
+                          : 'N/A'}
+                      </td>
+                      <td>
+                        {token.last_used_at
+                          ? new Date(token.last_used_at).toLocaleDateString()
+                          : 'Never'}
+                      </td>
+                      <td>
+                        <span className={`status-badge ${token.revoked ? 'revoked' : 'active'}`}>
+                          {token.revoked ? 'Revoked' : 'Active'}
+                        </span>
+                      </td>
+                      <td>
+                        {!token.revoked && (
+                          <button
+                            className="revoke-btn"
+                            onClick={() => handleRevoke(token.id)}
+                          >
+                            Revoke
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

@@ -53,7 +53,7 @@ async def revoke_token(
 ):
     """Revoke an API token."""
     user_id = current_user['id']
-    success = token_service.revoke_token(user_id, token_id)
+    success = await token_service.revoke_token(user_id, token_id)
     
     if not success:
         raise HTTPException(

@@ -4,7 +4,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.services.token import ApiTokenService
-from app.api.middleware.auth import get_user_from_session
+from app.api.middleware.auth import get_user_from_session, get_client_ip
 import logging
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,11 @@ async def get_current_user(
         token = token_service.extract_token_from_header(auth_header)
         
         if token:
-            token_info = token_service.validate_token(token)
+            # Get client IP address
+            client_ip = get_client_ip(request)
+            
+            # Validate token (async method now)
+            token_info = await token_service.validate_token(token, client_ip)
             if token_info:
                 # Set user info in request state
                 request.state.user = {
@@ -34,8 +38,17 @@ async def get_current_user(
                 }
                 request.state.token_id = token_info['token_id']  # Store token_id for filtering
                 request.state.auth_method = 'api_token'
-                logger.info(f"API token authentication successful for user: {token_info['user_id']}, token_id: {token_info['token_id']}")
+                logger.info(
+                    f"API token authentication successful for user: {token_info['user_id']}, "
+                    f"token_id: {token_info['token_id']}, IP: {client_ip}"
+                )
                 return request.state.user
+            else:
+                # Token validation failed (could be invalid token, revoked, or multiple IPs detected)
+                logger.warning(
+                    f"API token authentication failed. Token may be invalid, revoked, or used from multiple IPs. "
+                    f"Request IP: {client_ip}"
+                )
     
     # Fall back to session authentication
     user = get_user_from_session(request)
