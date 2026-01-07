@@ -34,8 +34,6 @@ LOG_FILE="/userdata/system/logs/rgs_download.log"
 # Environment variables
 export API_URL="${API_URL:-https://rgs-retro.ddns.net}"
 export ROMS_PATH="${ROMS_PATH:-/userdata/roms}"
-export POLLING_INTERVAL="${POLLING_INTERVAL:-10}"
-export BANDWIDTH_UPDATE_INTERVAL="${BANDWIDTH_UPDATE_INTERVAL:-5}"
 export LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
 # Colors for output

@@ -1000,8 +1000,8 @@ def download_game_media(system, game_id, download_id, batocera_system):
         logger.error(f"Error in download_game_media: {e}", exc_info=True)
         return downloaded_media, None
 
-def update_gamelist_xml(batocera_system, game_id, game_data, media_paths):
-    """Update or create gamelist.xml with the downloaded game entry.
+def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
+    """Add/update game in Batocera via EmulationStation HTTP API.
     
     Args:
         batocera_system: Batocera system directory name (e.g., "atari2600")
@@ -1013,135 +1013,86 @@ def update_gamelist_xml(batocera_system, game_id, game_data, media_paths):
         bool: True if successful, False otherwise
     """
     try:
-        gamelist_path = os.path.join(ROMS_PATH, batocera_system, 'gamelist.xml')
+        from xml.dom import minidom
         
-        # Parse existing XML or create new
-        if os.path.exists(gamelist_path):
-            try:
-                tree = ET.parse(gamelist_path)
-                root = tree.getroot()
-            except ET.ParseError as e:
-                logger.warning(f"Failed to parse existing gamelist.xml: {e}, creating new one")
-                root = ET.Element('gameList')
-                tree = ET.ElementTree(root)
+        # Build game metadata dict for Batocera API
+        # Include ALL fields from game_data (except system-specific metadata)
+        batocera_game = {}
+        
+        # Fields to exclude from the API call (system-specific metadata)
+        exclude_fields = {'id', 'system', 'systemName'}
+        
+        # Add ALL fields from game_data to batocera_game
+        # Use original gamelist.xml field names and values as-is (100% original)
+        for field_name, value in game_data.items():
+            # Skip excluded fields
+            if field_name in exclude_fields:
+                continue
+            
+            # Skip empty values
+            if not value:
+                continue
+            
+            # Use original value as-is (including original "path" field from gamelist.xml)
+            batocera_game[field_name] = str(value)
+        
+        # Create XML structure
+        root = ET.Element("gameList")
+        game_elem = ET.SubElement(root, "game")
+        
+        # Add all fields to XML
+        for key, value in batocera_game.items():
+            if value:  # Only add non-empty fields
+                elem = ET.SubElement(game_elem, key)
+                elem.text = str(value)
+        
+        # Pretty print XML
+        def prettify_xml(elem):
+            """Return a pretty-printed XML string for the Element."""
+            rough_string = ET.tostring(elem, encoding='unicode')
+            reparsed = minidom.parseString(rough_string)
+            return reparsed.toprettyxml(indent="  ")
+        
+        xml_content = prettify_xml(root)
+        
+        # Send POST request to Batocera API
+        batocera_api_url = "http://127.0.0.1:1234"
+        url = f"{batocera_api_url}/addgames/{batocera_system}"
+        headers = {'Content-Type': 'application/xml'}
+        
+        logger.info(f"Sending game '{game_data.get('name', game_id)}' to Batocera API at {url}")
+        response = requests.post(url, data=xml_content, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            logger.info(f"Successfully added/updated game in Batocera system '{batocera_system}'")
+            return True
+        elif response.status_code == 201:
+            logger.info(f"Successfully added/updated game in Batocera system '{batocera_system}' (system will reload on next access)")
+            return True
+        elif response.status_code == 204:
+            logger.info(f"No games were added/updated in Batocera system '{batocera_system}' (game may already exist)")
+            return True  # Not an error, just no changes
+        elif response.status_code == 400:
+            logger.error(f"Bad request when adding game to Batocera: {response.text}")
+            return False
+        elif response.status_code == 404:
+            logger.error(f"System '{batocera_system}' not found in Batocera")
+            return False
+        elif response.status_code == 403:
+            logger.error(f"Forbidden when adding game to Batocera (PublicWebAccess may be disabled)")
+            return False
         else:
-            # Create new XML structure
-            root = ET.Element('gameList')
-            tree = ET.ElementTree(root)
-            logger.info(f"Creating new gamelist.xml at {gamelist_path}")
-        
-        # Find existing game entry by path
-        game_element = None
-        for game in root.findall('.//game'):
-            path_text = game.findtext('path', '')
-            # Normalize paths for comparison
-            normalized_path = normalize_media_path(path_text)
-            normalized_game_id = normalize_media_path(game_id)
-            if normalized_path == normalized_game_id or path_text == game_id or path_text == f'./{normalized_game_id}':
-                game_element = game
-                logger.info(f"Found existing game entry in gamelist.xml: {game_id}")
-                break
-        
-        # Create new game element if not found
-        if game_element is None:
-            game_element = ET.SubElement(root, 'game')
-            logger.info(f"Creating new game entry in gamelist.xml: {game_id}")
-        
-        # Update game path (format correctly: add ./ for root files, keep subdirectory paths as is)
-        formatted_path = format_path_for_xml(game_id)
-        path_elem = game_element.find('path')
-        if path_elem is None:
-            path_elem = ET.SubElement(game_element, 'path')
-        path_elem.text = formatted_path
-        
-        # Update name
-        name_elem = game_element.find('name')
-        if name_elem is None:
-            name_elem = ET.SubElement(game_element, 'name')
-        name_elem.text = game_data.get('name', '')
-        
-        # Update description
-        desc_elem = game_element.find('desc')
-        if desc_elem is None:
-            desc_elem = ET.SubElement(game_element, 'desc')
-        desc_elem.text = game_data.get('description', '')
-        
-        # Update metadata fields
-        metadata_fields = {
-            'developer': 'developer',
-            'publisher': 'publisher',
-            'genre': 'genre',
-            'releaseDate': 'releasedate',
-            'players': 'players',
-            'rating': 'rating',
-            'region': 'region',
-            'lang': 'lang'
-        }
-        
-        for api_field, xml_field in metadata_fields.items():
-            value = game_data.get(api_field, '')
-            if value:
-                elem = game_element.find(xml_field)
-                if elem is None:
-                    elem = ET.SubElement(game_element, xml_field)
-                elem.text = value
-        
-        # Update media paths
-        # Use the paths from game_data, but normalize them
-        media_fields = {
-            'thumbnail': 'thumbnail',
-            'image': 'image',
-            'boxart': 'boxart',
-            'boxback': 'boxback',
-            'marquee': 'marquee',
-            'fanart': 'fanart',
-            'cartridge': 'cartridge',
-            'titleshot': 'titleshot',
-            'video': 'video',
-            'screenshot': 'screenshot',
-            'wheel': 'wheel',
-            'mix': 'mix'
-        }
-        
-        # Get system ID from game_data for parsing media paths
-        system = game_data.get('system', '')
-        
-        for api_field, xml_field in media_fields.items():
-            # Get path from game_data
-            media_path = game_data.get(api_field, '')
-            if media_path:
-                # Normalize the path (remove system prefix and leading ./)
-                normalized = normalize_media_path(media_path)
-                if system and normalized.startswith(f"{system}/"):
-                    normalized = normalized[len(system) + 1:]
-                
-                # Format path for XML (add ./ prefix for media paths)
-                formatted_media_path = format_media_path_for_xml(normalized)
-                
-                # Use formatted path in XML (relative to system directory)
-                elem = game_element.find(xml_field)
-                if elem is None:
-                    elem = ET.SubElement(game_element, xml_field)
-                elem.text = formatted_media_path
-        
-        # Ensure directory exists
-        ensure_directory_exists(os.path.dirname(gamelist_path))
-        
-        # Write XML back to file with proper formatting
-        # Use UTF-8 encoding
-        try:
-            # ET.indent is available in Python 3.9+
-            ET.indent(tree, space='  ')  # Pretty print with 2-space indent
-        except AttributeError:
-            # Python < 3.9 doesn't have ET.indent, skip pretty printing
-            logger.debug("ET.indent not available (Python < 3.9), writing XML without indentation")
-        tree.write(gamelist_path, encoding='utf-8', xml_declaration=True)
-        
-        logger.info(f"Successfully updated gamelist.xml at {gamelist_path}")
-        return True
-        
+            logger.error(f"Unexpected status code {response.status_code} when adding game to Batocera: {response.text}")
+            return False
+            
+    except requests.exceptions.ConnectionError:
+        logger.warning(f"Could not connect to Batocera HTTP server at http://127.0.0.1:1234 (EmulationStation may not be running)")
+        return False
+    except requests.exceptions.Timeout:
+        logger.warning(f"Request to Batocera HTTP server timed out")
+        return False
     except Exception as e:
-        logger.error(f"Error updating gamelist.xml: {e}", exc_info=True)
+        logger.error(f"Error adding game to Batocera via API: {e}", exc_info=True)
         return False
 
 def download_game(download_info):
@@ -1266,7 +1217,7 @@ def download_game(download_info):
                                 # Use game_data returned from download_game_media (avoids duplicate API call)
                                 if game_data:
                                     # Update gamelist.xml with game entry
-                                    gamelist_success = update_gamelist_xml(target_system, game_id, game_data, downloaded_media)
+                                    gamelist_success = add_game_to_batocera_api(target_system, game_id, game_data, downloaded_media)
                                     if gamelist_success:
                                         media_and_gamelist_success = True
                                         logger.info(f"Media download and gamelist.xml update completed successfully for {game_id}")
@@ -1277,25 +1228,6 @@ def download_game(download_info):
                             except Exception as e:
                                 logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
                             
-                            # Restart emulationstation if media and gamelist.xml were successfully updated
-                            if media_and_gamelist_success:
-                                try:
-                                    logger.info("Restarting emulationstation after successful download with media and gamelist.xml")
-                                    result = subprocess.run(
-                                        ['killall', '-9', 'emulationstation'],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=5
-                                    )
-                                    if result.returncode == 0:
-                                        logger.info("Successfully restarted emulationstation")
-                                    else:
-                                        # killall returns non-zero if process not found, which is OK
-                                        logger.debug(f"killall emulationstation returned {result.returncode}: {result.stderr}")
-                                except subprocess.TimeoutExpired:
-                                    logger.warning("Timeout while trying to restart emulationstation")
-                                except Exception as e:
-                                    logger.error(f"Error restarting emulationstation: {e}", exc_info=True)
                         return success
                 except (ValueError, requests.exceptions.JSONDecodeError) as json_err:
                     # Failed to parse as JSON, treat as file
@@ -1338,7 +1270,7 @@ def download_game(download_info):
                     # Use game_data returned from download_game_media (avoids duplicate API call)
                     if game_data:
                         # Update gamelist.xml with game entry
-                        gamelist_success = update_gamelist_xml(target_system, game_id, game_data, downloaded_media)
+                        gamelist_success = add_game_to_batocera_api(target_system, game_id, game_data, downloaded_media)
                         if gamelist_success:
                             media_and_gamelist_success = True
                             logger.info(f"Media download and gamelist.xml update completed successfully for {game_id}")
@@ -1349,25 +1281,6 @@ def download_game(download_info):
                 except Exception as e:
                     logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
                 
-                # Restart emulationstation if media and gamelist.xml were successfully updated
-                if media_and_gamelist_success:
-                    try:
-                        logger.info("Restarting emulationstation after successful download with media and gamelist.xml")
-                        result = subprocess.run(
-                            ['killall', '-9', 'emulationstation'],
-                            capture_output=True,
-                            text=True,
-                            timeout=5
-                        )
-                        if result.returncode == 0:
-                            logger.info("Successfully restarted emulationstation")
-                        else:
-                            # killall returns non-zero if process not found, which is OK
-                            logger.debug(f"killall emulationstation returned {result.returncode}: {result.stderr}")
-                    except subprocess.TimeoutExpired:
-                        logger.warning("Timeout while trying to restart emulationstation")
-                    except Exception as e:
-                        logger.error(f"Error restarting emulationstation: {e}", exc_info=True)
                 
                 return True
         
@@ -1513,7 +1426,7 @@ def download_game(download_info):
                 # Use game_data returned from download_game_media (avoids duplicate API call)
                 if game_data:
                     # Update gamelist.xml with game entry
-                    gamelist_success = update_gamelist_xml(target_system, game_id, game_data, downloaded_media)
+                    gamelist_success = add_game_to_batocera_api(target_system, game_id, game_data, downloaded_media)
                     if gamelist_success:
                         media_and_gamelist_success = True
                         logger.info(f"Media download and gamelist.xml update completed successfully for {game_id}")
@@ -1524,25 +1437,6 @@ def download_game(download_info):
             except Exception as e:
                 logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
             
-            # Restart emulationstation if media and gamelist.xml were successfully updated
-            if media_and_gamelist_success:
-                try:
-                    logger.info("Restarting emulationstation after successful download with media and gamelist.xml")
-                    result = subprocess.run(
-                        ['killall', '-9', 'emulationstation'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    if result.returncode == 0:
-                        logger.info("Successfully restarted emulationstation")
-                    else:
-                        # killall returns non-zero if process not found, which is OK
-                        logger.debug(f"killall emulationstation returned {result.returncode}: {result.stderr}")
-                except subprocess.TimeoutExpired:
-                    logger.warning("Timeout while trying to restart emulationstation")
-                except Exception as e:
-                    logger.error(f"Error restarting emulationstation: {e}", exc_info=True)
             
             return True
         else:

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { getMediaUrl } from '../utils/constants'
 import client from '../api/client'
 import './Downloads.css'
@@ -10,6 +10,12 @@ const Downloads = () => {
   const [maxBandwidthLimit, setMaxBandwidthLimit] = useState(null)
   const [bandwidthInput, setBandwidthInput] = useState('')
   const [savingBandwidth, setSavingBandwidth] = useState(false)
+
+  // Define formatMbits before it's used in useEffect
+  const formatMbits = useCallback((bytes) => {
+    if (!bytes) return '0'
+    return (bytes / 125000).toFixed(2)
+  }, [])
 
   useEffect(() => {
     loadQueue(true)
@@ -82,12 +88,7 @@ const Downloads = () => {
     }, 1000) // Debounce: wait 1 second after user stops typing
 
     return () => clearTimeout(timeoutId)
-  }, [bandwidthInput, bandwidthLimit, maxBandwidthLimit])
-
-  const formatMbits = (bytes) => {
-    if (!bytes) return '0'
-    return (bytes / 125000).toFixed(2)
-  }
+  }, [bandwidthInput, bandwidthLimit, maxBandwidthLimit, formatMbits])
 
   const loadQueue = async (isInitialLoad = false) => {
     try {

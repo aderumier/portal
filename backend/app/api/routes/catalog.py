@@ -85,9 +85,13 @@ async def get_games(
     for game in games:
         game['download_enabled'] = download_enabled
     
+    # Get subdirectory counts for this system
+    subdirectory_counts = game_service.get_subdirectory_counts(system)
+    
     return {
         "games": games,
-        "hasMore": has_more
+        "hasMore": has_more,
+        "subdirectory_counts": subdirectory_counts
     }
 
 @router.get("/search")

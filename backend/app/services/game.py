@@ -52,6 +52,7 @@ class GameService:
         self.system_release = {}  # Cache: system_id -> release year
         self.system_fullname = {}  # Cache: system_id -> full name
         self._hardware_loaded = False
+        self.subdirectory_counts = {}  # Cache: system_id -> {subdirectory: count}
         
         # System name mapping
         self.system_names = {
@@ -523,6 +524,11 @@ class GameService:
             
             logger.info(f"Returning {len(games)} games")
             self.cache[cache_key] = games
+            
+            # Compute subdirectory counts if not already computed
+            if system not in self.subdirectory_counts:
+                self._compute_subdirectory_counts(system)
+            
             return games
         except Exception as e:
             logger.error(f"Failed to parse gamelist.xml for system {system}: {e}")
@@ -686,64 +692,135 @@ class GameService:
             return None
         
         try:
-            
-            # Get all media types
-            def get_media_path(media_type):
-                path = found_game.findtext(media_type, '')
-                if path:
-                    path = path.lstrip('./')
-                    if not path.startswith(f"{system_id}/"):
-                        path = f"{system_id}/{path}"
-                return path
-            
-            # Get all game information
+            # Start with system-specific fields
             game_data = {
                 'id': found_game.findtext('path', ''),
-                'name': found_game.findtext('name', ''),
-                'description': found_game.findtext('desc', ''),
                 'system': system_id,
                 'systemName': self.get_system_name(system_id),
-                
-                # Metadata
-                'developer': found_game.findtext('developer', ''),
-                'publisher': found_game.findtext('publisher', ''),
-                'genre': found_game.findtext('genre', ''),
-                'releaseDate': found_game.findtext('releasedate', ''),
-                'players': found_game.findtext('players', ''),
-                'rating': found_game.findtext('rating', ''),
-                'region': found_game.findtext('region', ''),
-                'lang': found_game.findtext('lang', ''),
-                
-                # Media types
-                'thumbnail': get_media_path('thumbnail'),
-                'image': get_media_path('image'),
-                'boxart': get_media_path('boxart'),
-                'extra1': get_media_path('extra1'),
-                'spine': get_media_path('spine'),
-                'boxback': get_media_path('boxback'),
-                'marquee': get_media_path('marquee'),
-                'fanart': get_media_path('fanart'),
-                'cartridge': get_media_path('cartridge'),
-                'titleshot': get_media_path('titleshot'),
-                'video': get_media_path('video'),
-                'screenshot': get_media_path('screenshot'),
-                'wheel': get_media_path('wheel'),
-                'mix': get_media_path('mix'),
             }
             
+            # Get ALL child elements from the game XML element
+            # This ensures we capture every field from gamelist.xml
+            # Use original field names, but normalize media paths to include system prefix
+            def normalize_media_path_for_api(path_value, system_id):
+                """Normalize media path to include system prefix for API consistency."""
+                if not path_value:
+                    return ''
+                # Remove leading ./
+                path = path_value.lstrip('./')
+                # Add system prefix if not already present
+                if path and not path.startswith(f"{system_id}/"):
+                    path = f"{system_id}/{path}"
+                return path
+            
+            # List of media field names that need path normalization
+            media_fields = ['thumbnail', 'image', 'boxart', 'boxback', 'marquee', 'fanart',
+                          'cartridge', 'titleshot', 'video', 'screenshot', 'wheel', 'mix',
+                          'spine', 'extra1']
+            
+            for child in found_game:
+                tag = child.tag
+                text = child.text or ''
+                
+                # Normalize media paths to include system prefix
+                if tag in media_fields:
+                    game_data[tag] = normalize_media_path_for_api(text, system_id)
+                else:
+                    # Use original XML tag name and value as-is for non-media fields
+                    game_data[tag] = text
+            
+            # Ensure required fields exist (with defaults if missing)
+            if 'name' not in game_data:
+                game_data['name'] = ''
+            if 'description' not in game_data:
+                game_data['description'] = ''
+            
             # Set default display image (prefer thumbnail, then image)
-            if game_data['thumbnail']:
-                game_data['image'] = game_data['thumbnail']
-            elif game_data['image']:
-                pass  # Already set
-            else:
+            if 'thumbnail' in game_data and game_data['thumbnail']:
+                if 'image' not in game_data or not game_data['image']:
+                    game_data['image'] = game_data['thumbnail']
+            elif 'image' not in game_data:
                 game_data['image'] = ''
             
-            logger.info(f"Game data retrieved: {game_data['name']}")
+            logger.info(f"Game data retrieved: {game_data.get('name', 'Unknown')} ({len(game_data)} fields)")
             return game_data
         except Exception as e:
             logger.error(f"Failed to get game by ID: {e}")
             return None
+    
+    def _get_game_subdirectory(self, game_path: str, system_id: str) -> Optional[str]:
+        """Extract subdirectory from game path.
+        
+        Args:
+            game_path: Game path from gamelist.xml (e.g., "./subdir/game.zip" or "subdir/game.zip")
+            system_id: System ID
+            
+        Returns:
+            Subdirectory name (e.g., "subdir") or None if game is in root
+        """
+        # Remove leading ./
+        path = game_path.lstrip('./')
+        # Remove system prefix if present
+        if path.startswith(f"{system_id}/"):
+            path = path[len(system_id) + 1:]
+        # Get directory part (everything before the last /)
+        last_slash_index = path.rfind('/')
+        if last_slash_index == -1:
+            return None  # No subdirectory, game is in root
+        return path[:last_slash_index]
+    
+    def _compute_subdirectory_counts(self, system_id: str):
+        """Compute subdirectory counts for a specific system.
+        
+        Args:
+            system_id: System ID to compute counts for
+        """
+        if system_id not in self.gamelists:
+            return
+        
+        counts = {}
+        root = self.gamelists[system_id]
+        
+        for game in root.findall('.//game'):
+            # Skip hidden games
+            if _is_game_hidden(game):
+                continue
+            
+            game_path = game.findtext('path', '')
+            if not game_path:
+                continue
+            
+            subdir = self._get_game_subdirectory(game_path, system_id)
+            key = subdir if subdir else '(root)'
+            counts[key] = counts.get(key, 0) + 1
+        
+        self.subdirectory_counts[system_id] = counts
+        logger.debug(f"Computed subdirectory counts for {system_id}: {len(counts)} subdirectories")
+    
+    def _compute_all_subdirectory_counts(self):
+        """Compute subdirectory counts for all loaded systems."""
+        for system_id in self.gamelists.keys():
+            self._compute_subdirectory_counts(system_id)
+        logger.info(f"Computed subdirectory counts for {len(self.subdirectory_counts)} systems")
+    
+    def get_subdirectory_counts(self, system_id: str) -> dict:
+        """Get subdirectory counts for a system.
+        
+        Args:
+            system_id: System ID
+            
+        Returns:
+            Dictionary mapping subdirectory names to game counts
+        """
+        # Ensure gamelists are loaded
+        if not self._gamelists_loaded:
+            self.preload_all_gamelists()
+        
+        # Compute counts if not already computed
+        if system_id not in self.subdirectory_counts:
+            self._compute_subdirectory_counts(system_id)
+        
+        return self.subdirectory_counts.get(system_id, {})
     
     def _get_index_file_path(self) -> str:
         """Get the path to the search index pickle file."""
@@ -984,6 +1061,7 @@ class GameService:
         self.gamelists = {}
         self.systems_list = []
         self.search_index = {}
+        self.subdirectory_counts = {}  # Clear subdirectory counts
         
         # Reset flags
         self._gamelists_loaded = False
@@ -999,6 +1077,8 @@ class GameService:
         # Reload everything
         self.preload_all_gamelists()
         self.build_search_index()
+        # Compute subdirectory counts for all systems
+        self._compute_all_subdirectory_counts()
         
         logger.info("Catalog cache and search index refreshed successfully")
         

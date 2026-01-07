@@ -16,6 +16,7 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
   const [error, setError] = useState(null)
   const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
   const [selectedSubdirectory, setSelectedSubdirectory] = useState(null) // null = all, or specific subdirectory
+  const [subdirectoryCounts, setSubdirectoryCounts] = useState({}) // Pre-computed counts from backend
   const observerRef = useRef(null)
   const loadingRef = useRef(null)
   const navigate = useNavigate()
@@ -57,6 +58,10 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
         setGames(prev => [...prev, ...newGames])
       } else {
         setGames(newGames)
+        // Update subdirectory counts from backend (only on first page load)
+        if (response.data.subdirectory_counts) {
+          setSubdirectoryCounts(response.data.subdirectory_counts)
+        }
       }
       
       setHasMore(response.data.hasMore || false)
@@ -102,6 +107,40 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
     }
   }, [hasMore, loading, page, loadGames])
 
+  // Extract subdirectory from game ID - must be before early returns
+  const getGameSubdirectory = useCallback((gameId) => {
+    // Remove leading ./
+    let path = gameId.replace(/^\.\//, '')
+    // Remove system prefix if present
+    if (path.startsWith(`${systemId}/`)) {
+      path = path.substring(systemId.length + 1)
+    }
+    // Get directory part (everything before the last /)
+    const lastSlashIndex = path.lastIndexOf('/')
+    if (lastSlashIndex === -1) {
+      return null // No subdirectory, game is in root
+    }
+    return path.substring(0, lastSlashIndex)
+  }, [systemId])
+
+  // Get unique subdirectories from backend counts (excluding root) - must be before early returns
+  const subdirectories = React.useMemo(() => {
+    return Object.keys(subdirectoryCounts)
+      .filter(key => key !== '(root)')
+      .sort()
+  }, [subdirectoryCounts])
+
+  // Filter games based on selected subdirectory
+  const filteredGames = React.useMemo(() => {
+    if (selectedSubdirectory === null) {
+      return games
+    }
+    return games.filter(game => {
+      const subdir = getGameSubdirectory(game.id)
+      return subdir === selectedSubdirectory
+    })
+  }, [games, selectedSubdirectory, getGameSubdirectory])
+
   const handleDownload = async (gameId) => {
     try {
       const result = await addToQueue(gameId)
@@ -121,14 +160,6 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
     }
   }
 
-  if (loading && games.length === 0) {
-    return <div className="loading">Loading games...</div>
-  }
-
-  if (error && games.length === 0) {
-    return <div className="error">{error}</div>
-  }
-
   const handleGameClick = (game) => {
     let gameId = game.id.replace(/^\.\//, '')
     if (gameId.startsWith(`${game.system}/`)) {
@@ -137,55 +168,14 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
     navigate(`/game/${game.system}/${encodeURIComponent(gameId)}`)
   }
 
-  // Extract subdirectory from game ID
-  const getGameSubdirectory = React.useCallback((gameId) => {
-    // Remove leading ./
-    let path = gameId.replace(/^\.\//, '')
-    // Remove system prefix if present
-    if (path.startsWith(`${systemId}/`)) {
-      path = path.substring(systemId.length + 1)
-    }
-    // Get directory part (everything before the last /)
-    const lastSlashIndex = path.lastIndexOf('/')
-    if (lastSlashIndex === -1) {
-      return null // No subdirectory, game is in root
-    }
-    return path.substring(0, lastSlashIndex)
-  }, [systemId])
+  // Early returns must come AFTER all hooks
+  if (loading && games.length === 0) {
+    return <div className="loading">Loading games...</div>
+  }
 
-  // Group games by subdirectory and get unique subdirectories
-  const subdirectories = React.useMemo(() => {
-    const subdirSet = new Set()
-    games.forEach(game => {
-      const subdir = getGameSubdirectory(game.id)
-      if (subdir !== null) {
-        subdirSet.add(subdir)
-      }
-    })
-    return Array.from(subdirSet).sort()
-  }, [games, getGameSubdirectory])
-
-  // Count games per subdirectory
-  const subdirectoryCounts = React.useMemo(() => {
-    const counts = {}
-    games.forEach(game => {
-      const subdir = getGameSubdirectory(game.id)
-      const key = subdir || '(root)'
-      counts[key] = (counts[key] || 0) + 1
-    })
-    return counts
-  }, [games, getGameSubdirectory])
-
-  // Filter games based on selected subdirectory
-  const filteredGames = React.useMemo(() => {
-    if (selectedSubdirectory === null) {
-      return games
-    }
-    return games.filter(game => {
-      const subdir = getGameSubdirectory(game.id)
-      return subdir === selectedSubdirectory
-    })
-  }, [games, selectedSubdirectory, getGameSubdirectory])
+  if (error && games.length === 0) {
+    return <div className="error">{error}</div>
+  }
 
   return (
     <div className="system-games">
@@ -230,7 +220,7 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
             onClick={() => setSelectedSubdirectory(null)}
           >
             All
-            {subdirectoryCounts['(root)'] && <span className="subdirectory-count">({games.length})</span>}
+            {subdirectoryCounts['(root)'] && <span className="subdirectory-count">({Object.values(subdirectoryCounts).reduce((sum, count) => sum + count, 0)})</span>}
           </button>
           {subdirectories.map((subdir) => (
             <button
