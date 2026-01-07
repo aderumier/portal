@@ -134,7 +134,9 @@ ROMS_PATH = config.get('ROMS_PATH') or os.getenv('ROMS_PATH', DEFAULT_ROMS_PATH)
 # POLLING_INTERVAL will be fetched from backend on first request_download call
 # No fallback - must be set by backend
 POLLING_INTERVAL = None
-BANDWIDTH_UPDATE_INTERVAL = int(config.get('BANDWIDTH_UPDATE_INTERVAL') or os.getenv('BANDWIDTH_UPDATE_INTERVAL', '5'))
+# BANDWIDTH_UPDATE_INTERVAL will be fetched from backend on first request_download call
+# No fallback - must be set by backend
+BANDWIDTH_UPDATE_INTERVAL = None
 SERVICE_ID = config.get('SERVICE_ID') or os.getenv('SERVICE_ID', socket.gethostname())
 
 # Read API_TOKEN from API_TOKEN.txt file in the service root directory
@@ -164,7 +166,7 @@ logger.info(f"  API_URL: {API_URL}")
 logger.info(f"  ROMS_PATH: {ROMS_PATH}")
 logger.info(f"  SERVICE_ID: {SERVICE_ID}")
 logger.info(f"  POLLING_INTERVAL: Will be set from backend on first connection")
-logger.info(f"  BANDWIDTH_UPDATE_INTERVAL: {BANDWIDTH_UPDATE_INTERVAL}s")
+logger.info(f"  BANDWIDTH_UPDATE_INTERVAL: Will be set from backend on first connection")
 
 # Validate API_URL is not pointing to frontend
 if ':3000' in API_URL:
@@ -213,10 +215,27 @@ def update_polling_interval(new_interval):
     else:
         logger.warning(f"Invalid polling interval received: {new_interval}, keeping current value: {POLLING_INTERVAL}")
 
+def update_bandwidth_update_interval(new_interval):
+    """Update the global BANDWIDTH_UPDATE_INTERVAL value.
+    
+    Args:
+        new_interval: New bandwidth update interval in seconds (int)
+    """
+    global BANDWIDTH_UPDATE_INTERVAL
+    if isinstance(new_interval, int) and new_interval > 0:
+        if BANDWIDTH_UPDATE_INTERVAL is None:
+            logger.info(f"Setting BANDWIDTH_UPDATE_INTERVAL to {new_interval} seconds (from backend)")
+            BANDWIDTH_UPDATE_INTERVAL = new_interval
+        elif BANDWIDTH_UPDATE_INTERVAL != new_interval:
+            logger.info(f"Updating BANDWIDTH_UPDATE_INTERVAL from {BANDWIDTH_UPDATE_INTERVAL} to {new_interval} seconds")
+            BANDWIDTH_UPDATE_INTERVAL = new_interval
+    else:
+        logger.warning(f"Invalid bandwidth update interval received: {new_interval}, keeping current value: {BANDWIDTH_UPDATE_INTERVAL}")
+
 def request_download(queue_type=None):
     """Request next available download from the API.
     
-    Also updates POLLING_INTERVAL from the backend response.
+    Also updates POLLING_INTERVAL and BANDWIDTH_UPDATE_INTERVAL from the backend response.
     
     Returns:
         dict: Download info dict, or None if no download available
@@ -252,6 +271,13 @@ def request_download(queue_type=None):
             update_polling_interval(int(polling_interval))
         else:
             logger.error("Backend did not return polling_interval in response!")
+        
+        # Always update bandwidth update interval from backend response (required, no fallback)
+        bandwidth_update_interval = result.get('bandwidth_update_interval')
+        if bandwidth_update_interval is not None:
+            update_bandwidth_update_interval(int(bandwidth_update_interval))
+        else:
+            logger.error("Backend did not return bandwidth_update_interval in response!")
         
         return result.get('download')
     except requests.exceptions.HTTPError as e:
@@ -513,6 +539,10 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
         last_log_time = download_start_time
         last_pause_check = download_start_time
         
+        # Track recent download rate (last 10 seconds) for more accurate current rate display
+        recent_bytes_window = []  # List of (timestamp, bytes) tuples for last 10 seconds
+        recent_rate_window_seconds = 10.0
+        
         with open(dest_path, mode) as f:
             try:
                 for chunk in response.iter_content(chunk_size=chunk_size):
@@ -534,12 +564,32 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                         if bytes_transferred_ref:
                             bytes_transferred_ref[0] += bytes_written
                         
-                        # Log progress every 5 seconds or every 10MB
+                        # Track recent download rate for accurate current rate display
                         current_time = time.time()
+                        recent_bytes_window.append((current_time, bytes_written))
+                        # Remove entries older than the window
+                        cutoff_time = current_time - recent_rate_window_seconds
+                        recent_bytes_window = [(ts, bytes) for ts, bytes in recent_bytes_window if ts >= cutoff_time]
+                        
+                        # Log progress every 5 seconds or every 10MB
                         if current_time - last_log_time >= 5.0 or (chunk_count % 100 == 0):
-                            elapsed_total = current_time - download_start_time
-                            # Calculate rate based on bytes downloaded in THIS session only
-                            current_rate = bytes_downloaded_this_session / elapsed_total if elapsed_total > 0 else 0
+                            # Calculate rate based on recent window (last 10 seconds) for current rate
+                            if len(recent_bytes_window) > 1:
+                                window_start_time = recent_bytes_window[0][0]
+                                window_end_time = recent_bytes_window[-1][0]
+                                window_duration = window_end_time - window_start_time
+                                window_bytes = sum(bytes for _, bytes in recent_bytes_window)
+                                if window_duration > 0:
+                                    current_rate = window_bytes / window_duration
+                                else:
+                                    # Fallback to session average if window is too small
+                                    elapsed_total = current_time - download_start_time
+                                    current_rate = bytes_downloaded_this_session / elapsed_total if elapsed_total > 0 else 0
+                            else:
+                                # Fallback to session average if not enough data
+                                elapsed_total = current_time - download_start_time
+                                current_rate = bytes_downloaded_this_session / elapsed_total if elapsed_total > 0 else 0
+                            
                             logger.info(f"Downloaded {total_bytes_downloaded} bytes ({total_bytes_downloaded / (1024*1024):.2f} MB), {chunk_count} chunks this session, rate: {current_rate / 125000:.2f} Mbits/s")
                             last_log_time = current_time
                     elif chunk is None:
@@ -549,10 +599,22 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                 logger.error(f"Error during download iteration: {e}", exc_info=True)
                 raise
         
-        logger.info(f"Download completed: {chunk_count} chunks, {total_bytes_downloaded} bytes")
-        
         # Explicitly close the response to free the connection
         response.close()
+        
+        # Check if stream ended unexpectedly (before all bytes were received)
+        # This can happen if the server paused the download mid-stream
+        if content_length and total_bytes_downloaded < (resume_from + content_length):
+            logger.warning(f"Stream ended unexpectedly: received {total_bytes_downloaded} bytes, expected {resume_from + content_length} bytes")
+            # Check if download is paused
+            if paused_ref and paused_ref[0]:
+                logger.info(f"Download was paused - stream ended at {total_bytes_downloaded} bytes")
+                return False  # Return False to indicate pause
+            # If not paused, this might be a network error - return False to indicate failure
+            logger.warning(f"Stream ended unexpectedly but download is not paused - treating as error")
+            return False
+        
+        logger.info(f"Download completed: {chunk_count} chunks, {total_bytes_downloaded} bytes")
         
         # Verify file size
         final_size = os.path.getsize(dest_path)
@@ -562,6 +624,12 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
         
         return True
     except requests.exceptions.HTTPError as e:
+        # Handle 403 errors - download is paused
+        if e.response and e.response.status_code == 403:
+            logger.info(f"Download paused (403) for URL: {http_url}")
+            if paused_ref:
+                paused_ref[0] = True
+            return False  # Return False to indicate pause
         # Handle 404 errors - file doesn't exist, remove from queue
         if e.response and e.response.status_code == 404:
             logger.error(f"File not found (404) for URL: {http_url}")
@@ -590,8 +658,10 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
     def progress_reporter():
         """Background thread to report progress periodically and check for pause."""
         nonlocal last_report_time, progress_thread_running, total_bytes_downloaded
+        # Use BANDWIDTH_UPDATE_INTERVAL if set, otherwise fallback to 5 seconds
+        interval = BANDWIDTH_UPDATE_INTERVAL if BANDWIDTH_UPDATE_INTERVAL is not None else 5
         while progress_thread_running:
-            time.sleep(BANDWIDTH_UPDATE_INTERVAL)
+            time.sleep(interval)
             elapsed = time.time() - last_report_time
             if elapsed > 0:
                 # Accumulate bytes from this session into total
@@ -1146,10 +1216,19 @@ def download_game(download_info):
                     response.close()  # Close the connection
                     
                     logger.debug(f"Successfully parsed as JSON. Keys: {list(dir_info.keys()) if isinstance(dir_info, dict) else 'Not a dict'}")
-                    if isinstance(dir_info, dict) and dir_info.get('is_directory'):
-                        # It's a directory listing
+                    if isinstance(dir_info, dict) and (dir_info.get('is_directory') or dir_info.get('is_m3u')):
+                        # It's a directory listing or .m3u file listing
+                        is_m3u = dir_info.get('is_m3u', False)
                         files_list = dir_info.get('files', [])
-                        logger.info(f"✓ Directory download detected: {len(files_list)} files, {dir_info.get('total_size', 0)} bytes")
+                        download_type = ".m3u file" if is_m3u else "directory"
+                        logger.info(f"✓ {download_type} download detected: {len(files_list)} files, {dir_info.get('total_size', 0)} bytes")
+                        
+                        # For .m3u files, dest_base_path should be the directory containing the .m3u file
+                        # (not the .m3u file itself, since relative_path values are relative to the .m3u's directory)
+                        if is_m3u:
+                            # dest_base_path currently points to the .m3u file, change it to its directory
+                            dest_base_path = os.path.dirname(dest_base_path)
+                            logger.info(f"Adjusted dest_base_path for .m3u file to directory: {dest_base_path}")
                         
                         # Calculate already downloaded bytes by checking existing files
                         bytes_already_downloaded = 0
@@ -1318,8 +1397,10 @@ def download_game(download_info):
         def progress_reporter():
             """Background thread to report progress periodically and check for pause."""
             nonlocal last_report_time, progress_thread_running, total_bytes_transferred
+            # Use BANDWIDTH_UPDATE_INTERVAL if set, otherwise fallback to 5 seconds
+            interval = BANDWIDTH_UPDATE_INTERVAL if BANDWIDTH_UPDATE_INTERVAL is not None else 5
             while progress_thread_running:
-                time.sleep(BANDWIDTH_UPDATE_INTERVAL)
+                time.sleep(interval)
                 elapsed = time.time() - last_report_time
                 if elapsed > 0:
                     # Accumulate bytes from this session into total
@@ -1396,7 +1477,8 @@ def download_game(download_info):
         # Stop progress reporter thread before marking as completed
         progress_thread_running = False
         # Wait a bit longer to ensure the thread has time to exit its sleep and check the flag
-        progress_thread.join(timeout=BANDWIDTH_UPDATE_INTERVAL + 1)
+        interval = BANDWIDTH_UPDATE_INTERVAL if BANDWIDTH_UPDATE_INTERVAL is not None else 5
+        progress_thread.join(timeout=interval + 1)
         
         # Verify file size
         if os.path.exists(dest_path) and os.path.isfile(dest_path):

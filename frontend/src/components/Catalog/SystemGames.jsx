@@ -15,6 +15,7 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
   const [page, setPage] = useState(1)
   const [error, setError] = useState(null)
   const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
+  const [selectedSubdirectory, setSelectedSubdirectory] = useState(null) // null = all, or specific subdirectory
   const observerRef = useRef(null)
   const loadingRef = useRef(null)
   const navigate = useNavigate()
@@ -70,6 +71,7 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
   useEffect(() => {
     setPage(1)
     setGames([])
+    setSelectedSubdirectory(null) // Reset filter when system or search changes
     loadGames(1, false)
   }, [systemId, searchQuery, loadGames])
 
@@ -135,6 +137,56 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
     navigate(`/game/${game.system}/${encodeURIComponent(gameId)}`)
   }
 
+  // Extract subdirectory from game ID
+  const getGameSubdirectory = React.useCallback((gameId) => {
+    // Remove leading ./
+    let path = gameId.replace(/^\.\//, '')
+    // Remove system prefix if present
+    if (path.startsWith(`${systemId}/`)) {
+      path = path.substring(systemId.length + 1)
+    }
+    // Get directory part (everything before the last /)
+    const lastSlashIndex = path.lastIndexOf('/')
+    if (lastSlashIndex === -1) {
+      return null // No subdirectory, game is in root
+    }
+    return path.substring(0, lastSlashIndex)
+  }, [systemId])
+
+  // Group games by subdirectory and get unique subdirectories
+  const subdirectories = React.useMemo(() => {
+    const subdirSet = new Set()
+    games.forEach(game => {
+      const subdir = getGameSubdirectory(game.id)
+      if (subdir !== null) {
+        subdirSet.add(subdir)
+      }
+    })
+    return Array.from(subdirSet).sort()
+  }, [games, getGameSubdirectory])
+
+  // Count games per subdirectory
+  const subdirectoryCounts = React.useMemo(() => {
+    const counts = {}
+    games.forEach(game => {
+      const subdir = getGameSubdirectory(game.id)
+      const key = subdir || '(root)'
+      counts[key] = (counts[key] || 0) + 1
+    })
+    return counts
+  }, [games, getGameSubdirectory])
+
+  // Filter games based on selected subdirectory
+  const filteredGames = React.useMemo(() => {
+    if (selectedSubdirectory === null) {
+      return games
+    }
+    return games.filter(game => {
+      const subdir = getGameSubdirectory(game.id)
+      return subdir === selectedSubdirectory
+    })
+  }, [games, selectedSubdirectory, getGameSubdirectory])
+
   return (
     <div className="system-games">
       <div className="system-games-header">
@@ -169,6 +221,29 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
           </button>
         </div>
       </div>
+
+      {/* Subdirectory Filter Bar - only show if there are subdirectories */}
+      {subdirectories.length > 0 && (
+        <div className="subdirectory-filter-bar">
+          <button
+            className={`subdirectory-filter-btn ${selectedSubdirectory === null ? 'active' : ''}`}
+            onClick={() => setSelectedSubdirectory(null)}
+          >
+            All
+            {subdirectoryCounts['(root)'] && <span className="subdirectory-count">({games.length})</span>}
+          </button>
+          {subdirectories.map((subdir) => (
+            <button
+              key={subdir}
+              className={`subdirectory-filter-btn ${selectedSubdirectory === subdir ? 'active' : ''}`}
+              onClick={() => setSelectedSubdirectory(subdir)}
+            >
+              {subdir}
+              <span className="subdirectory-count">({subdirectoryCounts[subdir] || 0})</span>
+            </button>
+          ))}
+        </div>
+      )}
       
       {games.length === 0 ? (
         <div className="no-games">No games found</div>
@@ -176,7 +251,7 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
         <>
           {viewMode === 'grid' ? (
             <div className="games-grid">
-              {games.map((game) => (
+              {filteredGames.map((game) => (
                 <GameCard 
                   key={game.id} 
                   game={game} 
@@ -195,7 +270,7 @@ const SystemGames = ({ systemId, systemName, searchQuery = '' }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {games.map((game) => {
+                  {filteredGames.map((game) => {
                     // Get game image with priority: thumbnail > boxart > extra1 > image
                     const getGameImage = (game) => {
                       if (game.thumbnail) return getMediaUrl(game.thumbnail)

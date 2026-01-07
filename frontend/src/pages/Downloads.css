@@ -22,8 +22,9 @@
 
 .bandwidth-limit-section {
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.75rem;
   padding: 0.75rem 1rem;
   background: var(--card-bg, rgba(255, 255, 255, 0.05));
   border-radius: 4px;
@@ -33,16 +34,17 @@
 .bandwidth-label {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
   color: var(--text-primary, #e0e0e0);
   font-size: 0.9rem;
   white-space: nowrap;
+  margin: 0;
 }
 
 .bandwidth-max {
   color: var(--text-secondary, #a0a0a0);
   font-size: 0.85rem;
   font-weight: normal;
+  white-space: nowrap;
 }
 
 .bandwidth-input {

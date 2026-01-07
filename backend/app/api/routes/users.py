@@ -8,7 +8,7 @@ from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.guild import require_guild_member
 from app.api.middleware.roles import require_admin_role
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,9 @@ router = APIRouter()
 
 class GenerateTokenRequest(BaseModel):
     name: str = "API Token"
+
+class UpdateBandwidthLimitRequest(BaseModel):
+    bandwidth_limit: Optional[int] = None
 
 def get_token_service(db: Session = Depends(get_db)) -> ApiTokenService:
     """Get API token service instance."""
@@ -93,7 +96,7 @@ async def get_bandwidth_limit(
 
 @router.put("/bandwidth-limit")
 async def update_bandwidth_limit(
-    request: Dict,
+    request: UpdateBandwidthLimitRequest,
     current_user: dict = Depends(require_guild_member),
     db: Session = Depends(get_db)
 ):
@@ -102,7 +105,7 @@ async def update_bandwidth_limit(
     from datetime import datetime, timezone
     
     user_id = current_user['id']
-    new_limit = request.get('bandwidth_limit')
+    new_limit = request.bandwidth_limit
     
     # Validate input
     if new_limit is not None:
@@ -166,7 +169,7 @@ async def update_bandwidth_limit(
         "has_download_role": is_download
     }
 
-@router.get("/users/stats")
+@router.get("/stats")
 async def get_users_stats(
     current_user: dict = Depends(require_admin_role),
     db: Session = Depends(get_db)

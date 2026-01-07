@@ -14,6 +14,7 @@ from typing import Optional
 import logging
 import os
 import asyncio
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -204,12 +205,14 @@ async def request_download(
     if not download_info:
         return {
             "download": None,
-            "polling_interval": settings.POLLING_INTERVAL
+            "polling_interval": settings.POLLING_INTERVAL,
+            "bandwidth_update_interval": settings.BANDWIDTH_UPDATE_INTERVAL
         }
     
     return {
         "download": download_info,
-        "polling_interval": settings.POLLING_INTERVAL
+        "polling_interval": settings.POLLING_INTERVAL,
+        "bandwidth_update_interval": settings.BANDWIDTH_UPDATE_INTERVAL
     }
 
 @router.post("/progress")
@@ -484,6 +487,13 @@ async def download_file(
         # Refresh the queue item to ensure we have the latest status
         db.refresh(queue_item)
         
+        # Check if download is paused - reject the request immediately
+        if queue_item.status == 'paused':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Download is paused"
+            )
+        
         # Build base path
         if not settings.GAMES_PATH:
             raise HTTPException(
@@ -639,6 +649,15 @@ async def download_file(
                 from app.services.bandwidth import BandwidthManager
                 bandwidth_manager = BandwidthManager(db)
                 allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
+                
+                # Apply user's custom bandwidth limit if set (capped at role-based limit)
+                from app.database import User
+                db_user = db.query(User).filter(User.user_id == queue_item.user_id).first()
+                if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
+                    # Cap user's bandwidth_limit at the role-based limit
+                    allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
+                    logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
+                
                 logger.info(f"Allocated bandwidth for download: {allocated_bandwidth} bytes/s ({allocated_bandwidth / 125000:.2f} Mbits/s)")
             else:
                 logger.warning(f"Not applying throttling: status={queue_item.status}, queue_type={queue_item.queue_type}")
@@ -648,12 +667,25 @@ async def download_file(
                 logger.info("Using StreamingResponse (no throttling) - allocated_bandwidth is 0 or negative")
                 async def generate_file():
                     """Generate file chunks without throttling."""
+                    pause_check_interval = 2.0  # Check every 2 seconds for pause status
+                    last_pause_check = time.time()
+                    
                     with open(file_path, 'rb') as f:
                         if start_byte > 0:
                             f.seek(start_byte)
                         remaining = content_length
                         chunk_size = 1024 * 1024  # 1MB chunks
                         while remaining > 0:
+                            # Check if download is paused
+                            current_time = time.time()
+                            if current_time - last_pause_check >= pause_check_interval:
+                                # Refresh queue item from database to check status
+                                db.refresh(queue_item)
+                                if queue_item.status == 'paused':
+                                    logger.info(f"Download {queue_item.id} was paused during streaming - stopping")
+                                    return  # Stop streaming
+                                last_pause_check = current_time
+                            
                             chunk = f.read(min(chunk_size, remaining))
                             if not chunk:
                                 break
@@ -695,8 +727,11 @@ async def download_file(
                 start_time = time.time()
                 last_chunk_time = start_time
                 last_user_count_check = start_time
-                user_count_check_interval = 2.0  # Check every 2 seconds for user count changes
+                user_count_check_interval = 2.0  # Check every 2 seconds for user count changes and bandwidth limit updates
                 last_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
+                pause_check_interval = 2.0  # Check every 2 seconds for pause status
+                last_pause_check = start_time
+                bandwidth_changed = False  # Track if bandwidth changed in current iteration
                 
                 with open(file_path, 'rb') as f:
                     # Seek to start position if Range request
@@ -705,21 +740,60 @@ async def download_file(
                     
                     remaining = content_length
                     while remaining > 0:
-                        # Check if user count changed (users joined or left)
+                        # Reset bandwidth_changed flag for this iteration
+                        bandwidth_changed = False
+                        
+                        # Check if download is paused
                         current_time = time.time()
+                        if current_time - last_pause_check >= pause_check_interval:
+                            # Refresh queue item from database to check status
+                            db.refresh(queue_item)
+                            if queue_item.status == 'paused':
+                                logger.info(f"Download {queue_item.id} was paused during streaming - stopping")
+                                return  # Stop streaming
+                            last_pause_check = current_time
+                        
+                        # Check if user count changed (users joined or left) or user's bandwidth_limit changed
                         if current_time - last_user_count_check >= user_count_check_interval:
                             current_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
                             
-                            # If user count changed, recompute bandwidth allocation
-                            if current_active_user_count != last_active_user_count:
-                                new_allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
-                                if new_allocated_bandwidth > 0:
-                                    bytes_per_second = new_allocated_bandwidth
-                                    seconds_per_chunk = chunk_size / bytes_per_second
-                                    logger.info(f"User count changed ({last_active_user_count} -> {current_active_user_count}), recomputed bandwidth: {bytes_per_second} bytes/s ({bytes_per_second / 125000:.2f} Mbits/s), seconds_per_chunk={seconds_per_chunk:.3f}s")
-                                    last_active_user_count = current_active_user_count
+                            # Recompute bandwidth allocation (may have changed due to user count)
+                            new_allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
+                            
+                            # Re-apply user's custom bandwidth limit if set (may have changed)
+                            # Use a fresh database session to get the latest committed value
+                            # This ensures we see changes made by other requests
+                            from app.database import SessionLocal
+                            fresh_db = SessionLocal()
+                            try:
+                                # Query with a fresh session to bypass any caching
+                                fresh_user = fresh_db.query(User).filter(User.user_id == queue_item.user_id).first()
+                                if fresh_user and fresh_user.bandwidth_limit is not None and fresh_user.bandwidth_limit > 0:
+                                    old_allocated = new_allocated_bandwidth
+                                    new_allocated_bandwidth = min(new_allocated_bandwidth, fresh_user.bandwidth_limit)
+                                    if old_allocated != new_allocated_bandwidth:
+                                        logger.info(f"User {queue_item.user_id} bandwidth_limit: {fresh_user.bandwidth_limit} bytes/s ({fresh_user.bandwidth_limit / 125000:.2f} Mbits/s), updated allocated bandwidth from {old_allocated} to {new_allocated_bandwidth} bytes/s")
+                            finally:
+                                fresh_db.close()
+                            
+                            # Update bandwidth if it changed (due to user count or user's limit change)
+                            if new_allocated_bandwidth > 0 and new_allocated_bandwidth != bytes_per_second:
+                                bandwidth_changed = True
+                                old_bytes_per_second = bytes_per_second
+                                bytes_per_second = new_allocated_bandwidth
+                                old_seconds_per_chunk = seconds_per_chunk
+                                seconds_per_chunk = chunk_size / bytes_per_second
+                                
+                                if current_active_user_count != last_active_user_count:
+                                    logger.info(f"User count changed ({last_active_user_count} -> {current_active_user_count}), recomputed bandwidth: {old_bytes_per_second} -> {bytes_per_second} bytes/s ({bytes_per_second / 125000:.2f} Mbits/s), seconds_per_chunk: {old_seconds_per_chunk:.3f}s -> {seconds_per_chunk:.3f}s")
                                 else:
-                                    logger.warning(f"Recomputed bandwidth is 0 or negative, keeping previous allocation")
+                                    logger.info(f"User bandwidth limit changed, recomputed bandwidth: {old_bytes_per_second} -> {bytes_per_second} bytes/s ({bytes_per_second / 125000:.2f} Mbits/s), seconds_per_chunk: {old_seconds_per_chunk:.3f}s -> {seconds_per_chunk:.3f}s")
+                                last_active_user_count = current_active_user_count
+                            elif new_allocated_bandwidth <= 0:
+                                logger.warning(f"Recomputed bandwidth is 0 or negative, keeping previous allocation")
+                            else:
+                                # Values are the same - bandwidth hasn't changed
+                                logger.debug(f"Bandwidth check: new_allocated_bandwidth={new_allocated_bandwidth}, bytes_per_second={bytes_per_second} (unchanged)")
                             
                             last_user_count_check = current_time
                         
@@ -731,7 +805,15 @@ async def download_file(
                         
                         # Calculate when this chunk should be sent (based on current bandwidth limit)
                         current_time = time.time()
+                        
+                        # If bandwidth changed during the check, reset timing to apply new limit immediately
+                        # This ensures the new bandwidth limit takes effect on this chunk
+                        if bandwidth_changed:
+                            logger.debug(f"Resetting last_chunk_time from {last_chunk_time} to {current_time} due to bandwidth change")
+                            last_chunk_time = current_time
+                        
                         expected_time = last_chunk_time + seconds_per_chunk
+                        logger.debug(f"Chunk timing: current_time={current_time:.3f}, last_chunk_time={last_chunk_time:.3f}, seconds_per_chunk={seconds_per_chunk:.3f}, expected_time={expected_time:.3f}, bytes_per_second={bytes_per_second}")
                         
                         # If we're ahead of schedule, sleep to throttle
                         if current_time < expected_time:

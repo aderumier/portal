@@ -178,9 +178,6 @@ const Downloads = () => {
           <div className="bandwidth-limit-section">
             <label className="bandwidth-label">
               Bandwidth Limit (Mbits/s):
-              {maxBandwidthLimit && (
-                <span className="bandwidth-max">Max: {formatMbits(maxBandwidthLimit)} Mbits/s</span>
-              )}
             </label>
             <input
               type="number"
@@ -193,6 +190,9 @@ const Downloads = () => {
               step="0.01"
               disabled={savingBandwidth}
             />
+            {maxBandwidthLimit && (
+              <span className="bandwidth-max">Max: {formatMbits(maxBandwidthLimit)} Mbits/s</span>
+            )}
             {savingBandwidth && <span className="saving-indicator">Saving...</span>}
           </div>
           <button className="clear-queue-btn" onClick={handleClear}>

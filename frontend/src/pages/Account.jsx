@@ -18,7 +18,7 @@ const Account = () => {
   const loadTokens = async () => {
     try {
       setLoading(true)
-      const response = await client.get('/api/tokens')
+      const response = await client.get('/api/users/tokens')
       setTokens(response.data.tokens || [])
     } catch (error) {
       console.error('Error loading tokens:', error)
@@ -36,7 +36,7 @@ const Account = () => {
 
     try {
       setGenerating(true)
-      const response = await client.post('/api/tokens', {
+      const response = await client.post('/api/users/tokens', {
         name: newTokenName
       })
       setNewToken(response.data.token)
@@ -56,7 +56,7 @@ const Account = () => {
     }
 
     try {
-      await client.delete(`/api/tokens/${tokenId}`)
+      await client.delete(`/api/users/tokens/${tokenId}`)
       await loadTokens()
       if (newToken) {
         setNewToken(null)

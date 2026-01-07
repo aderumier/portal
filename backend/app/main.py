@@ -221,7 +221,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(catalog.router, prefix="/api/catalog", tags=["catalog"])
 app.include_router(downloads.router, prefix="/api/download", tags=["downloads"])
-app.include_router(users.router, prefix="/api", tags=["users"])
+app.include_router(users.router, prefix="/api/users", tags=["users"])
 app.include_router(systems_config.router, prefix="/api/admin", tags=["systems-config"])
 
 # Include media router

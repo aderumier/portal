@@ -28,7 +28,7 @@ const TokenSelectorDropdown = ({ isOpen, onClose, onSelect, gameId }) => {
     try {
       setLoading(true)
       setError(null)
-      const response = await client.get('/api/tokens')
+      const response = await client.get('/api/users/tokens')
       const activeTokens = response.data.tokens.filter(t => !t.revoked)
       setTokens(activeTokens)
     } catch (err) {
