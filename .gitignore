@@ -24,6 +24,8 @@ frontend/.vite/
 
 # Database
 data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
 data/*.db
 data/*.pkl
 data/*.hash
