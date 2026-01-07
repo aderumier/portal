@@ -493,6 +493,45 @@ async def download_file(
         
         base_path = os.path.join(settings.GAMES_PATH, system, game_id)
         
+        # Check if this is a .m3u file (when relative_path is not provided)
+        if relative_path is None and os.path.isfile(base_path) and base_path.lower().endswith('.m3u'):
+            # .m3u file downloads - parse and return list of files to download
+            from app.services.download import parse_m3u_file
+            m3u_files = parse_m3u_file(base_path)
+            
+            # Get the directory containing the .m3u file
+            m3u_dir = os.path.dirname(base_path)
+            
+            files_list = []
+            for rel_file in m3u_files:
+                # Build full path to the file
+                file_full_path = os.path.normpath(os.path.join(m3u_dir, rel_file))
+                
+                # Verify the file exists and is within the games directory
+                if os.path.exists(file_full_path) and os.path.isfile(file_full_path):
+                    # Ensure the file is within the games directory (security check)
+                    try:
+                        if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                            file_size = os.path.getsize(file_full_path)
+                            files_list.append({
+                                'relative_path': rel_file.replace('\\', '/'),  # Normalize path separators
+                                'size': file_size
+                            })
+                        else:
+                            logger.warning(f"File {file_full_path} is outside games directory, skipping")
+                    except ValueError:
+                        logger.warning(f"File {file_full_path} path validation failed, skipping")
+                else:
+                    logger.warning(f"File listed in .m3u does not exist: {file_full_path}")
+            
+            from fastapi.responses import JSONResponse
+            return JSONResponse({
+                'is_m3u': True,
+                'files': files_list,
+                'total_files': len(files_list),
+                'total_size': sum(f['size'] for f in files_list)
+            })
+        
         # Check if base_path is a directory first (when relative_path is not provided)
         if relative_path is None and os.path.isdir(base_path):
             # Directory downloads - return list of files to download

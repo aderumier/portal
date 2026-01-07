@@ -1,6 +1,7 @@
 """Download queue service."""
 import logging
 import os
+from pathlib import Path
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
@@ -11,6 +12,64 @@ from app.services.bandwidth import BandwidthManager
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+def parse_m3u_file(m3u_file_path: str) -> List[str]:
+    """Parse a .m3u file and return list of file paths (relative to m3u file location).
+    
+    Args:
+        m3u_file_path: Full path to the .m3u file
+        
+    Returns:
+        List of file paths relative to the .m3u file directory (including the .m3u file itself)
+    """
+    files_to_download = []
+    
+    try:
+        # Get the directory containing the .m3u file
+        m3u_dir = os.path.dirname(m3u_file_path)
+        m3u_filename = os.path.basename(m3u_file_path)
+        
+        # Always include the .m3u file itself
+        files_to_download.append(m3u_filename)
+        
+        # Read and parse the .m3u file
+        if not os.path.exists(m3u_file_path):
+            logger.warning(f".m3u file not found: {m3u_file_path}")
+            return files_to_download
+        
+        with open(m3u_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines and lines starting with # (comments)
+                if not line or line.startswith('#'):
+                    continue
+                
+                # This is a file path (relative to the .m3u file location)
+                # Normalize the path (remove leading ./ if present)
+                file_path = line.lstrip('./')
+                
+                # Resolve relative path from m3u file directory
+                # If the path is already relative, it's relative to the m3u file directory
+                if not os.path.isabs(file_path):
+                    # Get relative path from games_path/system to this file
+                    full_file_path = os.path.normpath(os.path.join(m3u_dir, file_path))
+                    # Get relative path from the m3u file directory
+                    rel_path = os.path.relpath(full_file_path, m3u_dir)
+                    # Normalize path separators
+                    rel_path = rel_path.replace('\\', '/')
+                    files_to_download.append(rel_path)
+                else:
+                    # Absolute path - just use the filename (shouldn't happen in practice)
+                    logger.warning(f"Absolute path found in .m3u file: {file_path}")
+                    files_to_download.append(os.path.basename(file_path))
+        
+        logger.info(f"Parsed .m3u file {m3u_file_path}: found {len(files_to_download)} files to download")
+        return files_to_download
+        
+    except Exception as e:
+        logger.error(f"Error parsing .m3u file {m3u_file_path}: {e}", exc_info=True)
+        # Return at least the .m3u file itself
+        return [os.path.basename(m3u_file_path)]
 
 class DownloadService:
     """Service for managing download queue."""
@@ -684,6 +743,15 @@ class DownloadService:
                 self.db.commit()
                 logger.info(f"Removed download {pending_download.id} from queue - file not found")
                 return None
+            
+            # Check if this is a .m3u file and parse it
+            is_m3u_file = False
+            m3u_files = []
+            if os.path.isfile(file_path) and file_path.lower().endswith('.m3u'):
+                is_m3u_file = True
+                logger.info(f"Detected .m3u file: {file_path}")
+                m3u_files = parse_m3u_file(file_path)
+                logger.info(f"Parsed .m3u file, found {len(m3u_files)} files to download: {m3u_files}")
             
             # Mark as active
             pending_download.active_download = True
