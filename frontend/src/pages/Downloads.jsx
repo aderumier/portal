@@ -8,8 +8,8 @@ const Downloads = () => {
   const [initialLoading, setInitialLoading] = useState(true)
   const [bandwidthLimit, setBandwidthLimit] = useState(null)
   const [maxBandwidthLimit, setMaxBandwidthLimit] = useState(null)
-  const [editingBandwidth, setEditingBandwidth] = useState(false)
   const [bandwidthInput, setBandwidthInput] = useState('')
+  const [savingBandwidth, setSavingBandwidth] = useState(false)
 
   useEffect(() => {
     loadQueue(true)
@@ -26,40 +26,63 @@ const Downloads = () => {
   const loadBandwidthLimit = async () => {
     try {
       const response = await client.get('/api/users/bandwidth-limit')
-      setBandwidthLimit(response.data.bandwidth_limit)
+      const limit = response.data.bandwidth_limit
+      setBandwidthLimit(limit)
       setMaxBandwidthLimit(response.data.max_bandwidth_limit)
+      // Set input value in Mbits/s
+      setBandwidthInput(limit ? formatMbits(limit) : '')
     } catch (error) {
       console.error('Error loading bandwidth limit:', error)
     }
   }
 
-  const handleBandwidthSave = async () => {
-    try {
+  // Auto-save bandwidth limit with debouncing
+  useEffect(() => {
+    if (bandwidthInput === '' && bandwidthLimit === null) {
+      // Initial state, don't save
+      return
+    }
+
+    const timeoutId = setTimeout(async () => {
+      // Convert input to bytes/s
       let limit = null
-      if (bandwidthInput !== '') {
+      if (bandwidthInput.trim() !== '') {
         const mbits = parseFloat(bandwidthInput)
         if (isNaN(mbits) || mbits < 0) {
-          alert('Invalid bandwidth value')
+          // Invalid input, reset to current value
+          setBandwidthInput(bandwidthLimit ? formatMbits(bandwidthLimit) : '')
           return
         }
-        // Convert Mbits/s to bytes/s
-        limit = Math.round(mbits * 125000)
+        // Check max limit
+        if (maxBandwidthLimit && mbits > formatMbits(maxBandwidthLimit)) {
+          // Exceeds max, reset to max
+          setBandwidthInput(formatMbits(maxBandwidthLimit))
+          limit = maxBandwidthLimit
+        } else {
+          // Convert Mbits/s to bytes/s
+          limit = Math.round(mbits * 125000)
+        }
       }
-      await client.put('/api/users/bandwidth-limit', { bandwidth_limit: limit })
-      setBandwidthLimit(limit)
-      setEditingBandwidth(false)
-      setBandwidthInput('')
-      alert('Bandwidth limit updated successfully')
-    } catch (error) {
-      console.error('Error updating bandwidth limit:', error)
-      alert(error.response?.data?.detail || 'Failed to update bandwidth limit')
-    }
-  }
 
-  const handleBandwidthCancel = () => {
-    setEditingBandwidth(false)
-    setBandwidthInput('')
-  }
+      // Only save if value changed
+      if (limit !== bandwidthLimit) {
+        try {
+          setSavingBandwidth(true)
+          await client.put('/api/users/bandwidth-limit', { bandwidth_limit: limit })
+          setBandwidthLimit(limit)
+        } catch (error) {
+          console.error('Error updating bandwidth limit:', error)
+          // Reset to current value on error
+          setBandwidthInput(bandwidthLimit ? formatMbits(bandwidthLimit) : '')
+          alert(error.response?.data?.detail || 'Failed to update bandwidth limit')
+        } finally {
+          setSavingBandwidth(false)
+        }
+      }
+    }, 1000) // Debounce: wait 1 second after user stops typing
+
+    return () => clearTimeout(timeoutId)
+  }, [bandwidthInput, bandwidthLimit, maxBandwidthLimit])
 
   const formatMbits = (bytes) => {
     if (!bytes) return '0'
@@ -153,39 +176,24 @@ const Downloads = () => {
         <h1>My Downloads</h1>
         <div className="downloads-actions">
           <div className="bandwidth-limit-section">
-            {!editingBandwidth ? (
-              <>
-                <span className="bandwidth-label">
-                  Bandwidth Limit: {bandwidthLimit ? `${formatMbits(bandwidthLimit)} Mbits/s` : 'Not set'}
-                  {maxBandwidthLimit && ` (Max: ${formatMbits(maxBandwidthLimit)} Mbits/s)`}
-                </span>
-                <button className="edit-bandwidth-btn" onClick={() => {
-                  setEditingBandwidth(true)
-                  setBandwidthInput(bandwidthLimit ? formatMbits(bandwidthLimit) : '')
-                }}>
-                  Edit
-                </button>
-              </>
-            ) : (
-              <>
-                <input
-                  type="number"
-                  className="bandwidth-input"
-                  placeholder={maxBandwidthLimit ? `Max: ${formatMbits(maxBandwidthLimit)} Mbits/s` : 'Mbits/s'}
-                  value={bandwidthInput}
-                  onChange={(e) => setBandwidthInput(e.target.value)}
-                  min="0"
-                  max={maxBandwidthLimit ? formatMbits(maxBandwidthLimit) : undefined}
-                  step="0.01"
-                />
-                <button className="save-bandwidth-btn" onClick={handleBandwidthSave}>
-                  Save
-                </button>
-                <button className="cancel-bandwidth-btn" onClick={handleBandwidthCancel}>
-                  Cancel
-                </button>
-              </>
-            )}
+            <label className="bandwidth-label">
+              Bandwidth Limit (Mbits/s):
+              {maxBandwidthLimit && (
+                <span className="bandwidth-max">Max: {formatMbits(maxBandwidthLimit)} Mbits/s</span>
+              )}
+            </label>
+            <input
+              type="number"
+              className="bandwidth-input"
+              placeholder={maxBandwidthLimit ? `Max: ${formatMbits(maxBandwidthLimit)} Mbits/s` : 'Mbits/s'}
+              value={bandwidthInput}
+              onChange={(e) => setBandwidthInput(e.target.value)}
+              min="0"
+              max={maxBandwidthLimit ? formatMbits(maxBandwidthLimit) : undefined}
+              step="0.01"
+              disabled={savingBandwidth}
+            />
+            {savingBandwidth && <span className="saving-indicator">Saving...</span>}
           </div>
           <button className="clear-queue-btn" onClick={handleClear}>
             Clear Queue
