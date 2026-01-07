@@ -59,6 +59,26 @@ async def preload_game_data():
     
     # Start background task for cleaning up stuck downloads
     asyncio.create_task(cleanup_stuck_downloads())
+    
+    # Initialize GeoIP reader on startup
+    try:
+        from app.services.geoip import get_geoip_reader
+        reader = get_geoip_reader()
+        if reader:
+            logger.info("GeoIP database initialized successfully")
+        else:
+            logger.info("GeoIP database not available (lookups will be disabled)")
+    except Exception as e:
+        logger.warning(f"Failed to initialize GeoIP database: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on application shutdown."""
+    try:
+        from app.services.geoip import close_geoip_reader
+        close_geoip_reader()
+    except Exception as e:
+        logger.warning(f"Error during GeoIP cleanup: {e}")
 
 # Add session middleware (configurable: memory, redis, file, or database)
 session_storage = settings.SESSION_STORAGE.lower()

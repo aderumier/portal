@@ -5,10 +5,10 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from app.database import get_db
 from app.services.discord import DiscordService
+from app.services.geoip import get_country_from_ip
 from app.api.middleware.api_token import get_current_user
 from app.config import settings
 import logging
-import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -43,38 +43,6 @@ def get_client_ip(request: Request) -> Optional[str]:
     
     return None
 
-async def get_country_from_ip(ip_address: Optional[str]) -> Optional[str]:
-    """Get country code from IP address using GeoIP service.
-    
-    Args:
-        ip_address: IP address to lookup
-        
-    Returns:
-        Two-letter country code (e.g., 'US', 'FR'), or None if lookup fails
-    """
-    if not ip_address:
-        return None
-    
-    # Skip localhost/private IPs
-    if ip_address in ('127.0.0.1', 'localhost', '::1') or ip_address.startswith(('192.168.', '10.', '172.')):
-        return None
-    
-    try:
-        # Use ip-api.com free service (no API key required, 45 requests/minute limit)
-        # Alternative: ipapi.co (requires API key for production)
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"http://ip-api.com/json/{ip_address}?fields=status,countryCode")
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('status') == 'success':
-                    country_code = data.get('countryCode')
-                    if country_code:
-                        logger.debug(f"GeoIP lookup for {ip_address}: {country_code}")
-                        return country_code
-    except Exception as e:
-        logger.warning(f"Failed to get country from IP {ip_address}: {e}")
-    
-    return None
 
 @router.get("/login")
 async def login(request: Request):
@@ -201,7 +169,7 @@ async def callback(
             if client_ip:
                 if not db_user or not db_user.last_login_ip or db_user.last_login_ip != client_ip:
                     should_update_country = True
-                    country = await get_country_from_ip(client_ip)
+                    country = get_country_from_ip(client_ip)
                     if country:
                         logger.info(f"GeoIP lookup for {client_ip}: {country}")
             
