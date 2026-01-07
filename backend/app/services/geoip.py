@@ -1,59 +1,41 @@
-"""GeoIP service using MaxMind GeoLite2 database."""
-import os
+"""GeoIP service using geoip2fast library."""
 import ipaddress
-from pathlib import Path
 from typing import Optional
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Global reader instance (singleton)
-_geoip_reader = None
+# Global GeoIP instance (singleton)
+_geoip_instance = None
 
-def get_geoip_reader():
-    """Get or create GeoIP reader instance (singleton)."""
-    global _geoip_reader
+def get_geoip_instance():
+    """Get or create GeoIP2Fast instance (singleton).
     
-    if _geoip_reader is not None:
-        return _geoip_reader
+    geoip2fast includes its own data files, so no external database download is needed.
+    The library automatically downloads and updates data files on first use.
+    """
+    global _geoip_instance
+    
+    if _geoip_instance is not None:
+        return _geoip_instance
     
     try:
-        import geoip2.database
-        from app.config import settings
+        from geoip2fast import GeoIP2Fast
         
-        # Determine database path
-        db_path = settings.GEOIP_DATABASE_PATH
-        
-        if not db_path:
-            # Default to backend/data/geoip/GeoLite2-Country.mmdb
-            project_root = Path(__file__).parent.parent.parent
-            db_path = project_root / 'data' / 'geoip' / 'GeoLite2-Country.mmdb'
-        else:
-            db_path = Path(db_path)
-        
-        # Check if database file exists
-        if not db_path.exists():
-            logger.warning(f"GeoIP database not found at {db_path}. GeoIP lookups will be disabled.")
-            logger.info("To enable GeoIP lookups:")
-            logger.info("1. Download GeoLite2-Country.mmdb from https://dev.maxmind.com/geoip/geoip2/geolite2/")
-            logger.info(f"2. Place it at: {db_path}")
-            logger.info("   Or set GEOIP_DATABASE_PATH environment variable to point to the database file")
-            return None
-        
-        # Create reader
-        _geoip_reader = geoip2.database.Reader(str(db_path))
-        logger.info(f"GeoIP database loaded from {db_path}")
-        return _geoip_reader
+        # Initialize GeoIP2Fast (will auto-download data files on first use if needed)
+        _geoip_instance = GeoIP2Fast()
+        logger.info("GeoIP2Fast initialized successfully (data files included)")
+        return _geoip_instance
         
     except ImportError:
-        logger.warning("geoip2 library not installed. Install with: pip install geoip2")
+        logger.warning("geoip2fast library not installed. Install with: pip install geoip2fast")
         return None
     except Exception as e:
-        logger.error(f"Failed to load GeoIP database: {e}", exc_info=True)
+        logger.error(f"Failed to initialize GeoIP2Fast: {e}", exc_info=True)
         return None
 
 def get_country_from_ip(ip_address: Optional[str]) -> Optional[str]:
-    """Get country code from IP address using MaxMind GeoLite2 database.
+    """Get country code from IP address using geoip2fast.
     
     Args:
         ip_address: IP address to lookup (IPv4 or IPv6)
@@ -73,14 +55,14 @@ def get_country_from_ip(ip_address: Optional[str]) -> Optional[str]:
         # Invalid IP address
         return None
     
-    # Get GeoIP reader
-    reader = get_geoip_reader()
-    if reader is None:
+    # Get GeoIP instance
+    geoip = get_geoip_instance()
+    if geoip is None:
         return None
     
     try:
-        response = reader.country(ip_address)
-        country_code = response.country.iso_code
+        result = geoip.lookup(ip_address)
+        country_code = result.country_code
         if country_code:
             logger.debug(f"GeoIP lookup for {ip_address}: {country_code}")
             return country_code
@@ -89,14 +71,14 @@ def get_country_from_ip(ip_address: Optional[str]) -> Optional[str]:
     
     return None
 
-def close_geoip_reader():
-    """Close the GeoIP reader (call on application shutdown)."""
-    global _geoip_reader
-    if _geoip_reader is not None:
+def close_geoip_instance():
+    """Close the GeoIP instance (call on application shutdown)."""
+    global _geoip_instance
+    if _geoip_instance is not None:
         try:
-            _geoip_reader.close()
-            _geoip_reader = None
-            logger.info("GeoIP database reader closed")
+            # geoip2fast doesn't require explicit closing, but we'll clear the reference
+            _geoip_instance = None
+            logger.info("GeoIP2Fast instance cleared")
         except Exception as e:
-            logger.error(f"Error closing GeoIP reader: {e}")
+            logger.error(f"Error clearing GeoIP instance: {e}")
 

@@ -60,23 +60,23 @@ async def preload_game_data():
     # Start background task for cleaning up stuck downloads
     asyncio.create_task(cleanup_stuck_downloads())
     
-    # Initialize GeoIP reader on startup
+    # Initialize GeoIP instance on startup
     try:
-        from app.services.geoip import get_geoip_reader
-        reader = get_geoip_reader()
-        if reader:
-            logger.info("GeoIP database initialized successfully")
+        from app.services.geoip import get_geoip_instance
+        geoip = get_geoip_instance()
+        if geoip:
+            logger.info("GeoIP2Fast initialized successfully")
         else:
-            logger.info("GeoIP database not available (lookups will be disabled)")
+            logger.info("GeoIP2Fast not available (lookups will be disabled)")
     except Exception as e:
-        logger.warning(f"Failed to initialize GeoIP database: {e}")
+        logger.warning(f"Failed to initialize GeoIP2Fast: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on application shutdown."""
     try:
-        from app.services.geoip import close_geoip_reader
-        close_geoip_reader()
+        from app.services.geoip import close_geoip_instance
+        close_geoip_instance()
     except Exception as e:
         logger.warning(f"Error during GeoIP cleanup: {e}")
 

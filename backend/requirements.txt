@@ -11,5 +11,5 @@ passlib[bcrypt]==1.7.4
 # Redis session support (optional - install with: pip install redis)
 # Custom RedisSessionMiddleware implementation is in app/middleware/redis_session_middleware.py
 redis>=5.0.0  # Required for Redis session support
-geoip2>=4.7.0  # MaxMind GeoIP2 library for local GeoIP lookups
+geoip2fast>=1.2.0  # Fast GeoIP2 library with built-in data files
 
