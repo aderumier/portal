@@ -1,5 +1,7 @@
 """GeoIP service using geoip2fast library."""
 import ipaddress
+import os
+from pathlib import Path
 from typing import Optional
 import logging
 
@@ -11,8 +13,8 @@ _geoip_instance = None
 def get_geoip_instance():
     """Get or create GeoIP2Fast instance (singleton).
     
-    geoip2fast includes its own data files, so no external database download is needed.
-    The library automatically downloads and updates data files on first use.
+    geoip2fast includes its own data files, stored in ./data/geoip/ directory.
+    The library automatically downloads and updates data files on first use if not present.
     """
     global _geoip_instance
     
@@ -22,9 +24,23 @@ def get_geoip_instance():
     try:
         from geoip2fast import GeoIP2Fast
         
-        # Initialize GeoIP2Fast (will auto-download data files on first use if needed)
-        _geoip_instance = GeoIP2Fast()
-        logger.info("GeoIP2Fast initialized successfully (data files included)")
+        # Determine project root (go up from backend/app/services to project root)
+        project_root = Path(__file__).parent.parent.parent.parent
+        geoip_dir = project_root / 'data' / 'geoip'
+        
+        # Create directory if it doesn't exist
+        geoip_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Path to geoip2fast data file
+        # The library will auto-download if the file doesn't exist
+        geoip_data_file = geoip_dir / 'geoip2fast.dat.gz'
+        
+        # Initialize GeoIP2Fast with custom data file path
+        _geoip_instance = GeoIP2Fast(
+            geoip2fast_data_file=str(geoip_data_file),
+            verbose=False
+        )
+        logger.info(f"GeoIP2Fast initialized successfully (data file: {geoip_data_file})")
         return _geoip_instance
         
     except ImportError:

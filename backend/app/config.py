@@ -50,11 +50,6 @@ class Settings:
     # Download service settings
     POLLING_INTERVAL: int = int(os.getenv('POLLING_INTERVAL', '10'))  # Seconds between queue checks
     
-    # GeoIP settings
-    # Path to MaxMind GeoLite2-Country.mmdb database file
-    # Default: backend/data/geoip/GeoLite2-Country.mmdb
-    GEOIP_DATABASE_PATH: str = os.getenv('GEOIP_DATABASE_PATH', '')
-    
     # Per-user bandwidth limits for testing (optional, in Mbits/s)
     # If not set, no per-user limit is applied (users share available bandwidth equally)
     # If set, each user is limited to this bandwidth regardless of available bandwidth
