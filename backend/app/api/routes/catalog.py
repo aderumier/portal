@@ -1,5 +1,6 @@
 """Catalog routes."""
 from fastapi import APIRouter, Query, Depends
+from fastapi.responses import ORJSONResponse
 from typing import Optional
 from sqlalchemy.orm import Session
 from app.database import get_db, System
@@ -8,6 +9,7 @@ from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.guild import require_guild_member
 from app.api.middleware.roles import require_admin_role
 import logging
+import gzip
 
 logger = logging.getLogger(__name__)
 
@@ -33,21 +35,17 @@ async def get_systems(
     # Get enabled systems from database
     db_systems = db.query(System).filter(System.enabled == True).order_by(System.name).all()
     
-    # Ensure gamelists are loaded to count games
+    # Ensure catalog is loaded to count games
     if not game_service._gamelists_loaded:
         game_service.preload_all_gamelists()
     
     # Build systems list with game counts
     systems = []
     for db_system in db_systems:
-        # Count games for this system
+        # Count games for this system (already filtered in catalog)
         game_count = 0
-        if db_system.id in game_service.gamelists:
-            root = game_service.gamelists[db_system.id]
-            from app.services.game import _is_game_hidden
-            for game in root.findall('.//game'):
-                if not _is_game_hidden(game):
-                    game_count += 1
+        if db_system.id in game_service.catalog:
+            game_count = len(game_service.catalog[db_system.id])
         
         # Use fullname from database, fallback to name
         display_name = db_system.fullname or db_system.name
@@ -86,9 +84,8 @@ async def get_games(
     db_system = db.query(System).filter(System.id == system).first()
     download_enabled = db_system.download_enabled if db_system else False
     
-    # Add download_enabled to each game
-    for game in games:
-        game['download_enabled'] = download_enabled
+    # Add download_enabled to each game (optimized: update in-place, no new dict creation)
+    [game.update({'download_enabled': download_enabled}) for game in games]
     
     # Get subdirectory counts for this system
     subdirectory_counts = game_service.get_subdirectory_counts(system)

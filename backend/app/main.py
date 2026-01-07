@@ -3,8 +3,9 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import ORJSONResponse
 from starlette.middleware.sessions import SessionMiddleware
-from starlette.middleware.gzip import GZipMiddleware
+from app.middleware.fast_gzip import FastGZipMiddleware
 from app.config import settings
 from app.database import init_db
 from app.api.routes import auth, catalog, downloads, users, media, systems_config
@@ -29,11 +30,12 @@ logger = logging.getLogger(__name__)
 # Initialize database
 init_db()
 
-# Create FastAPI app
+# Create FastAPI app with orjson for faster JSON serialization
 app = FastAPI(
     title="Batocera Games Catalog API",
     description="API for browsing and downloading games from Batocera system",
-    version="1.0.0"
+    version="1.0.0",
+    default_response_class=ORJSONResponse
 )
 
 # Preload all gamelist.xml files and search index on startup
@@ -218,10 +220,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Add GZip compression middleware (after CORS so CORS headers are set first)
+# Add compression middleware (after CORS so CORS headers are set first)
+# Using FastGZipMiddleware with support for:
+# - zstd: Preferred (if browser supports it) - ~2x faster than gzip with better compression
+# - gzip level 1: Fast fallback compression when zstd is not supported
+# Automatically detects browser support via Accept-Encoding header
 app.add_middleware(
-    GZipMiddleware,
+    FastGZipMiddleware,
     minimum_size=1000,  # Only compress responses larger than 1KB
+    gzip_compresslevel=1,  # Fast gzip compression (was 331ms with level 6, ~30-50ms with level 1)
+    zstd_compresslevel=3,  # Balanced zstd compression (fast and good compression ratio)
 )
 
 # Include routers

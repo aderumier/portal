@@ -1,6 +1,6 @@
 """Download queue routes."""
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, ORJSONResponse
 from starlette.requests import Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -592,8 +592,7 @@ async def download_file(
                 else:
                     logger.warning(f"File listed in .m3u does not exist: {file_full_path}")
             
-            from fastapi.responses import JSONResponse
-            return JSONResponse({
+            return ORJSONResponse({
                 'is_m3u': True,
                 'files': files_list,
                 'total_files': len(files_list),
@@ -616,8 +615,7 @@ async def download_file(
                         'size': file_size
                     })
             
-            from fastapi.responses import JSONResponse
-            return JSONResponse({
+            return ORJSONResponse({
                 'is_directory': True,
                 'files': files_list,
                 'total_files': len(files_list),

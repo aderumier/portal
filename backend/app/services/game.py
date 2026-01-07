@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 import logging
 import pickle
 import hashlib
+import time
 from typing import List, Dict, Optional
 from pathlib import Path
 from app.config import settings
@@ -69,7 +70,9 @@ class GameService:
         self.cache = {}
         self.search_index = {}  # Partitioned search index: search_index[first_letter][normalized_name] = [games]
         self._index_built = False
-        self.gamelists = {}  # In-memory storage: gamelists[system_id] = root_element
+        self.catalog = {}  # Pre-processed catalog: catalog[system_id][rompath] = {game fields dict}
+        self.catalog_sorted_keys = {}  # Pre-sorted rompaths per system: catalog_sorted_keys[system_id] = [sorted rompaths by name]
+        self.catalog_responses = {}  # Pre-computed response dictionaries: catalog_responses[system_id][rompath] = {response dict}
         self.systems_list = []  # Cached systems list with game counts
         self._gamelists_loaded = False
         self.system_hardware = {}  # Cache: system_id -> hardware category
@@ -322,7 +325,8 @@ class GameService:
             logger.warning(f"Could not load enabled systems from database: {e}. Will load all systems.")
         
         systems = []
-        self.gamelists = {}
+        self.catalog = {}  # catalog[system_id][rompath] = {game fields dict}
+        self.catalog_responses = {}  # catalog_responses[system_id][rompath] = {response dict}
         
         if not os.path.isdir(self.games_path):
             logger.warning(f"Games directory not found at: {self.games_path}")
@@ -359,17 +363,143 @@ class GameService:
                 logger.debug(f"Skipping disabled system: {dir_name}")
                 continue
             
-            # Parse and store XML in memory
+            # Parse XML and build catalog dictionary (excluding hidden games)
             try:
                 tree = ET.parse(gamelist_path)
                 root = tree.getroot()
-                self.gamelists[dir_name] = root
+                
+                # Initialize catalog entry for this system
+                self.catalog[dir_name] = {}
+                
+                # Helper function to normalize media path (defined once, outside loop)
+                def normalize_media_path(path_value: str) -> str:
+                    """Normalize media path by adding system prefix if needed."""
+                    if not path_value:
+                        return ''
+                    path = path_value.lstrip('./')
+                    if not path.startswith(f"{dir_name}/"):
+                        path = f"{dir_name}/{path}"
+                    return path
                 
                 # Count games (excluding hidden ones)
                 game_count = 0
+                games_list = []  # Temporary list for sorting
+                
                 for game in root.findall('.//game'):
-                    if not _is_game_hidden(game):
-                        game_count += 1
+                    # Skip hidden games
+                    if _is_game_hidden(game):
+                        continue
+                    
+                    # Get rompath (game path)
+                    rompath = game.findtext('path', '').lstrip('./')
+                    if not rompath:
+                        continue
+                    
+                    # Build game data dictionary with all fields from XML
+                    game_data = {}
+                    for child in game:
+                        tag = child.tag
+                        text = child.text or ''
+                        game_data[tag] = text
+                    
+                    # Ensure 'path' field exists (use rompath)
+                    game_data['path'] = rompath
+                    
+                    # Pre-compute catalog_image with priority: thumbnail > boxart > extra1 > image
+                    thumbnail = game_data.get('thumbnail', '')
+                    boxart = game_data.get('boxart', '')
+                    extra1 = game_data.get('extra1', '')
+                    image = game_data.get('image', '')
+                    
+                    # Select best image using priority and normalize it
+                    if thumbnail:
+                        catalog_image = normalize_media_path(thumbnail)
+                    elif boxart:
+                        catalog_image = normalize_media_path(boxart)
+                    elif extra1:
+                        catalog_image = normalize_media_path(extra1)
+                    elif image:
+                        catalog_image = normalize_media_path(image)
+                    else:
+                        catalog_image = ''
+                    
+                    # Add pre-computed catalog_image to game_data
+                    game_data['catalog_image'] = catalog_image
+                    
+                    # Store in catalog: catalog[system][rompath] = game_data
+                    self.catalog[dir_name][rompath] = game_data
+                    games_list.append((rompath, game_data))
+                    game_count += 1
+                
+                # Pre-sort games by name (case-insensitive) and store sorted keys
+                games_list.sort(key=lambda x: x[1].get('name', '').lower())
+                self.catalog_sorted_keys[dir_name] = [rompath for rompath, _ in games_list]
+                
+                # Compute subdirectory counts (pre-compute during catalog build)
+                # First pass: collect all hidden folder paths
+                hidden_directories = set()
+                for folder in root.findall('.//folder'):
+                    if _is_folder_hidden(folder):
+                        folder_path = folder.findtext('path', '')
+                        if folder_path:
+                            # Normalize the path
+                            path = folder_path.lstrip('./')
+                            if path.startswith(f"{dir_name}/"):
+                                path = path[len(dir_name) + 1:]
+                            # Remove trailing slash if present
+                            path = path.rstrip('/')
+                            hidden_directories.add(path)
+                
+                # Second pass: count games by subdirectory, skipping games in hidden directories
+                subdirectory_counts = {}
+                for rompath, game_data in games_list:
+                    # Check if game is inside a hidden directory
+                    subdir = self._get_game_subdirectory(rompath, dir_name)
+                    if subdir:
+                        # Check if subdirectory matches any hidden directory or is nested inside one
+                        is_in_hidden_dir = False
+                        for hidden_dir in hidden_directories:
+                            if subdir == hidden_dir or subdir.startswith(hidden_dir + '/'):
+                                # Game is inside a hidden directory, skip it
+                                is_in_hidden_dir = True
+                                break
+                        if is_in_hidden_dir:
+                            continue
+                    
+                    key = subdir if subdir else '(root)'
+                    subdirectory_counts[key] = subdirectory_counts.get(key, 0) + 1
+                
+                # Store pre-computed subdirectory counts
+                self.subdirectory_counts[dir_name] = subdirectory_counts
+                
+                # Pre-compute system name for response structure
+                # Use fullname if available, otherwise fall back to get_system_name
+                base_system_id_temp = dir_name
+                if dir_name.endswith('_batocera'):
+                    base_system_id_temp = dir_name[:-9]
+                elif dir_name.endswith('_retrobat'):
+                    base_system_id_temp = dir_name[:-9]
+                elif dir_name.endswith('_lite'):
+                    base_system_id_temp = dir_name[:-5]
+                
+                fullname_temp = self.system_fullname.get(base_system_id_temp, None)
+                if not fullname_temp and len(self.system_fullname) > 0:
+                    fullname_temp = self.system_fullname.get(dir_name, None)
+                
+                system_name_temp = fullname_temp if fullname_temp else self.get_system_name(base_system_id_temp)
+                
+                # Pre-compute response structures for all games (ready to return, no dict building needed)
+                self.catalog_responses[dir_name] = {}
+                for rompath, game_data in games_list:
+                    # Create response-ready dictionary once during catalog build
+                    self.catalog_responses[dir_name][rompath] = {
+                        'id': rompath,
+                        'name': game_data.get('name', ''),
+                        'description': game_data.get('desc', ''),
+                        'image': game_data.get('catalog_image', ''),
+                        'system': dir_name,
+                        'systemName': system_name_temp
+                    }
                 
                 # Handle systems with _batocera, _retrobat, or _lite suffix
                 # Map to base system name in es_systems.cfg
@@ -476,17 +606,17 @@ class GameService:
             logger.info(f"Returning cached games for: {cache_key}")
             return self.cache[cache_key]
         
-        # Ensure gamelists are loaded
+        # Ensure catalog is loaded
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
         
-        # Get root from memory cache
-        if system not in self.gamelists:
-            logger.warning(f"gamelist.xml not found in memory for system: {system}")
-            logger.warning(f"Available systems in memory: {list(self.gamelists.keys())[:20]}")  # Log first 20 systems
+        # Check if system exists in pre-computed responses (games list uses catalog_responses)
+        if system not in self.catalog_responses:
+            logger.warning(f"System not found in catalog_responses: {system}")
+            logger.warning(f"Available systems: {list(self.catalog_responses.keys())[:20]}")  # Log first 20 systems
             # Try case-insensitive match
             system_lower = system.lower()
-            for loaded_system in self.gamelists.keys():
+            for loaded_system in self.catalog_responses.keys():
                 if loaded_system.lower() == system_lower:
                     logger.info(f"Found case-insensitive match: '{system}' -> '{loaded_system}'")
                     system = loaded_system
@@ -494,79 +624,39 @@ class GameService:
             else:
                 return []
         
-        games = []
-        root = self.gamelists[system]
-        
         try:
-            all_games = root.findall('.//game')
+            # Get pre-sorted rompaths (already sorted by name, case-insensitive)
+            sorted_rompaths = self.catalog_sorted_keys.get(system, [])
             
-            # Filter by search query if provided
+            # Get pre-computed response structures (zero dict building overhead)
+            system_responses = self.catalog_responses.get(system, {})
+            
+            # Filter by search query if provided (optimized: use pre-computed responses)
             if search:
-                filtered_games = []
-                for game in all_games:
-                    name = game.findtext('name', '')
-                    if search.lower() in name.lower():
-                        filtered_games.append(game)
-                all_games = filtered_games
+                search_lower = search.lower()  # Cache lowercase search
+                # Filter using pre-computed response data (no need to access system_catalog)
+                sorted_rompaths = [
+                    rompath for rompath in sorted_rompaths
+                    if rompath in system_responses and search_lower in system_responses[rompath].get('name', '').lower()
+                ]
             
-            # Filter out hidden games
-            visible_games = []
-            for game in all_games:
-                if not _is_game_hidden(game):
-                    visible_games.append(game)
-            
-            total_games = len(visible_games)
+            total_games = len(sorted_rompaths)
             logger.info(f"Total visible games found: {total_games}")
             
-            # Sort games by name (case-insensitive)
-            visible_games.sort(key=lambda g: g.findtext('name', '').lower())
-            
-            # Apply pagination
+            # Apply pagination (already sorted, no need to sort again)
             offset = (page - 1) * limit
-            paginated_games = visible_games[offset:offset + limit]
-            logger.info(f"Games after pagination: {len(paginated_games)}")
+            paginated_rompaths = sorted_rompaths[offset:offset + limit]
+            logger.info(f"Games after pagination: {len(paginated_rompaths)}")
             
-            for game in paginated_games:
-                # Get all media fields
-                def get_media_path(media_type):
-                    path = game.findtext(media_type, '')
-                    if path:
-                        path = path.lstrip('./')
-                        if not path.startswith(f"{system}/"):
-                            path = f"{system}/{path}"
-                    return path
-                
-                thumbnail_path = get_media_path('thumbnail')
-                boxart_path = get_media_path('boxart')
-                extra1_path = get_media_path('extra1')
-                image_path = get_media_path('image')
-                
-                # Select best image using priority: thumbnail > boxart > extra1 > image
-                # (matching frontend priority in GameCard.jsx)
-                display_image = (thumbnail_path if thumbnail_path else 
-                                (boxart_path if boxart_path else 
-                                (extra1_path if extra1_path else image_path)))
-                
-                # For games list, only return the selected image to reduce response size
-                # Game details endpoint uses get_game_by_id which returns all fields
-                game_data = {
-                    'id': game.findtext('path', ''),
-                    'name': game.findtext('name', ''),
-                    'description': game.findtext('desc', ''),
-                    'image': display_image,  # Only the selected image (priority: thumbnail > boxart > extra1 > image)
-                    'system': system,
-                    'systemName': self.get_system_name(system)
-                }
-                
-                logger.debug(f"Adding game: {game_data['name']}")
-                games.append(game_data)
+            # Return pre-computed response structures (zero dict building overhead)
+            # Responses are already built during catalog initialization - just return them
+            games = [system_responses[rompath] for rompath in paginated_rompaths if rompath in system_responses]
             
             logger.info(f"Returning {len(games)} games")
             self.cache[cache_key] = games
             
-            # Compute subdirectory counts if not already computed
-            if system not in self.subdirectory_counts:
-                self._compute_subdirectory_counts(system)
+            # Subdirectory counts are now pre-computed during catalog build
+            # No need to compute them on-demand
             
             return games
         except Exception as e:
@@ -575,19 +665,16 @@ class GameService:
     
     def has_more_games(self, system: str, page: int, limit: int) -> bool:
         """Check if there are more games available for a system (from memory cache)."""
-        # Ensure gamelists are loaded
+        # Ensure catalog is loaded
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
         
-        if system not in self.gamelists:
+        if system not in self.catalog:
             return False
         
         try:
-            root = self.gamelists[system]
-            visible_games = 0
-            for game in root.findall('.//game'):
-                if not _is_game_hidden(game):
-                    visible_games += 1
+            system_catalog = self.catalog[system]
+            visible_games = len(system_catalog)  # Already filtered for hidden games
             
             return visible_games > (page * limit)
         except Exception as e:
@@ -612,6 +699,16 @@ class GameService:
         systems = self.get_systems()
         results = []
         
+        # Helper function to normalize media path (defined once, outside loops)
+        def get_media_path(media_type, game_data, system_id):
+            """Normalize media path by adding system prefix if needed."""
+            path = game_data.get(media_type, '')
+            if path:
+                path = path.lstrip('./')
+                if not path.startswith(f"{system_id}/"):
+                    path = f"{system_id}/{path}"
+            return path
+        
         for system in systems:
             system_id = system['id']
             
@@ -619,45 +716,29 @@ class GameService:
             if enabled_systems and system_id not in enabled_systems:
                 continue
             
-            gamelist_path = os.path.join(self.games_path, system_id, 'gamelist.xml')
-            
-            if not os.path.isfile(gamelist_path) or not os.access(gamelist_path, os.R_OK):
+            # Use catalog instead of parsing XML
+            if system_id not in self.catalog:
                 continue
             
             try:
-                tree = ET.parse(gamelist_path)
-                root = tree.getroot()
+                system_catalog = self.catalog[system_id]
                 
-                for game in root.findall('.//game'):
-                    # Skip hidden games
-                    if _is_game_hidden(game):
-                        continue
-                    
-                    name = game.findtext('name', '')
+                for rompath, game_data in system_catalog.items():
+                    name = game_data.get('name', '')
                     if query.lower() in name.lower():
                         # Get game data with image priority: thumbnail > boxart > extra1 > image
-                        def get_media_path(media_type):
-                            path = game.findtext(media_type, '')
-                            if path:
-                                path = path.lstrip('./')
-                                if not path.startswith(f"{system_id}/"):
-                                    path = f"{system_id}/{path}"
-                            return path
-                        
-                        thumbnail_path = get_media_path('thumbnail')
-                        boxart_path = get_media_path('boxart')
-                        extra1_path = get_media_path('extra1')
-                        image_path = get_media_path('image')
-                        
-                        # Select best image using priority: thumbnail > boxart > extra1 > image
-                        display_image = (thumbnail_path if thumbnail_path else 
-                                        (boxart_path if boxart_path else 
-                                        (extra1_path if extra1_path else image_path)))
+                        # Only compute path for the first media type that exists (optimized)
+                        display_image = ''
+                        for media_type in ['thumbnail', 'boxart', 'extra1', 'image']:
+                            raw_path = game_data.get(media_type, '')
+                            if raw_path:
+                                display_image = get_media_path(media_type, game_data, system_id)
+                                break  # Found first available, stop checking
                         
                         results.append({
-                            'id': game.findtext('path', ''),
+                            'id': rompath,
                             'name': name,
-                            'description': game.findtext('desc', ''),
+                            'description': game_data.get('desc', ''),
                             'image': display_image,
                             'system': system_id,
                             'systemName': self.get_system_name(system_id)
@@ -700,64 +781,45 @@ class GameService:
         clean_game_id = game_id.lstrip('./')
         logger.info(f"Cleaned game ID: {clean_game_id}")
         
-        # Ensure gamelists are loaded
+        # Ensure catalog is loaded
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
         
-        # Search all systems for a game with matching path
+        # Search all systems in catalog for a game with matching path
         # The path in gamelist.xml is relative to the system directory
         system_id = None
-        found_game = None
+        found_game_data = None
         
-        for loaded_system_id in self.gamelists.keys():
-            root = self.gamelists[loaded_system_id]
+        for loaded_system_id in self.catalog.keys():
+            system_catalog = self.catalog[loaded_system_id]
             
-            for game in root.findall('.//game'):
-                game_path = game.findtext('path', '')
-                clean_game_path = game_path.lstrip('./')
-                
-                # Check if game is hidden
-                if _is_game_hidden(game):
-                    continue
-                
-                # Match the path exactly (with or without ./ prefix)
-                if (clean_game_path == clean_game_id or
-                    game_path == f'./{clean_game_id}' or
-                    game_path == clean_game_id):
-                    system_id = loaded_system_id
-                    found_game = game
-                    logger.info(f"Game found in system {system_id} with path: {game_path}")
-                    break
-            
-            if found_game:
+            # Check if game exists in this system's catalog
+            # Try both with and without ./ prefix
+            if clean_game_id in system_catalog:
+                system_id = loaded_system_id
+                found_game_data = system_catalog[clean_game_id]
+                logger.info(f"Game found in system {system_id} with path: {clean_game_id}")
+                break
+            elif f'./{clean_game_id}' in system_catalog:
+                system_id = loaded_system_id
+                found_game_data = system_catalog[f'./{clean_game_id}']
+                logger.info(f"Game found in system {system_id} with path: ./{clean_game_id}")
                 break
         
-        if not found_game:
+        if not found_game_data:
             logger.warning(f"Game not found in any system with path: {clean_game_id}")
             return None
         
-        if not system_id or system_id not in self.gamelists:
-            logger.warning(f"System ID not determined or gamelist not found: {system_id}")
+        if not system_id or system_id not in self.catalog:
+            logger.warning(f"System ID not determined or catalog not found: {system_id}")
             return None
         
         try:
-            # Start with system-specific fields
-            game_data = {
-                'id': found_game.findtext('path', ''),
-                'system': system_id,
-                'systemName': self.get_system_name(system_id),
-            }
-            
-            # Get ALL child elements from the game XML element
-            # This ensures we capture every field from gamelist.xml
-            # Use original field names and values exactly as they appear in the XML (100% original)
-            for child in found_game:
-                tag = child.tag
-                text = child.text or ''
-                
-                # Use original XML tag name and value as-is (no normalization)
-                # This includes media paths - they should be exactly as in the original gamelist.xml
-                game_data[tag] = text
+            # Create a copy of game_data and add system-specific fields
+            game_data = found_game_data.copy()
+            game_data['id'] = clean_game_id
+            game_data['system'] = system_id
+            game_data['systemName'] = self.get_system_name(system_id)
             
             # Ensure required fields exist (with defaults if missing)
             if 'name' not in game_data:
@@ -805,11 +867,22 @@ class GameService:
         Args:
             system_id: System ID to compute counts for
         """
-        if system_id not in self.gamelists:
+        if system_id not in self.catalog:
+            return
+        
+        # Need to parse XML again for folders (folders not in catalog)
+        gamelist_path = os.path.join(self.games_path, system_id, 'gamelist.xml')
+        if not os.path.isfile(gamelist_path):
+            return
+        
+        try:
+            tree = ET.parse(gamelist_path)
+            root = tree.getroot()
+        except Exception as e:
+            logger.error(f"Error parsing gamelist.xml for subdirectory counts: {e}")
             return
         
         counts = {}
-        root = self.gamelists[system_id]
         
         # First pass: collect all hidden folder paths
         hidden_directories = set()
@@ -826,18 +899,11 @@ class GameService:
                     hidden_directories.add(path)
                     logger.debug(f"Found hidden folder: {path} in system {system_id}")
         
-        # Second pass: count games, skipping hidden games and games in hidden directories
-        for game in root.findall('.//game'):
-            # Skip hidden games
-            if _is_game_hidden(game):
-                continue
-            
-            game_path = game.findtext('path', '')
-            if not game_path:
-                continue
-            
+        # Second pass: count games from catalog, skipping games in hidden directories
+        system_catalog = self.catalog[system_id]
+        for rompath, game_data in system_catalog.items():
             # Check if game is inside a hidden directory
-            subdir = self._get_game_subdirectory(game_path, system_id)
+            subdir = self._get_game_subdirectory(rompath, system_id)
             if subdir:
                 # Check if subdirectory matches any hidden directory or is nested inside one
                 is_in_hidden_dir = False
@@ -857,12 +923,14 @@ class GameService:
     
     def _compute_all_subdirectory_counts(self):
         """Compute subdirectory counts for all loaded systems."""
-        for system_id in self.gamelists.keys():
+        for system_id in self.catalog.keys():
             self._compute_subdirectory_counts(system_id)
         logger.info(f"Computed subdirectory counts for {len(self.subdirectory_counts)} systems")
     
     def get_subdirectory_counts(self, system_id: str) -> dict:
         """Get subdirectory counts for a system.
+        
+        Subdirectory counts are pre-computed during catalog build for optimal performance.
         
         Args:
             system_id: System ID
@@ -870,14 +938,11 @@ class GameService:
         Returns:
             Dictionary mapping subdirectory names to game counts
         """
-        # Ensure gamelists are loaded
+        # Ensure gamelists are loaded (this will pre-compute subdirectory counts)
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
         
-        # Compute counts if not already computed
-        if system_id not in self.subdirectory_counts:
-            self._compute_subdirectory_counts(system_id)
-        
+        # Subdirectory counts are now always pre-computed during catalog build
         return self.subdirectory_counts.get(system_id, {})
     
     def _get_index_file_path(self) -> str:
@@ -1035,6 +1100,16 @@ class GameService:
         systems = self.get_systems()
         total_games = 0
         
+        # Helper function to normalize media path (defined once, outside loops)
+        def get_media_path(media_type, game_data, system_id):
+            """Normalize media path by adding system prefix if needed."""
+            path = game_data.get(media_type, '')
+            if path:
+                path = path.lstrip('./')
+                if not path.startswith(f"{system_id}/"):
+                    path = f"{system_id}/{path}"
+            return path
+        
         for system in systems:
             system_id = system['id']
             
@@ -1043,18 +1118,14 @@ class GameService:
                 logger.debug(f"Skipping disabled system in search index: {system_id}")
                 continue
             
-            if system_id not in self.gamelists:
+            if system_id not in self.catalog:
                 continue
             
             try:
-                root = self.gamelists[system_id]
+                system_catalog = self.catalog[system_id]
                 
-                for game in root.findall('.//game'):
-                    # Skip hidden games
-                    if _is_game_hidden(game):
-                        continue
-                    
-                    game_name = game.findtext('name', '')
+                for rompath, game_data in system_catalog.items():
+                    game_name = game_data.get('name', '')
                     if not game_name:
                         continue
                     
@@ -1072,28 +1143,18 @@ class GameService:
                         index[first_letter] = {}
                     
                     # Get game data with image priority: thumbnail > boxart > extra1 > image
-                    def get_media_path(media_type):
-                        path = game.findtext(media_type, '')
-                        if path:
-                            path = path.lstrip('./')
-                            if not path.startswith(f"{system_id}/"):
-                                path = f"{system_id}/{path}"
-                        return path
+                    # Only compute path for the first media type that exists (optimized)
+                    display_image = ''
+                    for media_type in ['thumbnail', 'boxart', 'extra1', 'image']:
+                        raw_path = game_data.get(media_type, '')
+                        if raw_path:
+                            display_image = get_media_path(media_type, game_data, system_id)
+                            break  # Found first available, stop checking
                     
-                    thumbnail_path = get_media_path('thumbnail')
-                    boxart_path = get_media_path('boxart')
-                    extra1_path = get_media_path('extra1')
-                    image_path = get_media_path('image')
-                    
-                    # Select best image using priority: thumbnail > boxart > extra1 > image
-                    display_image = (thumbnail_path if thumbnail_path else 
-                                    (boxart_path if boxart_path else 
-                                    (extra1_path if extra1_path else image_path)))
-                    
-                    game_data = {
-                        'id': game.findtext('path', ''),
+                    result_game_data = {
+                        'id': rompath,
                         'name': game_name,
-                        'description': game.findtext('desc', ''),
+                        'description': game_data.get('desc', ''),
                         'image': display_image,
                         'system': system_id,
                         'systemName': self.get_system_name(system_id)
@@ -1103,7 +1164,7 @@ class GameService:
                     if normalized not in index[first_letter]:
                         index[first_letter][normalized] = []
                     
-                    index[first_letter][normalized].append(game_data)
+                    index[first_letter][normalized].append(result_game_data)
                     total_games += 1
                     
             except Exception as e:
@@ -1126,7 +1187,9 @@ class GameService:
         
         # Clear all caches
         self.cache = {}
-        self.gamelists = {}
+        self.catalog = {}  # Clear pre-processed catalog
+        self.catalog_sorted_keys = {}  # Clear pre-sorted keys
+        self.catalog_responses = {}  # Clear pre-computed response structures
         self.systems_list = []
         self.search_index = {}
         self.subdirectory_counts = {}  # Clear subdirectory counts

@@ -12,4 +12,6 @@ passlib[bcrypt]==1.7.4
 # Custom RedisSessionMiddleware implementation is in app/middleware/redis_session_middleware.py
 redis>=5.0.0  # Required for Redis session support
 geoip2fast>=1.2.0  # Fast GeoIP2 library with built-in data files
+orjson>=3.9.0  # Fast JSON library for better serialization performance
+zstandard>=0.22.0  # Fast zstd compression library
 
