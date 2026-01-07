@@ -72,6 +72,17 @@ const UsersStats = () => {
     }
   }
 
+  const getCountryFlag = (countryCode) => {
+    if (!countryCode) return null
+    // Convert country code (e.g., 'US', 'FR') to flag emoji
+    // Each letter is converted to its regional indicator symbol
+    const codePoints = countryCode
+      .toUpperCase()
+      .split('')
+      .map(char => 127397 + char.charCodeAt())
+    return String.fromCodePoint(...codePoints)
+  }
+
   if (!isAdmin) {
     return (
       <div className="users-stats-page">
@@ -127,6 +138,8 @@ const UsersStats = () => {
               <th>Games Downloaded</th>
               <th>Medias Uploaded</th>
               <th>Medias Validated</th>
+              <th>Last Login IP</th>
+              <th>Country</th>
               <th>Last Login</th>
               <th>Account Created</th>
             </tr>
@@ -134,7 +147,7 @@ const UsersStats = () => {
           <tbody>
             {users.length === 0 ? (
               <tr>
-                <td colSpan="8" className="no-users">
+                <td colSpan="10" className="no-users">
                   No users found
                 </td>
               </tr>
@@ -158,6 +171,18 @@ const UsersStats = () => {
                   </td>
                   <td className="medias-validated-cell">
                     <span className="medias-validated">{user.medias_validated || 0}</span>
+                  </td>
+                  <td className="last-login-ip-cell">
+                    <span className="last-login-ip">{user.last_login_ip || '-'}</span>
+                  </td>
+                  <td className="country-cell">
+                    {user.country ? (
+                      <span className="country-flag" title={user.country}>
+                        {getCountryFlag(user.country)}
+                      </span>
+                    ) : (
+                      <span className="country-flag">-</span>
+                    )}
                   </td>
                   <td className="last-login-cell">
                     <span className="last-login" title={formatDate(user.last_login)}>

@@ -132,6 +132,26 @@
   color: var(--text-primary);
 }
 
+.last-login-ip-cell {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.last-login-ip {
+  color: var(--text-secondary);
+}
+
+.country-cell {
+  text-align: center;
+}
+
+.country-flag {
+  font-size: 1.5rem;
+  display: inline-block;
+  line-height: 1;
+}
+
 .last-login-cell {
   color: var(--text-secondary);
   font-size: 0.9rem;
