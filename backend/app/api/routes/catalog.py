@@ -70,11 +70,20 @@ async def get_games(
     limit: int = Query(12, ge=1, le=100),
     search: Optional[str] = Query(None),
     current_user: dict = Depends(require_guild_member),
-    game_service: GameService = Depends(get_game_service)
+    game_service: GameService = Depends(get_game_service),
+    db: Session = Depends(get_db)
 ):
     """Get games for a specific system."""
     games = game_service.get_games_by_system(system, page, limit, search or '')
     has_more = game_service.has_more_games(system, page, limit)
+    
+    # Get system download_enabled status from database and add to each game
+    db_system = db.query(System).filter(System.id == system).first()
+    download_enabled = db_system.download_enabled if db_system else True
+    
+    # Add download_enabled to each game
+    for game in games:
+        game['download_enabled'] = download_enabled
     
     return {
         "games": games,
@@ -87,13 +96,25 @@ async def search_games(
     page: int = Query(1, ge=1),
     limit: int = Query(12, ge=1, le=100),
     current_user: dict = Depends(require_guild_member),
-    game_service: GameService = Depends(get_game_service)
+    game_service: GameService = Depends(get_game_service),
+    db: Session = Depends(get_db)
 ):
     """Search games across all systems using partitioned index."""
     # Use indexed search - get enough results for pagination
     # Calculate how many we need: current page + 1 extra page to check if there's more
     max_results_needed = page * limit + limit
     all_results = game_service.search_indexed_games(q, limit=max_results_needed)
+    
+    # Get download_enabled status for all systems in results
+    systems_in_results = {game['system'] for game in all_results}
+    systems_download_enabled = {}
+    for system_id in systems_in_results:
+        db_system = db.query(System).filter(System.id == system_id).first()
+        systems_download_enabled[system_id] = db_system.download_enabled if db_system else True
+    
+    # Add download_enabled to each game
+    for game in all_results:
+        game['download_enabled'] = systems_download_enabled.get(game['system'], True)
     
     # Apply pagination
     offset = (page - 1) * limit
@@ -110,10 +131,22 @@ async def quick_search(
     q: str = Query(..., min_length=1),
     limit: int = Query(20, ge=1, le=50),
     current_user: dict = Depends(require_guild_member),
-    game_service: GameService = Depends(get_game_service)
+    game_service: GameService = Depends(get_game_service),
+    db: Session = Depends(get_db)
 ):
     """Quick search using indexed games (for header search)."""
     games = game_service.search_indexed_games(q, limit)
+    
+    # Get download_enabled status for all systems in results
+    systems_in_results = {game['system'] for game in games}
+    systems_download_enabled = {}
+    for system_id in systems_in_results:
+        db_system = db.query(System).filter(System.id == system_id).first()
+        systems_download_enabled[system_id] = db_system.download_enabled if db_system else True
+    
+    # Add download_enabled to each game
+    for game in games:
+        game['download_enabled'] = systems_download_enabled.get(game['system'], True)
     
     return {
         "results": games,
@@ -125,7 +158,8 @@ async def get_game_details(
     system: str,
     game_id: str,
     current_user: dict = Depends(require_guild_member),
-    game_service: GameService = Depends(get_game_service)
+    game_service: GameService = Depends(get_game_service),
+    db: Session = Depends(get_db)
 ):
     """Get detailed information about a specific game."""
     import urllib.parse
@@ -157,6 +191,15 @@ async def get_game_details(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Game not found"
         )
+    
+    # Get system download_enabled status from database
+    from app.database import System
+    db_system = db.query(System).filter(System.id == system).first()
+    if db_system:
+        game['download_enabled'] = db_system.download_enabled
+    else:
+        # Default to True if system not found in database
+        game['download_enabled'] = True
     
     return game
 

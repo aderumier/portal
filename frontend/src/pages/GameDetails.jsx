@@ -296,7 +296,7 @@ const GameDetails = () => {
               </div>
             )}
 
-            {(isDownload || isFastDownload) && (
+            {(isDownload || isFastDownload) && game?.download_enabled !== false && (
               <div className="game-actions">
                 <button className="download-btn" onClick={handleDownload}>
                   Add to Download Queue

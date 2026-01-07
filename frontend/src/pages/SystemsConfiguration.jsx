@@ -66,6 +66,25 @@ const SystemsConfiguration = () => {
     }
   }
 
+  const handleToggleDownloadEnabled = async (systemId, currentDownloadEnabled) => {
+    try {
+      await client.put(`/api/admin/systems/${systemId}`, {
+        download_enabled: !currentDownloadEnabled
+      })
+      await loadSystems()
+      setMessage({
+        type: 'success',
+        text: `System ${systemId} downloads ${!currentDownloadEnabled ? 'enabled' : 'disabled'}`
+      })
+    } catch (error) {
+      console.error('Error updating system:', error)
+      setMessage({
+        type: 'error',
+        text: 'Failed to update system'
+      })
+    }
+  }
+
   const handleFieldChange = (systemId, field, value) => {
     // Update local state immediately for responsive UI
     setSystems(prevSystems =>
@@ -212,6 +231,7 @@ const SystemsConfiguration = () => {
               <th>Batocera System</th>
               <th>Retrobat System</th>
               <th>Enabled</th>
+              <th>Download Enabled</th>
             </tr>
           </thead>
           <tbody>
@@ -308,6 +328,14 @@ const SystemsConfiguration = () => {
                     className={`toggle-btn ${system.enabled ? 'enabled' : 'disabled'}`}
                   >
                     {system.enabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                </td>
+                <td>
+                  <button
+                    onClick={() => handleToggleDownloadEnabled(system.id, system.download_enabled !== false)}
+                    className={`toggle-btn ${system.download_enabled !== false ? 'enabled' : 'disabled'}`}
+                  >
+                    {system.download_enabled !== false ? 'Enabled' : 'Disabled'}
                   </button>
                 </td>
               </tr>

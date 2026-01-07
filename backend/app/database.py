@@ -146,6 +146,7 @@ class System(Base):
     batocera_system = Column(String, nullable=True)  # System name from es_systems.cfg for Batocera (last directory of path)
     retrobat_system = Column(String, nullable=True)  # System name from es_systems.cfg for Retrobat (last directory of path)
     enabled = Column(Boolean, default=True, nullable=False, index=True)  # Whether system is enabled
+    download_enabled = Column(Boolean, default=True, nullable=False)  # Whether downloads are enabled for this system
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

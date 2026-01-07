@@ -51,7 +51,7 @@ const GameCard = ({ game, onDownload }) => {
       </div>
       <div className="game-card-content">
         <h3 className="game-card-title">{game.name}</h3>
-        {(isDownload || isFastDownload) && (
+        {(isDownload || isFastDownload) && game?.download_enabled !== false && (
           <div className="game-card-actions">
             <button 
               className="download-btn" 

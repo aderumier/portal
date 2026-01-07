@@ -26,6 +26,7 @@ class SystemUpdate(BaseModel):
     batocera_system: str = None
     retrobat_system: str = None
     enabled: bool = None
+    download_enabled: bool = None
 
 @router.get("/systems")
 async def get_systems(
@@ -46,6 +47,7 @@ async def get_systems(
                 "batocera_system": s.batocera_system,
                 "retrobat_system": s.retrobat_system,
                 "enabled": s.enabled,
+                "download_enabled": s.download_enabled,
                 "created_at": s.created_at.isoformat() if s.created_at else None,
                 "updated_at": s.updated_at.isoformat() if s.updated_at else None,
             }
@@ -103,6 +105,8 @@ async def update_system(
         db_system.retrobat_system = system_update.retrobat_system
     if system_update.enabled is not None:
         db_system.enabled = system_update.enabled
+    if system_update.download_enabled is not None:
+        db_system.download_enabled = system_update.download_enabled
     
     db.commit()
     db.refresh(db_system)
@@ -117,6 +121,7 @@ async def update_system(
         "batocera_system": db_system.batocera_system,
         "retrobat_system": db_system.retrobat_system,
         "enabled": db_system.enabled,
+        "download_enabled": db_system.download_enabled,
     }
 
 @router.post("/systems/{system_id}/image")

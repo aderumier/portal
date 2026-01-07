@@ -212,6 +212,7 @@ def migrate_database():
         ("batocera_system", "TEXT"),
         ("retrobat_system", "TEXT"),
         ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("download_enabled", "INTEGER NOT NULL DEFAULT 1"),
         ("created_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
         ("updated_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
     ]
