@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { getMediaUrl } from '../utils/constants'
@@ -17,12 +17,20 @@ const GameDetails = () => {
   const [error, setError] = useState(null)
   const [selectedMedia, setSelectedMedia] = useState(null)
   const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
+  const isLoadingRef = useRef(false)
+  const lastLoadKeyRef = useRef(null)
 
-  useEffect(() => {
-    loadGameDetails()
-  }, [system, gameId])
-
-  const loadGameDetails = async () => {
+  const loadGameDetails = useCallback(async () => {
+    const currentLoadKey = `${system}-${gameId}`
+    
+    // Prevent duplicate calls for the same system/gameId
+    if (isLoadingRef.current && lastLoadKeyRef.current === currentLoadKey) {
+      return
+    }
+    
+    isLoadingRef.current = true
+    lastLoadKeyRef.current = currentLoadKey
+    
     try {
       setLoading(true)
       setError(null)
@@ -44,8 +52,15 @@ const GameDetails = () => {
       setError('Failed to load game details')
     } finally {
       setLoading(false)
+      isLoadingRef.current = false
     }
-  }
+  }, [system, gameId])
+
+  useEffect(() => {
+    // Reset loading state when dependencies change
+    isLoadingRef.current = false
+    loadGameDetails()
+  }, [system, gameId, loadGameDetails])
 
   const handleDownload = async () => {
     try {

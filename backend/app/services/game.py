@@ -81,6 +81,7 @@ class GameService:
         self.system_fullname = {}  # Cache: system_id -> full name
         self._hardware_loaded = False
         self.subdirectory_counts = {}  # Cache: system_id -> {subdirectory: count}
+        self._catalog_timestamp = None  # Timestamp when catalog was last loaded/refreshed for ETag generation
         
         # System name mapping
         self.system_names = {
@@ -580,7 +581,8 @@ class GameService:
         
         self.systems_list = systems
         self._gamelists_loaded = True
-        logger.info(f"Preloaded {len(systems)} systems with {sum(s['gameCount'] for s in systems)} total games")
+        self._catalog_timestamp = time.time()  # Set timestamp when catalog is loaded
+        logger.info(f"Preloaded {len(systems)} systems with {sum(s['gameCount'] for s in systems)} total games (catalog timestamp: {self._catalog_timestamp})")
     
     def get_systems(self) -> List[Dict]:
         """Get list of all available systems (from memory cache)."""
@@ -680,6 +682,38 @@ class GameService:
         except Exception as e:
             logger.error(f"Error checking for more games: {e}")
             return False
+    
+    def get_catalog_etag(self, system: str, search: str = '') -> str:
+        """Generate ETag for a system's games list.
+        
+        ETag changes when catalog is reloaded/refreshed.
+        Includes search query to differentiate ETags for different searches.
+        
+        Args:
+            system: System ID
+            search: Optional search query
+            
+        Returns:
+            ETag string (e.g., 'W/"c64-t1234567890-search"')
+        """
+        # Use weak ETag (W/) to allow byte-range requests
+        # Use timestamp (converted to int) for catalog version
+        catalog_version = int(self._catalog_timestamp) if self._catalog_timestamp else 0
+        search_hash = hashlib.md5(search.encode()).hexdigest()[:8] if search else 'all'
+        return f'W/"{system}-t{catalog_version}-{search_hash}"'
+    
+    def get_systems_etag(self) -> str:
+        """Generate ETag for systems list.
+        
+        ETag changes when catalog is reloaded/refreshed (affects game counts).
+        
+        Returns:
+            ETag string (e.g., 'W/"systems-t1234567890"')
+        """
+        # Use weak ETag (W/) to allow byte-range requests
+        # Use timestamp (converted to int) for catalog version
+        catalog_version = int(self._catalog_timestamp) if self._catalog_timestamp else 0
+        return f'W/"systems-t{catalog_version}"'
     
     def search_games(self, query: str, page: int = 1, limit: int = 12) -> List[Dict]:
         """Search games across all systems.

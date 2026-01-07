@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import ORJSONResponse
 from starlette.middleware.sessions import SessionMiddleware
-from app.middleware.fast_gzip import FastGZipMiddleware
 from app.config import settings
 from app.database import init_db
 from app.api.routes import auth, catalog, downloads, users, media, systems_config
@@ -220,17 +219,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Add compression middleware (after CORS so CORS headers are set first)
-# Using FastGZipMiddleware with support for:
-# - zstd: Preferred (if browser supports it) - ~2x faster than gzip with better compression
-# - gzip level 1: Fast fallback compression when zstd is not supported
-# Automatically detects browser support via Accept-Encoding header
-app.add_middleware(
-    FastGZipMiddleware,
-    minimum_size=1000,  # Only compress responses larger than 1KB
-    gzip_compresslevel=1,  # Fast gzip compression (was 331ms with level 6, ~30-50ms with level 1)
-    zstd_compresslevel=3,  # Balanced zstd compression (fast and good compression ratio)
-)
+# Compression is now handled by nginx (removed from backend for better performance)
+# Nginx compression is faster and offloads work from Python workers
 
 # Include routers
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])

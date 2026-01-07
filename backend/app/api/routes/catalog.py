@@ -1,6 +1,6 @@
 """Catalog routes."""
-from fastapi import APIRouter, Query, Depends
-from fastapi.responses import ORJSONResponse
+from fastapi import APIRouter, Query, Depends, Request
+from fastapi.responses import ORJSONResponse, Response
 from typing import Optional
 from sqlalchemy.orm import Session
 from app.database import get_db, System
@@ -9,7 +9,7 @@ from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.guild import require_guild_member
 from app.api.middleware.roles import require_admin_role
 import logging
-import gzip
+import orjson
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +27,21 @@ def get_game_service() -> GameService:
 
 @router.get("/systems")
 async def get_systems(
+    request: Request,
     current_user: dict = Depends(require_guild_member),
     db: Session = Depends(get_db),
     game_service: GameService = Depends(get_game_service)
 ):
     """Get list of all enabled systems from database."""
+    # Generate ETag for systems list
+    etag = game_service.get_systems_etag()
+    
+    # Check if client has cached version (If-None-Match header)
+    if_none_match = request.headers.get("if-none-match", "")
+    if if_none_match == etag:
+        # Content hasn't changed, return 304 Not Modified
+        return Response(status_code=304, headers={"ETag": etag})
+    
     # Get enabled systems from database
     db_systems = db.query(System).filter(System.enabled == True).order_by(System.name).all()
     
@@ -59,10 +69,17 @@ async def get_systems(
             'release': db_system.release or 'Unknown'
         })
     
-    return {"systems": systems}
+    response_data = {"systems": systems}
+    
+    # Return response with ETag header for future 304 checks
+    response = ORJSONResponse(content=response_data)
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache"  # Require revalidation via ETag
+    return response
 
 @router.get("/games/{system}")
 async def get_games(
+    request: Request,
     system: str,
     page: int = Query(1, ge=1),
     limit: int = Query(12, ge=1, le=10000),
@@ -72,6 +89,19 @@ async def get_games(
     db: Session = Depends(get_db)
 ):
     """Get games for a specific system."""
+    # Only use ETag caching for non-search requests (search results are dynamic)
+    use_etag = not search
+    
+    if use_etag:
+        # Generate ETag for this request
+        etag = game_service.get_catalog_etag(system, '')
+        
+        # Check if client has cached version (If-None-Match header)
+        if_none_match = request.headers.get("if-none-match", "")
+        if if_none_match == etag:
+            # Content hasn't changed, return 304 Not Modified
+            return Response(status_code=304, headers={"ETag": etag})
+    
     # If limit is very large, get all games in one call
     if limit >= 10000:
         games = game_service.get_games_by_system(system, 1, 100000, search or '')
@@ -90,11 +120,24 @@ async def get_games(
     # Get subdirectory counts for this system
     subdirectory_counts = game_service.get_subdirectory_counts(system)
     
-    return {
+    response_data = {
         "games": games,
         "hasMore": has_more,
         "subdirectory_counts": subdirectory_counts
     }
+    
+    # Return response - only add ETag for non-search requests
+    if use_etag:
+        # Use ORJSONResponse for efficient JSON serialization, but add ETag header
+        response = ORJSONResponse(content=response_data)
+        response.headers["ETag"] = etag
+        response.headers["Cache-Control"] = "no-cache"  # Require revalidation via ETag
+        return response
+    else:
+        # Search results - no ETag, don't cache
+        response = ORJSONResponse(content=response_data)
+        response.headers["Cache-Control"] = "no-store"  # Don't cache search results
+        return response
 
 @router.get("/search")
 async def search_games(
