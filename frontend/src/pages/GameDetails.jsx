@@ -19,17 +19,22 @@ const GameDetails = () => {
   const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
   const isLoadingRef = useRef(false)
   const lastLoadKeyRef = useRef(null)
+  const hasLoadedRef = useRef(false)
 
   const loadGameDetails = useCallback(async () => {
     const currentLoadKey = `${system}-${gameId}`
     
-    // Prevent duplicate calls for the same system/gameId
-    if (isLoadingRef.current && lastLoadKeyRef.current === currentLoadKey) {
-      return
+    // Prevent duplicate calls: if we're already loading or have loaded the same game, skip
+    if (lastLoadKeyRef.current === currentLoadKey) {
+      if (isLoadingRef.current || hasLoadedRef.current) {
+        return
+      }
     }
     
+    // Mark as loading immediately to prevent concurrent calls
     isLoadingRef.current = true
     lastLoadKeyRef.current = currentLoadKey
+    hasLoadedRef.current = false
     
     try {
       setLoading(true)
@@ -38,6 +43,7 @@ const GameDetails = () => {
       // The backend expects: system/game_path
       const response = await client.get(`/api/catalog/game/${system}/${encodeURIComponent(gameId)}`)
       setGame(response.data)
+      hasLoadedRef.current = true
       
       // Set initial selected media (prefer boxart, then thumbnail, then image)
       if (response.data.boxart) {
@@ -50,6 +56,11 @@ const GameDetails = () => {
     } catch (err) {
       console.error('Error loading game details:', err)
       setError('Failed to load game details')
+      // Reset refs on error so retry can work
+      if (lastLoadKeyRef.current === currentLoadKey) {
+        lastLoadKeyRef.current = null
+        hasLoadedRef.current = false
+      }
     } finally {
       setLoading(false)
       isLoadingRef.current = false
@@ -57,8 +68,13 @@ const GameDetails = () => {
   }, [system, gameId])
 
   useEffect(() => {
-    // Reset loading state when dependencies change
-    isLoadingRef.current = false
+    // Reset state when dependencies change to a different game
+    const currentLoadKey = `${system}-${gameId}`
+    if (lastLoadKeyRef.current !== currentLoadKey) {
+      isLoadingRef.current = false
+      hasLoadedRef.current = false
+      lastLoadKeyRef.current = null
+    }
     loadGameDetails()
   }, [system, gameId, loadGameDetails])
 
