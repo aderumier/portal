@@ -114,7 +114,7 @@ async def callback(
         
         logger.info(f"Guild membership check result: {'IS member' if is_guild_member else 'NOT a member'}")
         
-        # Check all configured roles
+        # Check all configured roles (optimized: single API call for all roles)
         download_role = settings.DISCORD_DOWNLOAD_ROLE
         fastdownload_role = settings.DISCORD_FASTDOWNLOAD_ROLE
         admin_role = settings.DISCORD_ADMIN_ROLE
@@ -124,19 +124,17 @@ async def callback(
         is_admin = False
         
         if is_guild_member:
-            # Check download role
-            logger.info(f"Checking if user has the {download_role} role (ID: {user['id']})")
-            is_download = await discord_service.has_role(user['id'], download_role)
+            # Check all roles in a single optimized call
+            role_names = [download_role, fastdownload_role, admin_role]
+            logger.info(f"Checking if user has roles {role_names} (ID: {user['id']})")
+            role_results = await discord_service.check_roles(user['id'], role_names)
+            
+            is_download = role_results.get(download_role, False)
+            is_fastdownload = role_results.get(fastdownload_role, False)
+            is_admin = role_results.get(admin_role, False)
+            
             logger.info(f"{download_role} role check result: {'HAS role' if is_download else 'NOT has role'}")
-            
-            # Check fastdownload role
-            logger.info(f"Checking if user has the {fastdownload_role} role (ID: {user['id']})")
-            is_fastdownload = await discord_service.has_role(user['id'], fastdownload_role)
             logger.info(f"{fastdownload_role} role check result: {'HAS role' if is_fastdownload else 'NOT has role'}")
-            
-            # Check admin role
-            logger.info(f"Checking if user has the {admin_role} role (ID: {user['id']})")
-            is_admin = await discord_service.has_role(user['id'], admin_role)
             logger.info(f"{admin_role} role check result: {'HAS role' if is_admin else 'NOT has role'}")
         
         # Store user info in session

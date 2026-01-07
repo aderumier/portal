@@ -296,22 +296,28 @@ class DiscordService:
             logger.error(f"Unexpected error in get_member_roles: {e}")
             return []
     
-    async def has_role(self, user_id: str, role_name: str, guild_id: Optional[str] = None) -> bool:
-        """Check if user has a specific role in the guild."""
+    async def check_roles(self, user_id: str, role_names: List[str], guild_id: Optional[str] = None) -> Dict[str, bool]:
+        """Check if user has multiple roles in the guild. Returns a dict mapping role names to boolean values.
+        
+        This is more efficient than calling has_role multiple times as it only fetches
+        the roles list and user member info once.
+        """
         guild_id = guild_id or self.required_guild_id
-        logger.info(f"Checking if user {user_id} has role '{role_name}' in guild {guild_id}")
+        logger.info(f"Checking if user {user_id} has roles {role_names} in guild {guild_id}")
         
         if not self.bot_token:
             logger.error("DISCORD_BOT_TOKEN is not set in environment variables")
-            return False
+            return {role_name: False for role_name in role_names}
         
         # Remove "Bot " prefix if present
         bot_token = self.bot_token
         if bot_token.startswith('Bot '):
             bot_token = bot_token[4:]
         
+        result = {role_name: False for role_name in role_names}
+        
         try:
-            # First get all roles in the guild
+            # Get all roles in the guild (once)
             response = await self.client.get(
                 f"{self.api_base}/guilds/{guild_id}/roles",
                 headers={'Authorization': f"Bot {bot_token}"}
@@ -325,41 +331,53 @@ class DiscordService:
             available_role_names = [r['name'] for r in roles]
             logger.info(f"Available roles in guild: {available_role_names}")
             
-            # Find the role ID for the given role name
-            role_id = None
+            # Build a map of role names (lowercase) to role IDs
+            role_name_to_id = {}
             for role in roles:
-                logger.debug(f"Guild role: {role['id']} - {role['name']}")
-                if role['name'].lower() == role_name.lower():
-                    role_id = str(role['id'])  # Normalize to string
+                role_name_to_id[role['name'].lower()] = str(role['id'])
+            
+            # Find role IDs for all requested roles
+            requested_role_ids = {}
+            for role_name in role_names:
+                role_id = role_name_to_id.get(role_name.lower())
+                if role_id:
+                    requested_role_ids[role_name] = role_id
                     logger.info(f"Found role ID {role_id} for role '{role_name}' (case-insensitive match)")
-                    break
+                else:
+                    logger.warning(f"Role '{role_name}' not found in guild {guild_id}")
             
-            if not role_id:
-                logger.warning(f"Role '{role_name}' not found in guild {guild_id}")
-                logger.warning(f"Available roles: {available_role_names}")
-                logger.warning(f"Note: Role name matching is case-insensitive. Looking for: '{role_name.lower()}'")
-                return False
+            if not requested_role_ids:
+                logger.warning(f"None of the requested roles were found in guild")
+                return result
             
-            # Get the user's roles (already normalized to strings in get_member_roles)
+            # Get the user's roles (once)
             user_roles = await self.get_member_roles(user_id, guild_id)
             logger.info(f"User roles retrieved: {user_roles}")
             
-            # Check if the user has the role (both are already strings)
-            has_role = role_id in user_roles
-            logger.info(f"User {'HAS' if has_role else 'DOES NOT HAVE'} the '{role_name}' role (ID: {role_id})")
-            if not has_role:
-                logger.debug(f"Role ID {role_id} not found in user roles: {user_roles}")
+            # Check each role
+            for role_name, role_id in requested_role_ids.items():
+                has_role = role_id in user_roles
+                result[role_name] = has_role
+                logger.info(f"User {'HAS' if has_role else 'DOES NOT HAVE'} the '{role_name}' role (ID: {role_id})")
             
-            return has_role
+            return result
         except httpx.HTTPError as e:
             logger.error(f"Error fetching guild roles: {e}")
             if hasattr(e, 'response') and e.response:
                 logger.error(f"Response status: {e.response.status_code}")
                 logger.error(f"Response body: {e.response.text}")
-            return False
+            return result
         except Exception as e:
-            logger.error(f"Unexpected error in has_role: {e}", exc_info=True)
-            return False
+            logger.error(f"Unexpected error in check_roles: {e}", exc_info=True)
+            return result
+    
+    async def has_role(self, user_id: str, role_name: str, guild_id: Optional[str] = None) -> bool:
+        """Check if user has a specific role in the guild.
+        
+        For checking multiple roles, use check_roles() instead for better performance.
+        """
+        results = await self.check_roles(user_id, [role_name], guild_id)
+        return results.get(role_name, False)
     
     def get_required_guild_id(self) -> str:
         """Get the required guild ID."""
