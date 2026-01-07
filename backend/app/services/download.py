@@ -44,19 +44,10 @@ def parse_m3u_file(m3u_file_path: str) -> List[str]:
                 if not line or line.startswith('#'):
                     continue
                 
-                # This is a file path (relative to the .m3u file location)
-                # Normalize the path (remove leading ./ if present)
-                file_path = line.lstrip('./')
-                
-                # The path in the .m3u file is already relative to the .m3u file's directory
-                # Just normalize path separators
-                if not os.path.isabs(file_path):
-                    file_path = file_path.replace('\\', '/')
-                    files_to_download.append(file_path)
-                else:
-                    # Absolute path - just use the filename (shouldn't happen in practice)
-                    logger.warning(f"Absolute path found in .m3u file: {file_path}")
-                    files_to_download.append(os.path.basename(file_path))
+                # This is a file path (always relative to the .m3u file location)
+                # Normalize the path (remove leading ./ if present) and path separators
+                file_path = line.lstrip('./').replace('\\', '/')
+                files_to_download.append(file_path)
         
         logger.info(f"Parsed .m3u file {m3u_file_path}: found {len(files_to_download)} files to download")
         return files_to_download
