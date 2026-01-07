@@ -1,10 +1,47 @@
 """Discord OAuth2 and API service."""
 import httpx
+import json
 import logging
 from typing import Optional, Dict, List
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Global Redis client for caching (initialized on first use)
+_redis_cache_client = None
+
+def get_redis_cache_client():
+    """Get or create Redis client for caching Discord data."""
+    global _redis_cache_client
+    
+    if _redis_cache_client is not None:
+        return _redis_cache_client
+    
+    try:
+        import redis.asyncio as aioredis
+        redis_url = settings.REDIS_URL
+        # Use a different database (1) for cache to separate from sessions (0)
+        # Or use the same database with different key prefix
+        if '/0' in redis_url:
+            redis_url = redis_url.replace('/0', '/1')
+        elif redis_url.endswith('/'):
+            redis_url = redis_url + '1'
+        else:
+            redis_url = redis_url + '/1'
+        
+        _redis_cache_client = aioredis.from_url(
+            redis_url,
+            decode_responses=True,  # Cache uses text (JSON)
+            encoding='utf-8'
+        )
+        logger.info(f"Redis cache client initialized (URL: {redis_url})")
+        return _redis_cache_client
+    except ImportError:
+        logger.debug("Redis not available for caching (redis library not installed)")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to initialize Redis cache client: {e}")
+        return None
 
 class DiscordService:
     """Service for Discord OAuth2 and API interactions."""
@@ -296,11 +333,56 @@ class DiscordService:
             logger.error(f"Unexpected error in get_member_roles: {e}")
             return []
     
+    async def _get_guild_roles_cached(self, guild_id: str) -> Optional[List[Dict]]:
+        """Get guild roles from Redis cache or None if not cached."""
+        redis_client = get_redis_cache_client()
+        if not redis_client:
+            return None
+        
+        try:
+            cache_key = f"discord:guild_roles:{guild_id}"
+            cached_data = await redis_client.get(cache_key)
+            if cached_data:
+                roles = json.loads(cached_data)
+                logger.debug(f"Retrieved {len(roles)} roles from Redis cache for guild {guild_id}")
+                return roles
+        except Exception as e:
+            logger.debug(f"Error reading from Redis cache: {e}")
+        
+        return None
+    
+    async def _set_guild_roles_cache(self, guild_id: str, roles: List[Dict], ttl: int = 86400):
+        """Store guild roles in Redis cache with TTL (default 24 hours)."""
+        redis_client = get_redis_cache_client()
+        if not redis_client:
+            return
+        
+        try:
+            cache_key = f"discord:guild_roles:{guild_id}"
+            cached_data = json.dumps(roles)
+            await redis_client.setex(cache_key, ttl, cached_data)
+            logger.debug(f"Cached {len(roles)} roles in Redis for guild {guild_id} (TTL: {ttl}s)")
+        except Exception as e:
+            logger.debug(f"Error writing to Redis cache: {e}")
+    
+    async def _clear_guild_roles_cache(self, guild_id: str):
+        """Clear cached guild roles (e.g., on server restart)."""
+        redis_client = get_redis_cache_client()
+        if not redis_client:
+            return
+        
+        try:
+            cache_key = f"discord:guild_roles:{guild_id}"
+            await redis_client.delete(cache_key)
+            logger.debug(f"Cleared Redis cache for guild {guild_id}")
+        except Exception as e:
+            logger.debug(f"Error clearing Redis cache: {e}")
+    
     async def check_roles(self, user_id: str, role_names: List[str], guild_id: Optional[str] = None) -> Dict[str, bool]:
         """Check if user has multiple roles in the guild. Returns a dict mapping role names to boolean values.
         
         This is more efficient than calling has_role multiple times as it only fetches
-        the roles list and user member info once.
+        the roles list and user member info once. Guild roles are cached in Redis for 24h.
         """
         guild_id = guild_id or self.required_guild_id
         logger.info(f"Checking if user {user_id} has roles {role_names} in guild {guild_id}")
@@ -317,15 +399,25 @@ class DiscordService:
         result = {role_name: False for role_name in role_names}
         
         try:
-            # Get all roles in the guild (once)
-            response = await self.client.get(
-                f"{self.api_base}/guilds/{guild_id}/roles",
-                headers={'Authorization': f"Bot {bot_token}"}
-            )
-            response.raise_for_status()
+            # Try to get roles from cache first
+            roles = await self._get_guild_roles_cached(guild_id)
             
-            roles = response.json()
-            logger.info(f"Retrieved {len(roles)} roles from guild")
+            if roles is None:
+                # Cache miss - fetch from API
+                logger.debug(f"Cache miss for guild {guild_id} roles, fetching from Discord API")
+                response = await self.client.get(
+                    f"{self.api_base}/guilds/{guild_id}/roles",
+                    headers={'Authorization': f"Bot {bot_token}"}
+                )
+                response.raise_for_status()
+                
+                roles = response.json()
+                logger.info(f"Retrieved {len(roles)} roles from Discord API")
+                
+                # Cache the roles for 24 hours
+                await self._set_guild_roles_cache(guild_id, roles, ttl=86400)
+            else:
+                logger.debug(f"Cache hit for guild {guild_id} roles")
             
             # Log all available roles for debugging
             available_role_names = [r['name'] for r in roles]

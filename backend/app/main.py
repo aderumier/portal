@@ -79,6 +79,22 @@ async def shutdown_event():
         close_geoip_instance()
     except Exception as e:
         logger.warning(f"Error during GeoIP cleanup: {e}")
+    
+    # Clear Discord roles cache on shutdown (optional - comment out if you want cache to persist)
+    try:
+        from app.services.discord import get_redis_cache_client
+        from app.config import settings
+        redis_client = get_redis_cache_client()
+        if redis_client:
+            # Clear all Discord role caches
+            guild_id = settings.DISCORD_GUILD_ID
+            from app.services.discord import DiscordService
+            discord_service = DiscordService()
+            await discord_service._clear_guild_roles_cache(guild_id)
+            await discord_service.close()
+            logger.info("Cleared Discord roles cache on shutdown")
+    except Exception as e:
+        logger.debug(f"Error clearing Discord cache on shutdown: {e}")
 
 # Add session middleware (configurable: memory, redis, file, or database)
 session_storage = settings.SESSION_STORAGE.lower()
