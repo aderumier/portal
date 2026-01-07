@@ -239,7 +239,8 @@ class SystemImportService:
                     manufacturer=info.get('manufacturer'),
                     batocera_system=batocera_system,
                     retrobat_system=retrobat_system,
-                    enabled=True
+                    enabled=True,
+                    download_enabled=True  # Downloads enabled by default
                 )
                 db.add(db_system)
                 imported_count += 1
