@@ -3,10 +3,12 @@ import { useSearchParams } from 'react-router-dom'
 import GameCard from '../components/Catalog/GameCard'
 import TokenSelectorDropdown from '../components/TokenSelector/TokenSelectorDropdown'
 import { useDownloadWithToken } from '../hooks/useDownloadWithToken'
-import client from '../api/client'
+import { useCatalog } from '../context/CatalogContext'
+import { searchGames as searchGamesAPI } from '../api/catalog'
 import './Search.css'
 
 const Search = () => {
+  const { catalogType } = useCatalog()
   const [searchParams, setSearchParams] = useSearchParams()
   const urlQuery = searchParams.get('q') || ''
   const [query, setQuery] = useState(urlQuery)
@@ -29,15 +31,9 @@ const Search = () => {
     try {
       setLoading(true)
       // Use the indexed search endpoint
-      const response = await client.get('/api/catalog/search', {
-        params: {
-          q: searchQuery,
-          page: pageNum,
-          limit: 12
-        }
-      })
+      const response = await searchGamesAPI(searchQuery, pageNum, 12, catalogType)
       
-      const newGames = response.data.results || []
+      const newGames = response.results || []
       
       if (append) {
         setGames(prev => [...prev, ...newGames])
@@ -45,13 +41,13 @@ const Search = () => {
         setGames(newGames)
       }
       
-      setHasMore(response.data.hasMore || false)
+      setHasMore(response.hasMore || false)
     } catch (error) {
       console.error('Error searching games:', error)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [catalogType])
 
   // Update query when URL parameter changes
   useEffect(() => {
@@ -62,7 +58,7 @@ const Search = () => {
     }
   }, [searchParams, query])
 
-  // Trigger search when query changes
+  // Trigger search when query or catalogType changes
   useEffect(() => {
     const currentQuery = query.trim()
     if (!currentQuery) {

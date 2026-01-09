@@ -1,21 +1,23 @@
 import React, { useState, useEffect } from 'react'
 import SystemsList from '../components/Catalog/SystemsList'
-import client from '../api/client'
+import { useCatalog } from '../context/CatalogContext'
+import { getSystems } from '../api/catalog'
 
 const Systems = () => {
+  const { catalogType } = useCatalog()
   const [systems, setSystems] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
   useEffect(() => {
     loadSystems()
-  }, [])
+  }, [catalogType])
 
   const loadSystems = async () => {
     try {
       setLoading(true)
-      const response = await client.get('/api/catalog/systems')
-      setSystems(response.data.systems || [])
+      const response = await getSystems(catalogType)
+      setSystems(response.systems || [])
     } catch (err) {
       console.error('Error loading systems:', err)
       setError('Failed to load systems')

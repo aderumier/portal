@@ -146,6 +146,10 @@ const DownloadQueues = () => {
                             <span className="detail-value">{download.system_name || download.system}</span>
                           </div>
                           <div className="detail-row">
+                            <span className="detail-label">Version:</span>
+                            <span className="detail-value">{download.catalog_version || 'WIP'}</span>
+                          </div>
+                          <div className="detail-row">
                             <span className="detail-label">User:</span>
                             <span className="detail-value">{download.username || download.user_id}</span>
                           </div>
@@ -179,6 +183,10 @@ const DownloadQueues = () => {
                           <div className="detail-row">
                             <span className="detail-label">System:</span>
                             <span className="detail-value">{download.system_name || download.system}</span>
+                          </div>
+                          <div className="detail-row">
+                            <span className="detail-label">Version:</span>
+                            <span className="detail-value">{download.catalog_version || 'WIP'}</span>
                           </div>
                           <div className="detail-row">
                             <span className="detail-label">User:</span>
@@ -226,6 +234,10 @@ const DownloadQueues = () => {
                             <span className="detail-value">{download.system_name || download.system}</span>
                           </div>
                           <div className="detail-row">
+                            <span className="detail-label">Version:</span>
+                            <span className="detail-value">{download.catalog_version || 'WIP'}</span>
+                          </div>
+                          <div className="detail-row">
                             <span className="detail-label">User:</span>
                             <span className="detail-value">{download.username || download.user_id}</span>
                           </div>
@@ -259,6 +271,10 @@ const DownloadQueues = () => {
                           <div className="detail-row">
                             <span className="detail-label">System:</span>
                             <span className="detail-value">{download.system_name || download.system}</span>
+                          </div>
+                          <div className="detail-row">
+                            <span className="detail-label">Version:</span>
+                            <span className="detail-value">{download.catalog_version || 'WIP'}</span>
                           </div>
                           <div className="detail-row">
                             <span className="detail-label">User:</span>
@@ -303,6 +319,10 @@ const DownloadQueues = () => {
                       <div className="detail-row">
                         <span className="detail-label">System:</span>
                         <span className="detail-value">{download.system_name || download.system}</span>
+                      </div>
+                      <div className="detail-row">
+                        <span className="detail-label">Version:</span>
+                        <span className="detail-value">{download.catalog_version || 'WIP'}</span>
                       </div>
                       <div className="detail-row">
                         <span className="detail-label">User:</span>
@@ -372,6 +392,10 @@ const DownloadQueues = () => {
                       <div className="detail-row">
                         <span className="detail-label">System:</span>
                         <span className="detail-value">{download.system_name || download.system}</span>
+                      </div>
+                      <div className="detail-row">
+                        <span className="detail-label">Version:</span>
+                        <span className="detail-value">{download.catalog_version || 'WIP'}</span>
                       </div>
                       <div className="detail-row">
                         <span className="detail-label">User:</span>

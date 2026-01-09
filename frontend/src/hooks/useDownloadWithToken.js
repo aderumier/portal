@@ -1,16 +1,23 @@
 import { useState } from 'react'
 import client from '../api/client'
+import { useCatalog } from '../context/CatalogContext'
 
 export const useDownloadWithToken = () => {
+  const { catalogType } = useCatalog()
   const [showTokenSelector, setShowTokenSelector] = useState(false)
   const [pendingGameId, setPendingGameId] = useState(null)
+  const [pendingCatalogType, setPendingCatalogType] = useState(null)
 
-  const addToQueue = async (gameId, tokenName = null) => {
+  const addToQueue = async (gameId, tokenName = null, catalog_type = null) => {
+    // Use provided catalog_type or fall back to context catalogType
+    const effectiveCatalogType = catalog_type || catalogType || 'releases'
+    
     try {
       // First, try to add without token_name (backend will handle single token or require selection)
       const response = await client.post('/api/download/queue', {
         game_id: gameId,
-        token_name: tokenName
+        token_name: tokenName,
+        catalog_type: effectiveCatalogType
       })
       return { success: true, data: response.data }
     } catch (error) {
@@ -26,6 +33,7 @@ export const useDownloadWithToken = () => {
         // User has multiple tokens, need to show selector
         // Don't throw error, just return and show selector
         setPendingGameId(gameId)
+        setPendingCatalogType(effectiveCatalogType)
         setShowTokenSelector(true)
         return { success: false, requiresSelection: true }
       }
@@ -40,7 +48,8 @@ export const useDownloadWithToken = () => {
     try {
       const response = await client.post('/api/download/queue', {
         game_id: pendingGameId,
-        token_name: selectedTokenName
+        token_name: selectedTokenName,
+        catalog_type: pendingCatalogType || catalogType || 'releases'
       })
       setShowTokenSelector(false)
       setPendingGameId(null)
@@ -56,6 +65,7 @@ export const useDownloadWithToken = () => {
   const cancelTokenSelection = () => {
     setShowTokenSelector(false)
     setPendingGameId(null)
+    setPendingCatalogType(null)
   }
 
   return {

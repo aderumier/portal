@@ -1,0 +1,24 @@
+.catalog-type-selector {
+  margin-left: 1rem;
+}
+
+.catalog-type-select {
+  padding: 0.5rem 1rem;
+  border: 2px solid var(--border);
+  border-radius: 20px;
+  font-size: 0.9rem;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  outline: none;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.catalog-type-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(88, 101, 242, 0.1);
+}
+
+.catalog-type-select:hover {
+  border-color: var(--accent);
+}

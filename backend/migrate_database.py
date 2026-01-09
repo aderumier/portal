@@ -57,6 +57,7 @@ def migrate_database():
         ("last_progress_at", "TEXT"),
         ("assigned_to_service", "TEXT"),
         ("token_id", "INTEGER NOT NULL DEFAULT 0"),  # Will be updated to actual token IDs
+        ("catalog_version", "TEXT"),  # Version string (e.g., "v2-RGS_bbc") for Releases catalog, NULL for WIP
     ]
     
     # Add missing columns
@@ -77,6 +78,7 @@ def migrate_database():
         ("idx_download_queue_queue_type", "download_queue(queue_type)"),
         ("idx_download_queue_active_download", "download_queue(active_download)"),
         ("idx_download_queue_token_id", "download_queue(token_id)"),
+        ("idx_download_queue_catalog_version", "download_queue(catalog_version)"),
     ]
     
     for idx_name, idx_def in indexes_to_create:
@@ -163,10 +165,24 @@ def migrate_database():
             rompath TEXT NOT NULL,
             download_status TEXT NOT NULL,
             bytes_transferred INTEGER DEFAULT 0,
-            file_size INTEGER
+            file_size INTEGER,
+            catalog_version TEXT
         )
     """)
     print("  ✓ Created/verified download_archive table")
+    
+    # Check existing columns and add catalog_version if missing
+    cursor.execute("PRAGMA table_info(download_archive)")
+    existing_archive_columns = [col[1] for col in cursor.fetchall()]
+    
+    if 'catalog_version' not in existing_archive_columns:
+        try:
+            cursor.execute("ALTER TABLE download_archive ADD COLUMN catalog_version TEXT")
+            print("  ✓ Added column catalog_version to download_archive table")
+        except sqlite3.OperationalError as e:
+            print(f"  ✗ Error adding column catalog_version: {e}")
+    else:
+        print("  - Column catalog_version already exists in download_archive table")
     
     # Create indexes for download_archive
     indexes_to_create = [

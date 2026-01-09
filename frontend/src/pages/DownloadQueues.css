@@ -257,6 +257,18 @@
   color: var(--text-primary);
 }
 
+.detail-value .version-tag {
+  padding: 0.35rem 0.75rem;
+  background: rgba(99, 102, 241, 0.2);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  font-family: monospace;
+  color: #6366f1;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  display: inline-block;
+}
+
 .download-progress {
   margin-top: 0.5rem;
 }

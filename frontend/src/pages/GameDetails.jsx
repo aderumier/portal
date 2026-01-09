@@ -1,17 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { useCatalog } from '../context/CatalogContext'
 import { getMediaUrl } from '../utils/constants'
 import MediaUpload from '../components/Media/MediaUpload'
 import TokenSelectorDropdown from '../components/TokenSelector/TokenSelectorDropdown'
 import { useDownloadWithToken } from '../hooks/useDownloadWithToken'
-import client from '../api/client'
+import { getGameDetails } from '../api/catalog'
 import './GameDetails.css'
 
 const GameDetails = () => {
   const { system, gameId } = useParams()
   const navigate = useNavigate()
   const { isAdmin, isDownload, isFastDownload } = useAuth()
+  const { catalogType } = useCatalog()
   const [game, setGame] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -22,7 +24,7 @@ const GameDetails = () => {
   const hasLoadedRef = useRef(false)
 
   const loadGameDetails = useCallback(async () => {
-    const currentLoadKey = `${system}-${gameId}`
+    const currentLoadKey = `${system}-${gameId}-${catalogType}`
     
     // Prevent duplicate calls: if we're already loading or have loaded the same game, skip
     if (lastLoadKeyRef.current === currentLoadKey) {
@@ -41,17 +43,17 @@ const GameDetails = () => {
       setError(null)
       // gameId is already URL encoded from the route parameter
       // The backend expects: system/game_path
-      const response = await client.get(`/api/catalog/game/${system}/${encodeURIComponent(gameId)}`)
-      setGame(response.data)
+      const gameData = await getGameDetails(system, gameId, catalogType)
+      setGame(gameData)
       hasLoadedRef.current = true
       
       // Set initial selected media (prefer boxart, then thumbnail, then image)
-      if (response.data.boxart) {
-        setSelectedMedia({ type: 'boxart', url: getMediaUrl(response.data.boxart) })
-      } else if (response.data.thumbnail) {
-        setSelectedMedia({ type: 'thumbnail', url: getMediaUrl(response.data.thumbnail) })
-      } else if (response.data.image) {
-        setSelectedMedia({ type: 'image', url: getMediaUrl(response.data.image) })
+      if (gameData.boxart) {
+        setSelectedMedia({ type: 'boxart', url: getMediaUrl(gameData.boxart) })
+      } else if (gameData.thumbnail) {
+        setSelectedMedia({ type: 'thumbnail', url: getMediaUrl(gameData.thumbnail) })
+      } else if (gameData.image) {
+        setSelectedMedia({ type: 'image', url: getMediaUrl(gameData.image) })
       }
     } catch (err) {
       console.error('Error loading game details:', err)
@@ -65,7 +67,7 @@ const GameDetails = () => {
       setLoading(false)
       isLoadingRef.current = false
     }
-  }, [system, gameId])
+  }, [system, gameId, catalogType])
 
   useEffect(() => {
     // Reset state when dependencies change to a different game
@@ -195,8 +197,8 @@ const GameDetails = () => {
             {mediaItems.length > 0 && (
               <div className="media-thumbnails">
                 {mediaItems.map((media) => {
-                  // Only fanart and marquee can be uploaded (for admins)
-                  const canUpload = isAdmin && (media.type === 'fanart' || media.type === 'marquee')
+                  // Only fanart and marquee can be uploaded (for admins), and only in WIP catalog
+                  const canUpload = isAdmin && catalogType !== 'releases' && (media.type === 'fanart' || media.type === 'marquee')
                   
                   if (media.hasMedia && !canUpload) {
                     // Regular media thumbnail (no upload)

@@ -5,7 +5,8 @@ import logging
 import pickle
 import hashlib
 import time
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
+import re
 from pathlib import Path
 from app.config import settings
 from app.services.game_utils import normalize_game_name
@@ -68,11 +69,17 @@ class GameService:
     def __init__(self, games_path: Optional[str] = None):
         self.games_path = games_path or settings.GAMES_PATH
         self.cache = {}
-        self.search_index = {}  # Partitioned search index: search_index[first_letter][normalized_name] = [games]
-        self._index_built = False
-        self.catalog = {}  # Pre-processed catalog: catalog[system_id][rompath] = {game fields dict}
-        self.catalog_sorted_keys = {}  # Pre-sorted rompaths per system: catalog_sorted_keys[system_id] = [sorted rompaths by name]
-        self.catalog_responses = {}  # Pre-computed response dictionaries: catalog_responses[system_id][rompath] = {response dict}
+        # Dual catalog structures: WIP (current) and Releases (versioned)
+        self.search_index_wip = {}  # Partitioned search index for WIP catalog
+        self.search_index_releases = {}  # Partitioned search index for Releases catalog
+        self._index_built_wip = False
+        self._index_built_releases = False
+        self.catalog_wip = {}  # Pre-processed catalog: catalog[system_id][rompath] = {game fields dict}
+        self.catalog_releases = {}  # Pre-processed catalog for Releases
+        self.catalog_sorted_keys_wip = {}  # Pre-sorted rompaths per system for WIP
+        self.catalog_sorted_keys_releases = {}  # Pre-sorted rompaths per system for Releases
+        self.catalog_responses_wip = {}  # Pre-computed response dictionaries for WIP
+        self.catalog_responses_releases = {}  # Pre-computed response dictionaries for Releases
         self.systems_list = []  # Cached systems list with game counts
         self._gamelists_loaded = False
         self.system_hardware = {}  # Cache: system_id -> hardware category
@@ -80,8 +87,11 @@ class GameService:
         self.system_release = {}  # Cache: system_id -> release year
         self.system_fullname = {}  # Cache: system_id -> full name
         self._hardware_loaded = False
-        self.subdirectory_counts = {}  # Cache: system_id -> {subdirectory: count}
+        self.subdirectory_counts_wip = {}  # Cache: system_id -> {subdirectory: count} for WIP
+        self.subdirectory_counts_releases = {}  # Cache: system_id -> {subdirectory: count} for Releases
         self._catalog_timestamp = None  # Timestamp when catalog was last loaded/refreshed for ETag generation
+        self.system_versions = {}  # Stores latest version per system: {system_id: "v10.5"}
+        self.system_snapshot_paths = {}  # Stores snapshot directory path per system: {system_id: ".zfs/snapshot/v10.5/"}
         
         # System name mapping
         self.system_names = {
@@ -302,13 +312,266 @@ class GameService:
             logger.warning("No hardware mappings loaded! Check if es_systems.cfg files exist and are properly formatted.")
         return hardware_map
     
+    def _find_latest_versioned_gamelist(self, system_path: str) -> Optional[Tuple[str, str, str]]:
+        """Find the latest versioned gamelist.xml in .zfs/snapshot/ directories.
+        
+        Pattern: GAMES_PATH/<system>/.zfs/snapshot/v(\d+)(\S+)/gamelist.xml
+        Comparison: Numeric comparison of first number group (e.g., v2024 > v10 > v2 > v1)
+        
+        Args:
+            system_path: Path to the system directory
+            
+        Returns:
+            Tuple of (version_string, snapshot_dir_path, gamelist_path) or None if no versioned gamelist found
+            snapshot_dir_path is relative to system_path (e.g., ".zfs/snapshot/v10.5/")
+        """
+        snapshot_dir = os.path.join(system_path, '.zfs', 'snapshot')
+        if not os.path.isdir(snapshot_dir):
+            return None
+        
+        version_pattern = re.compile(r'^v(\d+)(\S*)$')
+        found_versions = []
+        
+        try:
+            for entry in os.listdir(snapshot_dir):
+                entry_path = os.path.join(snapshot_dir, entry)
+                if not os.path.isdir(entry_path):
+                    continue
+                
+                # Match version pattern: v(\d+)(\S+)
+                match = version_pattern.match(entry)
+                if not match:
+                    continue
+                
+                version_num_str = match.group(1)
+                version_suffix = match.group(2)
+                
+                gamelist_path = os.path.join(entry_path, 'gamelist.xml')
+                if not os.path.isfile(gamelist_path):
+                    continue
+                
+                try:
+                    version_num = int(version_num_str)
+                    # Store snapshot directory path relative to system_path
+                    snapshot_dir_path = os.path.join('.zfs', 'snapshot', entry)
+                    found_versions.append((version_num, entry, snapshot_dir_path, gamelist_path))
+                except ValueError:
+                    logger.warning(f"Could not parse version number from '{entry}' for system {os.path.basename(system_path)}")
+                    continue
+            
+            if not found_versions:
+                return None
+            
+            # Sort by version number (descending) and return the latest
+            found_versions.sort(key=lambda x: x[0], reverse=True)
+            latest_version_num, latest_version_str, latest_snapshot_dir_path, latest_gamelist_path = found_versions[0]
+            logger.info(f"Found latest versioned gamelist for {os.path.basename(system_path)}: {latest_version_str} at {latest_gamelist_path}")
+            return (latest_version_str, latest_snapshot_dir_path, latest_gamelist_path)
+        except Exception as e:
+            logger.error(f"Error finding versioned gamelist in {snapshot_dir}: {e}")
+            return None
+    
+    def _load_catalog_from_gamelist(self, system_id: str, gamelist_path: str, catalog_type: str, snapshot_dir_path: Optional[str] = None) -> int:
+        """Load catalog from a gamelist.xml file for a specific system.
+        
+        Args:
+            system_id: System identifier
+            gamelist_path: Path to the gamelist.xml file
+            catalog_type: 'wip' or 'releases'
+            snapshot_dir_path: Snapshot directory path relative to system directory (e.g., ".zfs/snapshot/v10.5/") for Releases catalog
+            
+        Returns:
+            Number of games loaded
+        """
+        # Select appropriate catalog structures based on catalog_type
+        if catalog_type == 'wip':
+            catalog = self.catalog_wip
+            catalog_responses = self.catalog_responses_wip
+            catalog_sorted_keys = self.catalog_sorted_keys_wip
+            subdirectory_counts = self.subdirectory_counts_wip
+        elif catalog_type == 'releases':
+            catalog = self.catalog_releases
+            catalog_responses = self.catalog_responses_releases
+            catalog_sorted_keys = self.catalog_sorted_keys_releases
+            subdirectory_counts = self.subdirectory_counts_releases
+        else:
+            raise ValueError(f"Invalid catalog_type: {catalog_type}. Must be 'wip' or 'releases'")
+        
+        tree = ET.parse(gamelist_path)
+        root = tree.getroot()
+        
+        # Initialize catalog entry for this system
+        catalog[system_id] = {}
+        
+        # Helper function to normalize media path
+        def normalize_media_path(path_value: str) -> str:
+            """Normalize media path by adding system prefix and snapshot path if needed.
+            
+            For WIP: returns {system_id}/{media_path}
+            For Releases: returns {system_id}/{snapshot_dir_path}/{media_path}
+            """
+            if not path_value:
+                return ''
+            path = path_value.lstrip('./')
+            
+            # For Releases catalog, prepend snapshot directory path
+            if catalog_type == 'releases' and snapshot_dir_path:
+                # snapshot_dir_path is already in format ".zfs/snapshot/v10.5/" (with leading dot)
+                # Just ensure it ends with / for proper joining, but keep the leading dot
+                snapshot_path = snapshot_dir_path
+                if not snapshot_path.endswith('/'):
+                    snapshot_path += '/'
+                # Path format: {system_id}/{snapshot_path}{media_path}
+                # e.g., "c64/.zfs/snapshot/v10.5/media/image.png"
+                # Remove system prefix if already present (media_path from XML is relative to system directory)
+                if path.startswith(f"{system_id}/"):
+                    path = path[len(system_id) + 1:]
+                return f"{system_id}/{snapshot_path}{path}"
+            else:
+                # For WIP, ensure system prefix is present
+                # media_path from XML is relative to system directory, so we add system_id prefix
+                if path.startswith(f"{system_id}/"):
+                    # Already has system prefix, return as-is
+                    return path
+                else:
+                    # Add system prefix
+                    return f"{system_id}/{path}"
+        
+        # Count games (excluding hidden ones)
+        game_count = 0
+        games_list = []  # Temporary list for sorting
+        
+        for game in root.findall('.//game'):
+            # Skip hidden games
+            if _is_game_hidden(game):
+                continue
+            
+            # Get rompath (game path)
+            rompath = game.findtext('path', '').lstrip('./')
+            if not rompath:
+                continue
+            
+            # Build game data dictionary with all fields from XML
+            game_data = {}
+            for child in game:
+                tag = child.tag
+                text = child.text or ''
+                game_data[tag] = text
+            
+            # Ensure 'path' field exists (use rompath)
+            game_data['path'] = rompath
+            
+            # Normalize all media paths in game_data (thumbnail, boxart, image, video, etc.)
+            media_fields = ['thumbnail', 'boxart', 'image', 'video', 'marquee', 'wheel', 'extra1', 'extra2', 'extra3', 'extra4', 'mix']
+            for media_field in media_fields:
+                if media_field in game_data and game_data[media_field]:
+                    game_data[media_field] = normalize_media_path(game_data[media_field])
+            
+            # Pre-compute catalog_image with priority: thumbnail > boxart > extra1 > image
+            thumbnail = game_data.get('thumbnail', '')
+            boxart = game_data.get('boxart', '')
+            extra1 = game_data.get('extra1', '')
+            image = game_data.get('image', '')
+            
+            # Select best image using priority (already normalized)
+            if thumbnail:
+                catalog_image = thumbnail
+            elif boxart:
+                catalog_image = boxart
+            elif extra1:
+                catalog_image = extra1
+            elif image:
+                catalog_image = image
+            else:
+                catalog_image = ''
+            
+            # Add pre-computed catalog_image to game_data
+            game_data['catalog_image'] = catalog_image
+            
+            # Store in catalog: catalog[system][rompath] = game_data
+            catalog[system_id][rompath] = game_data
+            games_list.append((rompath, game_data))
+            game_count += 1
+        
+        # Pre-sort games by name (case-insensitive) and store sorted keys
+        games_list.sort(key=lambda x: x[1].get('name', '').lower())
+        catalog_sorted_keys[system_id] = [rompath for rompath, _ in games_list]
+        
+        # Compute subdirectory counts (pre-compute during catalog build)
+        # First pass: collect all hidden folder paths
+        hidden_directories = set()
+        for folder in root.findall('.//folder'):
+            if _is_folder_hidden(folder):
+                folder_path = folder.findtext('path', '')
+                if folder_path:
+                    # Normalize the path
+                    path = folder_path.lstrip('./')
+                    if path.startswith(f"{system_id}/"):
+                        path = path[len(system_id) + 1:]
+                    # Remove trailing slash if present
+                    path = path.rstrip('/')
+                    hidden_directories.add(path)
+        
+        # Second pass: count games by subdirectory, skipping games in hidden directories
+        subdirectory_counts_dict = {}
+        for rompath, game_data in games_list:
+            # Check if game is inside a hidden directory
+            subdir = self._get_game_subdirectory(rompath, system_id)
+            if subdir:
+                # Check if subdirectory matches any hidden directory or is nested inside one
+                is_in_hidden_dir = False
+                for hidden_dir in hidden_directories:
+                    if subdir == hidden_dir or subdir.startswith(hidden_dir + '/'):
+                        # Game is inside a hidden directory, skip it
+                        is_in_hidden_dir = True
+                        break
+                if is_in_hidden_dir:
+                    continue
+            
+            key = subdir if subdir else '(root)'
+            subdirectory_counts_dict[key] = subdirectory_counts_dict.get(key, 0) + 1
+        
+        # Store pre-computed subdirectory counts
+        subdirectory_counts[system_id] = subdirectory_counts_dict
+        
+        # Pre-compute system name for response structure
+        base_system_id_temp = system_id
+        if system_id.endswith('_batocera'):
+            base_system_id_temp = system_id[:-9]
+        elif system_id.endswith('_retrobat'):
+            base_system_id_temp = system_id[:-9]
+        elif system_id.endswith('_lite'):
+            base_system_id_temp = system_id[:-5]
+        
+        fullname_temp = self.system_fullname.get(base_system_id_temp, None)
+        if not fullname_temp and len(self.system_fullname) > 0:
+            fullname_temp = self.system_fullname.get(system_id, None)
+        
+        system_name_temp = fullname_temp if fullname_temp else self.get_system_name(base_system_id_temp)
+        
+        # Pre-compute response structures for all games (ready to return, no dict building needed)
+        catalog_responses[system_id] = {}
+        for rompath, game_data in games_list:
+            # Create response-ready dictionary once during catalog build
+            catalog_responses[system_id][rompath] = {
+                'id': rompath,
+                'name': game_data.get('name', ''),
+                'description': game_data.get('desc', ''),
+                'image': game_data.get('catalog_image', ''),
+                'system': system_id,
+                'systemName': system_name_temp
+            }
+        
+        return game_count
+    
     def preload_all_gamelists(self) -> None:
-        """Preload all gamelist.xml files into memory at startup."""
+        """Preload all gamelist.xml files into memory at startup.
+        Loads both WIP (current) and Releases (versioned) catalogs."""
         if self._gamelists_loaded:
             logger.info("Gamelists already loaded")
             return
         
-        logger.info("Preloading all gamelist.xml files into memory...")
+        logger.info("Preloading all gamelist.xml files into memory (WIP and Releases)...")
         
         # Load system hardware mapping once (parsed and kept in memory)
         if not self._hardware_loaded:
@@ -326,8 +589,16 @@ class GameService:
             logger.warning(f"Could not load enabled systems from database: {e}. Will load all systems.")
         
         systems = []
-        self.catalog = {}  # catalog[system_id][rompath] = {game fields dict}
-        self.catalog_responses = {}  # catalog_responses[system_id][rompath] = {response dict}
+        # Initialize catalog structures
+        self.catalog_wip = {}
+        self.catalog_releases = {}
+        self.catalog_responses_wip = {}
+        self.catalog_responses_releases = {}
+        self.catalog_sorted_keys_wip = {}
+        self.catalog_sorted_keys_releases = {}
+        self.subdirectory_counts_wip = {}
+        self.subdirectory_counts_releases = {}
+        self.system_versions = {}
         
         if not os.path.isdir(self.games_path):
             logger.warning(f"Games directory not found at: {self.games_path}")
@@ -354,153 +625,39 @@ class GameService:
                 logger.warning(f"Directory not readable: {dir_path}")
                 continue
             
-            gamelist_path = os.path.join(dir_path, 'gamelist.xml')
-            if not os.path.isfile(gamelist_path) or not os.access(gamelist_path, os.R_OK):
-                logger.warning(f"No gamelist.xml found for system: {dir_name}")
-                continue
-            
             # Skip if system is not enabled in database (if database check succeeded)
             if enabled_systems and dir_name not in enabled_systems:
                 logger.debug(f"Skipping disabled system: {dir_name}")
                 continue
             
-            # Parse XML and build catalog dictionary (excluding hidden games)
+            # Load WIP catalog (current gamelist.xml)
+            gamelist_path = os.path.join(dir_path, 'gamelist.xml')
+            if not os.path.isfile(gamelist_path) or not os.access(gamelist_path, os.R_OK):
+                logger.warning(f"No gamelist.xml found for system: {dir_name}")
+                continue
+            
             try:
-                tree = ET.parse(gamelist_path)
-                root = tree.getroot()
+                # Load WIP catalog
+                game_count_wip = self._load_catalog_from_gamelist(dir_name, gamelist_path, 'wip')
+                logger.debug(f"Loaded WIP catalog for {dir_name}: {game_count_wip} games")
                 
-                # Initialize catalog entry for this system
-                self.catalog[dir_name] = {}
+                # Try to find and load Releases catalog (versioned gamelist.xml)
+                version_result = self._find_latest_versioned_gamelist(dir_path)
+                if version_result:
+                    version_str, snapshot_dir_path, versioned_gamelist_path = version_result
+                    try:
+                        game_count_releases = self._load_catalog_from_gamelist(dir_name, versioned_gamelist_path, 'releases', snapshot_dir_path)
+                        self.system_versions[dir_name] = version_str
+                        self.system_snapshot_paths[dir_name] = snapshot_dir_path
+                        logger.info(f"Loaded Releases catalog for {dir_name} (version {version_str}, snapshot: {snapshot_dir_path}): {game_count_releases} games")
+                    except Exception as e:
+                        logger.error(f"Error loading Releases catalog for {dir_name} (version {version_str}): {e}")
+                        # Continue with WIP catalog only
+                else:
+                    logger.debug(f"No versioned gamelist found for {dir_name}")
                 
-                # Helper function to normalize media path (defined once, outside loop)
-                def normalize_media_path(path_value: str) -> str:
-                    """Normalize media path by adding system prefix if needed."""
-                    if not path_value:
-                        return ''
-                    path = path_value.lstrip('./')
-                    if not path.startswith(f"{dir_name}/"):
-                        path = f"{dir_name}/{path}"
-                    return path
-                
-                # Count games (excluding hidden ones)
-                game_count = 0
-                games_list = []  # Temporary list for sorting
-                
-                for game in root.findall('.//game'):
-                    # Skip hidden games
-                    if _is_game_hidden(game):
-                        continue
-                    
-                    # Get rompath (game path)
-                    rompath = game.findtext('path', '').lstrip('./')
-                    if not rompath:
-                        continue
-                    
-                    # Build game data dictionary with all fields from XML
-                    game_data = {}
-                    for child in game:
-                        tag = child.tag
-                        text = child.text or ''
-                        game_data[tag] = text
-                    
-                    # Ensure 'path' field exists (use rompath)
-                    game_data['path'] = rompath
-                    
-                    # Pre-compute catalog_image with priority: thumbnail > boxart > extra1 > image
-                    thumbnail = game_data.get('thumbnail', '')
-                    boxart = game_data.get('boxart', '')
-                    extra1 = game_data.get('extra1', '')
-                    image = game_data.get('image', '')
-                    
-                    # Select best image using priority and normalize it
-                    if thumbnail:
-                        catalog_image = normalize_media_path(thumbnail)
-                    elif boxart:
-                        catalog_image = normalize_media_path(boxart)
-                    elif extra1:
-                        catalog_image = normalize_media_path(extra1)
-                    elif image:
-                        catalog_image = normalize_media_path(image)
-                    else:
-                        catalog_image = ''
-                    
-                    # Add pre-computed catalog_image to game_data
-                    game_data['catalog_image'] = catalog_image
-                    
-                    # Store in catalog: catalog[system][rompath] = game_data
-                    self.catalog[dir_name][rompath] = game_data
-                    games_list.append((rompath, game_data))
-                    game_count += 1
-                
-                # Pre-sort games by name (case-insensitive) and store sorted keys
-                games_list.sort(key=lambda x: x[1].get('name', '').lower())
-                self.catalog_sorted_keys[dir_name] = [rompath for rompath, _ in games_list]
-                
-                # Compute subdirectory counts (pre-compute during catalog build)
-                # First pass: collect all hidden folder paths
-                hidden_directories = set()
-                for folder in root.findall('.//folder'):
-                    if _is_folder_hidden(folder):
-                        folder_path = folder.findtext('path', '')
-                        if folder_path:
-                            # Normalize the path
-                            path = folder_path.lstrip('./')
-                            if path.startswith(f"{dir_name}/"):
-                                path = path[len(dir_name) + 1:]
-                            # Remove trailing slash if present
-                            path = path.rstrip('/')
-                            hidden_directories.add(path)
-                
-                # Second pass: count games by subdirectory, skipping games in hidden directories
-                subdirectory_counts = {}
-                for rompath, game_data in games_list:
-                    # Check if game is inside a hidden directory
-                    subdir = self._get_game_subdirectory(rompath, dir_name)
-                    if subdir:
-                        # Check if subdirectory matches any hidden directory or is nested inside one
-                        is_in_hidden_dir = False
-                        for hidden_dir in hidden_directories:
-                            if subdir == hidden_dir or subdir.startswith(hidden_dir + '/'):
-                                # Game is inside a hidden directory, skip it
-                                is_in_hidden_dir = True
-                                break
-                        if is_in_hidden_dir:
-                            continue
-                    
-                    key = subdir if subdir else '(root)'
-                    subdirectory_counts[key] = subdirectory_counts.get(key, 0) + 1
-                
-                # Store pre-computed subdirectory counts
-                self.subdirectory_counts[dir_name] = subdirectory_counts
-                
-                # Pre-compute system name for response structure
-                # Use fullname if available, otherwise fall back to get_system_name
-                base_system_id_temp = dir_name
-                if dir_name.endswith('_batocera'):
-                    base_system_id_temp = dir_name[:-9]
-                elif dir_name.endswith('_retrobat'):
-                    base_system_id_temp = dir_name[:-9]
-                elif dir_name.endswith('_lite'):
-                    base_system_id_temp = dir_name[:-5]
-                
-                fullname_temp = self.system_fullname.get(base_system_id_temp, None)
-                if not fullname_temp and len(self.system_fullname) > 0:
-                    fullname_temp = self.system_fullname.get(dir_name, None)
-                
-                system_name_temp = fullname_temp if fullname_temp else self.get_system_name(base_system_id_temp)
-                
-                # Pre-compute response structures for all games (ready to return, no dict building needed)
-                self.catalog_responses[dir_name] = {}
-                for rompath, game_data in games_list:
-                    # Create response-ready dictionary once during catalog build
-                    self.catalog_responses[dir_name][rompath] = {
-                        'id': rompath,
-                        'name': game_data.get('name', ''),
-                        'description': game_data.get('desc', ''),
-                        'image': game_data.get('catalog_image', ''),
-                        'system': dir_name,
-                        'systemName': system_name_temp
-                    }
+                # Use WIP game count for system list display
+                game_count = game_count_wip
                 
                 # Handle systems with _batocera, _retrobat, or _lite suffix
                 # Map to base system name in es_systems.cfg
@@ -564,17 +721,21 @@ class GameService:
                     logger.debug(f"Skipping system with library hardware category: {dir_name}")
                     continue
                 
+                # Get version if available
+                version = self.system_versions.get(dir_name)
+                
                 system = {
                     'id': dir_name,
                     'name': display_name,
                     'gameCount': game_count,
                     'hardware': hardware,
                     'manufacturer': manufacturer,
-                    'release': release
+                    'release': release,
+                    'version': version  # Add version to system info
                 }
                 
                 systems.append(system)
-                logger.debug(f"Loaded {dir_name}: {game_count} games")
+                logger.debug(f"Loaded {dir_name}: {game_count} games (WIP), version: {version or 'none'}")
             except Exception as e:
                 logger.error(f"Error parsing gamelist for {dir_name}: {e}")
                 continue
@@ -583,6 +744,7 @@ class GameService:
         self._gamelists_loaded = True
         self._catalog_timestamp = time.time()  # Set timestamp when catalog is loaded
         logger.info(f"Preloaded {len(systems)} systems with {sum(s['gameCount'] for s in systems)} total games (catalog timestamp: {self._catalog_timestamp})")
+        logger.info(f"WIP catalog: {len(self.catalog_wip)} systems, Releases catalog: {len(self.catalog_releases)} systems")
     
     def get_systems(self) -> List[Dict]:
         """Get list of all available systems (from memory cache)."""
@@ -599,11 +761,19 @@ class GameService:
                 return system
         return None
     
-    def get_games_by_system(self, system: str, page: int = 1, limit: int = 12, search: str = '') -> List[Dict]:
-        """Get games for a specific system with pagination and optional search (from memory cache)."""
-        logger.info(f"Getting games for system: {system}, page: {page}, limit: {limit}")
+    def get_games_by_system(self, system: str, page: int = 1, limit: int = 12, search: str = '', catalog_type: str = 'wip') -> List[Dict]:
+        """Get games for a specific system with pagination and optional search (from memory cache).
         
-        cache_key = f"games_{system}_{page}_{limit}_{search}"
+        Args:
+            system: System identifier
+            page: Page number (1-based)
+            limit: Number of games per page
+            search: Optional search query
+            catalog_type: 'wip' or 'releases' (default: 'wip')
+        """
+        logger.info(f"Getting games for system: {system}, page: {page}, limit: {limit}, catalog_type: {catalog_type}")
+        
+        cache_key = f"games_{system}_{page}_{limit}_{search}_{catalog_type}"
         if cache_key in self.cache:
             logger.info(f"Returning cached games for: {cache_key}")
             return self.cache[cache_key]
@@ -612,13 +782,25 @@ class GameService:
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
         
+        # Select appropriate catalog structures based on catalog_type
+        if catalog_type == 'wip':
+            catalog_responses = self.catalog_responses_wip
+            catalog_sorted_keys = self.catalog_sorted_keys_wip
+        elif catalog_type == 'releases':
+            catalog_responses = self.catalog_responses_releases
+            catalog_sorted_keys = self.catalog_sorted_keys_releases
+        else:
+            logger.error(f"Invalid catalog_type: {catalog_type}. Defaulting to 'wip'")
+            catalog_responses = self.catalog_responses_wip
+            catalog_sorted_keys = self.catalog_sorted_keys_wip
+        
         # Check if system exists in pre-computed responses (games list uses catalog_responses)
-        if system not in self.catalog_responses:
-            logger.warning(f"System not found in catalog_responses: {system}")
-            logger.warning(f"Available systems: {list(self.catalog_responses.keys())[:20]}")  # Log first 20 systems
+        if system not in catalog_responses:
+            logger.warning(f"System not found in catalog_responses ({catalog_type}): {system}")
+            logger.warning(f"Available systems: {list(catalog_responses.keys())[:20]}")  # Log first 20 systems
             # Try case-insensitive match
             system_lower = system.lower()
-            for loaded_system in self.catalog_responses.keys():
+            for loaded_system in catalog_responses.keys():
                 if loaded_system.lower() == system_lower:
                     logger.info(f"Found case-insensitive match: '{system}' -> '{loaded_system}'")
                     system = loaded_system
@@ -628,10 +810,10 @@ class GameService:
         
         try:
             # Get pre-sorted rompaths (already sorted by name, case-insensitive)
-            sorted_rompaths = self.catalog_sorted_keys.get(system, [])
+            sorted_rompaths = catalog_sorted_keys.get(system, [])
             
             # Get pre-computed response structures (zero dict building overhead)
-            system_responses = self.catalog_responses.get(system, {})
+            system_responses = catalog_responses.get(system, {})
             
             # Filter by search query if provided (optimized: use pre-computed responses)
             if search:
@@ -657,25 +839,30 @@ class GameService:
             logger.info(f"Returning {len(games)} games")
             self.cache[cache_key] = games
             
-            # Subdirectory counts are now pre-computed during catalog build
-            # No need to compute them on-demand
-            
             return games
         except Exception as e:
-            logger.error(f"Failed to parse gamelist.xml for system {system}: {e}")
+            logger.error(f"Failed to get games for system {system} ({catalog_type}): {e}")
             return []
     
-    def has_more_games(self, system: str, page: int, limit: int) -> bool:
+    def has_more_games(self, system: str, page: int, limit: int, catalog_type: str = 'wip') -> bool:
         """Check if there are more games available for a system (from memory cache)."""
         # Ensure catalog is loaded
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
         
-        if system not in self.catalog:
+        # Select appropriate catalog based on catalog_type
+        if catalog_type == 'wip':
+            catalog = self.catalog_wip
+        elif catalog_type == 'releases':
+            catalog = self.catalog_releases
+        else:
+            catalog = self.catalog_wip
+        
+        if system not in catalog:
             return False
         
         try:
-            system_catalog = self.catalog[system]
+            system_catalog = catalog[system]
             visible_games = len(system_catalog)  # Already filtered for hidden games
             
             return visible_games > (page * limit)
@@ -683,24 +870,25 @@ class GameService:
             logger.error(f"Error checking for more games: {e}")
             return False
     
-    def get_catalog_etag(self, system: str, search: str = '') -> str:
+    def get_catalog_etag(self, system: str, search: str = '', catalog_type: str = 'wip') -> str:
         """Generate ETag for a system's games list.
         
         ETag changes when catalog is reloaded/refreshed.
-        Includes search query to differentiate ETags for different searches.
+        Includes search query and catalog_type to differentiate ETags.
         
         Args:
             system: System ID
             search: Optional search query
+            catalog_type: 'wip' or 'releases' (default: 'wip')
             
         Returns:
-            ETag string (e.g., 'W/"c64-t1234567890-search"')
+            ETag string (e.g., 'W/"c64-t1234567890-search-wip"')
         """
         # Use weak ETag (W/) to allow byte-range requests
         # Use timestamp (converted to int) for catalog version
         catalog_version = int(self._catalog_timestamp) if self._catalog_timestamp else 0
         search_hash = hashlib.md5(search.encode()).hexdigest()[:8] if search else 'all'
-        return f'W/"{system}-t{catalog_version}-{search_hash}"'
+        return f'W/"{system}-t{catalog_version}-{search_hash}-{catalog_type}"'
     
     def get_systems_etag(self) -> str:
         """Generate ETag for systems list.
@@ -803,13 +991,17 @@ class GameService:
         """Get display name for a system ID."""
         return self.system_names.get(system_id.lower(), system_id.capitalize())
     
-    def get_game_by_id(self, game_id: str) -> Optional[Dict]:
+    def get_game_by_id(self, game_id: str, catalog_type: str = 'wip') -> Optional[Dict]:
         """Get a specific game by its ID (path from gamelist.xml).
         
         The game_id is the path as stored in gamelist.xml, which is relative to the system directory.
         Full path is always: GAMES_PATH/<systemid>/<rompath>
+        
+        Args:
+            game_id: Game path from gamelist.xml
+            catalog_type: 'wip' or 'releases' (default: 'wip')
         """
-        logger.info(f"Getting game by ID: {game_id}")
+        logger.info(f"Getting game by ID: {game_id}, catalog_type: {catalog_type}")
         
         # Clean up the game ID (remove leading ./ if present)
         clean_game_id = game_id.lstrip('./')
@@ -819,13 +1011,21 @@ class GameService:
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
         
+        # Select appropriate catalog based on catalog_type
+        if catalog_type == 'wip':
+            catalog = self.catalog_wip
+        elif catalog_type == 'releases':
+            catalog = self.catalog_releases
+        else:
+            catalog = self.catalog_wip
+        
         # Search all systems in catalog for a game with matching path
         # The path in gamelist.xml is relative to the system directory
         system_id = None
         found_game_data = None
         
-        for loaded_system_id in self.catalog.keys():
-            system_catalog = self.catalog[loaded_system_id]
+        for loaded_system_id in catalog.keys():
+            system_catalog = catalog[loaded_system_id]
             
             # Check if game exists in this system's catalog
             # Try both with and without ./ prefix
@@ -841,10 +1041,10 @@ class GameService:
                 break
         
         if not found_game_data:
-            logger.warning(f"Game not found in any system with path: {clean_game_id}")
+            logger.warning(f"Game not found in any system with path: {clean_game_id} (catalog_type: {catalog_type})")
             return None
         
-        if not system_id or system_id not in self.catalog:
+        if not system_id or system_id not in catalog:
             logger.warning(f"System ID not determined or catalog not found: {system_id}")
             return None
         
@@ -871,6 +1071,9 @@ class GameService:
                     game_data['image'] = game_data['thumbnail']
             elif 'image' not in game_data:
                 game_data['image'] = ''
+            
+            # Media paths are already normalized during catalog loading (including snapshot prefix for Releases)
+            # No additional normalization needed here - paths are ready to use as-is
             
             logger.info(f"Game data retrieved: {game_data.get('name', 'Unknown')} ({len(game_data)} fields)")
             return game_data
@@ -965,13 +1168,14 @@ class GameService:
             self._compute_subdirectory_counts(system_id)
         logger.info(f"Computed subdirectory counts for {len(self.subdirectory_counts)} systems")
     
-    def get_subdirectory_counts(self, system_id: str) -> dict:
+    def get_subdirectory_counts(self, system_id: str, catalog_type: str = 'wip') -> dict:
         """Get subdirectory counts for a system.
         
         Subdirectory counts are pre-computed during catalog build for optimal performance.
         
         Args:
             system_id: System ID
+            catalog_type: 'wip' or 'releases' (default: 'wip')
             
         Returns:
             Dictionary mapping subdirectory names to game counts
@@ -980,8 +1184,13 @@ class GameService:
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
         
-        # Subdirectory counts are now always pre-computed during catalog build
-        return self.subdirectory_counts.get(system_id, {})
+        # Select appropriate subdirectory counts based on catalog_type
+        if catalog_type == 'wip':
+            return self.subdirectory_counts_wip.get(system_id, {})
+        elif catalog_type == 'releases':
+            return self.subdirectory_counts_releases.get(system_id, {})
+        else:
+            return self.subdirectory_counts_wip.get(system_id, {})
     
     def _get_index_file_path(self) -> str:
         """Get the path to the search index pickle file."""
@@ -1106,31 +1315,38 @@ class GameService:
                 enabled_systems = {s['id'] for s in self.systems_list}
         return enabled_systems
     
-    def build_search_index(self) -> Dict:
+    def build_search_index(self, catalog_type: str = 'wip') -> Dict:
         """Build a global partitioned search index with normalized game names.
         
         Only indexes games from systems that are enabled in the database.
+        
+        Args:
+            catalog_type: 'wip' or 'releases' (default: 'wip')
         """
         # Check in-memory cache first
-        if self._index_built and 'search_index' in self.cache:
-            logger.info("Returning in-memory cached search index")
-            return self.cache['search_index']
+        cache_key = f'search_index_{catalog_type}'
+        index_built_flag = '_index_built_wip' if catalog_type == 'wip' else '_index_built_releases'
+        index_attr = 'search_index_wip' if catalog_type == 'wip' else 'search_index_releases'
         
-        # Try to load from pickle file
-        cached_index = self._load_index_from_cache()
-        if cached_index:
-            self.search_index = cached_index
-            self._index_built = True
-            self.cache['search_index'] = cached_index
-            return cached_index
+        if getattr(self, index_built_flag, False) and cache_key in self.cache:
+            logger.info(f"Returning in-memory cached search index ({catalog_type})")
+            return self.cache[cache_key]
         
         # Build new index
-        logger.info("Building global search index...")
+        logger.info(f"Building global search index ({catalog_type})...")
         index = {}
         
         # Ensure gamelists are loaded
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
+        
+        # Select appropriate catalog based on catalog_type
+        if catalog_type == 'wip':
+            catalog = self.catalog_wip
+        elif catalog_type == 'releases':
+            catalog = self.catalog_releases
+        else:
+            catalog = self.catalog_wip
         
         # Get enabled systems from database
         enabled_systems = self._get_enabled_systems_set()
@@ -1138,14 +1354,14 @@ class GameService:
         systems = self.get_systems()
         total_games = 0
         
-        # Helper function to normalize media path (defined once, outside loops)
+        # Helper function to get media path - paths are already normalized in catalog
         def get_media_path(media_type, game_data, system_id):
-            """Normalize media path by adding system prefix if needed."""
+            """Get media path - paths are already normalized with system prefix (and snapshot prefix for Releases)."""
+            # Paths in game_data are already normalized during catalog loading, so just return as-is
             path = game_data.get(media_type, '')
             if path:
+                # Just strip any leading ./ if present (shouldn't be, but just in case)
                 path = path.lstrip('./')
-                if not path.startswith(f"{system_id}/"):
-                    path = f"{system_id}/{path}"
             return path
         
         for system in systems:
@@ -1156,11 +1372,11 @@ class GameService:
                 logger.debug(f"Skipping disabled system in search index: {system_id}")
                 continue
             
-            if system_id not in self.catalog:
+            if system_id not in catalog:
                 continue
             
             try:
-                system_catalog = self.catalog[system_id]
+                system_catalog = catalog[system_id]
                 
                 for rompath, game_data in system_catalog.items():
                     game_name = game_data.get('name', '')
@@ -1209,32 +1425,38 @@ class GameService:
                 logger.error(f"Error building index for system {system_id}: {e}")
                 continue
         
-        self.search_index = index
-        self._index_built = True
-        self.cache['search_index'] = index
+        # Store index in appropriate attribute
+        setattr(self, index_attr, index)
+        setattr(self, index_built_flag, True)
+        self.cache[cache_key] = index
         
-        # Save to cache for next time
-        self._save_index_to_cache(index)
-        
-        logger.info(f"Search index built: {len(index)} letters, {total_games} games indexed")
+        logger.info(f"Search index built ({catalog_type}): {len(index)} letters, {total_games} games indexed")
         return index
     
     def refresh_catalog(self) -> dict:
         """Refresh catalog cache and search index by clearing cache and reloading everything."""
-        logger.info("Refreshing catalog cache and search index...")
+        logger.info("Refreshing catalog cache and search index (WIP and Releases)...")
         
         # Clear all caches
         self.cache = {}
-        self.catalog = {}  # Clear pre-processed catalog
-        self.catalog_sorted_keys = {}  # Clear pre-sorted keys
-        self.catalog_responses = {}  # Clear pre-computed response structures
+        self.catalog_wip = {}  # Clear WIP catalog
+        self.catalog_releases = {}  # Clear Releases catalog
+        self.catalog_sorted_keys_wip = {}  # Clear pre-sorted keys
+        self.catalog_sorted_keys_releases = {}
+        self.catalog_responses_wip = {}  # Clear pre-computed response structures
+        self.catalog_responses_releases = {}
         self.systems_list = []
-        self.search_index = {}
-        self.subdirectory_counts = {}  # Clear subdirectory counts
+        self.search_index_wip = {}  # Clear search indexes
+        self.search_index_releases = {}
+        self.subdirectory_counts_wip = {}  # Clear subdirectory counts
+        self.subdirectory_counts_releases = {}
+        self.system_versions = {}  # Clear version info
+        self.system_snapshot_paths = {}  # Clear snapshot path info
         
         # Reset flags
         self._gamelists_loaded = False
-        self._index_built = False
+        self._index_built_wip = False
+        self._index_built_releases = False
         self._hardware_loaded = False
         
         # Clear hardware mappings
@@ -1245,9 +1467,8 @@ class GameService:
         
         # Reload everything
         self.preload_all_gamelists()
-        self.build_search_index()
-        # Compute subdirectory counts for all systems
-        self._compute_all_subdirectory_counts()
+        self.build_search_index('wip')
+        self.build_search_index('releases')
         
         logger.info("Catalog cache and search index refreshed successfully")
         
@@ -1257,10 +1478,15 @@ class GameService:
             "total_games": sum(s['gameCount'] for s in self.systems_list)
         }
     
-    def search_indexed_games(self, query: str, limit: int = 50) -> List[Dict]:
+    def search_indexed_games(self, query: str, limit: int = 50, catalog_type: str = 'wip') -> List[Dict]:
         """Search games using the partitioned index.
         
         Only returns games from systems that are enabled in the database.
+        
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return
+            catalog_type: 'wip' or 'releases' (default: 'wip')
         """
         if not query:
             return []
@@ -1271,13 +1497,19 @@ class GameService:
         if not normalized_query:
             return []
         
+        # Select appropriate index and build if needed
+        index_built_flag = '_index_built_wip' if catalog_type == 'wip' else '_index_built_releases'
+        index_attr = 'search_index_wip' if catalog_type == 'wip' else 'search_index_releases'
+        
         # Build index if not already built
-        if not self._index_built:
-            self.build_search_index()
+        if not getattr(self, index_built_flag, False):
+            self.build_search_index(catalog_type)
         
         # Ensure search_index exists
-        if not hasattr(self, 'search_index') or not self.search_index:
-            self.build_search_index()
+        search_index = getattr(self, index_attr, {})
+        if not search_index:
+            self.build_search_index(catalog_type)
+            search_index = getattr(self, index_attr, {})
         
         # Get enabled systems from database
         enabled_systems = self._get_enabled_systems_set()
@@ -1286,7 +1518,7 @@ class GameService:
         query_lower = normalized_query.lower()
         
         # Search in all partitions
-        for first_letter, games_dict in self.search_index.items():
+        for first_letter, games_dict in search_index.items():
             for normalized_name, games in games_dict.items():
                 normalized_name_lower = normalized_name.lower()
                 

@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
+import { useCatalog } from '../../context/CatalogContext'
 import { getMediaUrl } from '../../utils/constants'
-import client from '../../api/client'
+import { quickSearch } from '../../api/catalog'
 import './HeaderSearch.css'
 
 const HeaderSearch = () => {
   const { isAuthenticated } = useAuth()
+  const { catalogType } = useCatalog()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
@@ -44,18 +46,13 @@ const HeaderSearch = () => {
     }, 300) // Debounce search
 
     return () => clearTimeout(timeoutId)
-  }, [query])
+  }, [query, catalogType])
 
   const performSearch = async (searchQuery) => {
     try {
       setLoading(true)
-      const response = await client.get('/api/catalog/search/quick', {
-        params: {
-          q: searchQuery,
-          limit: 10
-        }
-      })
-      setResults(response.data.results || [])
+      const response = await quickSearch(searchQuery, 10, catalogType)
+      setResults(response.results || [])
       setShowResults(true)
       setSelectedIndex(-1)
     } catch (error) {

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Outlet, Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import HeaderSearch from './HeaderSearch'
+import CatalogTypeSelector from './CatalogTypeSelector'
 import { refreshCatalog } from '../../api/catalog'
 import './Layout.css'
 
@@ -55,7 +56,12 @@ const Layout = () => {
           <Link to="/" className="logo">
             <img src="/logo.png" alt="Team Pixel Nostalgia" className="logo-image" />
           </Link>
-          {isAuthenticated && <HeaderSearch />}
+          {isAuthenticated && (
+            <>
+              <HeaderSearch />
+              <CatalogTypeSelector />
+            </>
+          )}
           <nav className="nav">
             {isAuthenticated ? (
               <>

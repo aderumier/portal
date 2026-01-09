@@ -1,6 +1,7 @@
 import React from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
+import { CatalogProvider } from './context/CatalogContext'
 import Layout from './components/Layout/Layout'
 import Home from './pages/Home'
 import Systems from './pages/Systems'
@@ -21,7 +22,8 @@ import SystemsConfiguration from './pages/SystemsConfiguration'
 function App() {
   return (
     <AuthProvider>
-      <Router>
+      <CatalogProvider>
+        <Router>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/unauthorized" element={<Unauthorized />} />
@@ -41,6 +43,7 @@ function App() {
           </Route>
         </Routes>
       </Router>
+      </CatalogProvider>
     </AuthProvider>
   )
 }

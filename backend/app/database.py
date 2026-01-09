@@ -79,6 +79,7 @@ class DownloadQueue(Base):
     last_progress_at = Column(DateTime, nullable=True)  # When progress was last reported
     assigned_to_service = Column(String, nullable=True)  # Service instance ID handling this download
     token_id = Column(Integer, nullable=False, index=True)  # Associated API token ID (required)
+    catalog_version = Column(String, nullable=True, index=True)  # Version string (e.g., "v2-RGS_bbc") for Releases catalog, None for WIP
     
     __table_args__ = (
         {'sqlite_autoincrement': True},
@@ -100,6 +101,7 @@ class DownloadArchive(Base):
     download_status = Column(String, nullable=False)  # 'completed', 'error', 'cancelled', 'stuck', etc.
     bytes_transferred = Column(BigInteger, default=0)  # Bytes transferred before removal
     file_size = Column(BigInteger, nullable=True)  # Total file size if known
+    catalog_version = Column(String, nullable=True)  # Version string (e.g., "v2-RGS_bbc") for Releases catalog, None for WIP
     
     __table_args__ = (
         {'sqlite_autoincrement': True},

@@ -4,17 +4,20 @@ import GameCard from './GameCard'
 import TokenSelectorDropdown from '../TokenSelector/TokenSelectorDropdown'
 import { useDownloadWithToken } from '../../hooks/useDownloadWithToken'
 import { useAuth } from '../../context/AuthContext'
+import { useCatalog } from '../../context/CatalogContext'
 import { getMediaUrl } from '../../utils/constants'
-import client from '../../api/client'
+import { getGames, getSystems } from '../../api/catalog'
 import './SystemGames.css'
 
-const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '' }) => {
+const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', systemVersion: propSystemVersion }) => {
+  const { catalogType } = useCatalog()
   const [allGames, setAllGames] = useState([]) // All games loaded from API
   const [displayedGamesCount, setDisplayedGamesCount] = useState(24) // Number of games to display (frontend pagination)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   // systemName is derived from games response (all games have the same systemName)
   const [systemName, setSystemName] = useState(propSystemName || '')
+  const [systemVersion, setSystemVersion] = useState(propSystemVersion || null)
   const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
   const [selectedSubdirectory, setSelectedSubdirectory] = useState(null) // null = all, or specific subdirectory
   const [subdirectoryCounts, setSubdirectoryCounts] = useState({}) // Pre-computed counts from backend
@@ -86,8 +89,8 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '' })
 
   // Load all games for the system in one call
   const loadAllGames = useCallback(async () => {
-    // Create a unique key for this load request
-    const loadKey = `${systemId}_${searchQuery || 'no-search'}`
+    // Create a unique key for this load request (include catalogType)
+    const loadKey = `${systemId}_${searchQuery || 'no-search'}_${catalogType}`
     
     // Prevent duplicate calls (especially in React StrictMode)
     if (isLoadingRef.current && lastLoadKeyRef.current === loadKey) {
@@ -102,26 +105,30 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '' })
       setDisplayedGamesCount(24) // Reset displayed count
       
       // Fetch all games in one call with a very high limit
-      const params = {
-        page: 1,
-        limit: 10000, // Request all games at once
-      }
-      
-      if (searchQuery) {
-        params.search = searchQuery
-      }
-      
-      const response = await client.get(`/api/catalog/games/${systemId}`, { params })
-      const games = response.data.games || []
+      const response = await getGames(systemId, 1, 10000, searchQuery || '', catalogType)
+      const games = response.games || []
       
       // Get systemName from the first game (all games have the same systemName)
       if (games.length > 0 && games[0].systemName) {
         setSystemName(games[0].systemName)
       }
       
+      // Fetch system info to get version if not provided as prop
+      if (!propSystemVersion) {
+        try {
+          const systemsResponse = await getSystems(catalogType)
+          const systemInfo = systemsResponse.systems?.find(s => s.id === systemId)
+          if (systemInfo?.version) {
+            setSystemVersion(systemInfo.version)
+          }
+        } catch (err) {
+          console.error('Error fetching system version:', err)
+        }
+      }
+      
       // Update subdirectory counts from backend
-      if (response.data.subdirectory_counts) {
-        setSubdirectoryCounts(response.data.subdirectory_counts)
+      if (response.subdirectory_counts) {
+        setSubdirectoryCounts(response.subdirectory_counts)
       }
       
       setAllGames(games)
@@ -133,7 +140,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '' })
       setLoading(false)
       isLoadingRef.current = false
     }
-  }, [systemId, searchQuery])
+  }, [systemId, searchQuery, catalogType, propSystemVersion])
 
   // Scroll to the viewed game after games are loaded and filtered
   const isRestoringScrollRef = useRef(false)
@@ -385,8 +392,11 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '' })
   return (
     <div className="system-games">
       <div className="system-games-header">
-        <div>
+        <div className="system-games-title-section">
           <h1>{systemName}</h1>
+          {catalogType === 'releases' && systemVersion && (
+            <span className="system-version">version {systemVersion}</span>
+          )}
           {searchQuery && <p>Search results for: "{searchQuery}"</p>}
         </div>
         <div className="view-toggle">

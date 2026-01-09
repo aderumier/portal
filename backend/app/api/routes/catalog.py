@@ -28,13 +28,15 @@ def get_game_service() -> GameService:
 @router.get("/systems")
 async def get_systems(
     request: Request,
+    catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
     current_user: dict = Depends(require_guild_member),
     db: Session = Depends(get_db),
     game_service: GameService = Depends(get_game_service)
 ):
     """Get list of all enabled systems from database."""
-    # Generate ETag for systems list
-    etag = game_service.get_systems_etag()
+    # Generate ETag for systems list (include catalog_type to avoid cache conflicts)
+    base_etag = game_service.get_systems_etag()
+    etag = f'{base_etag}-{catalog_type}'
     
     # Check if client has cached version (If-None-Match header)
     if_none_match = request.headers.get("if-none-match", "")
@@ -49,13 +51,26 @@ async def get_systems(
     if not game_service._gamelists_loaded:
         game_service.preload_all_gamelists()
     
+    # Select appropriate catalog based on catalog_type
+    if catalog_type == 'wip':
+        catalog = game_service.catalog_wip
+    else:
+        catalog = game_service.catalog_releases
+    
     # Build systems list with game counts
     systems = []
     for db_system in db_systems:
-        # Count games for this system (already filtered in catalog)
+        # Get version if available
+        version = game_service.system_versions.get(db_system.id)
+        
+        # If catalog_type is 'releases', only include systems that have a releases catalog (version exists)
+        if catalog_type == 'releases' and not version:
+            continue
+        
+        # Count games for this system using the appropriate catalog
         game_count = 0
-        if db_system.id in game_service.catalog:
-            game_count = len(game_service.catalog[db_system.id])
+        if db_system.id in catalog:
+            game_count = len(catalog[db_system.id])
         
         # Use fullname from database, fallback to name
         display_name = db_system.fullname or db_system.name
@@ -66,7 +81,8 @@ async def get_systems(
             'gameCount': game_count,
             'hardware': db_system.hardware or 'unknown',
             'manufacturer': db_system.manufacturer or 'Unknown',
-            'release': db_system.release or 'Unknown'
+            'release': db_system.release or 'Unknown',
+            'version': version  # Add version to response
         })
     
     response_data = {"systems": systems}
@@ -84,6 +100,7 @@ async def get_games(
     page: int = Query(1, ge=1),
     limit: int = Query(12, ge=1, le=10000),
     search: Optional[str] = Query(None),
+    catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
     current_user: dict = Depends(require_guild_member),
     game_service: GameService = Depends(get_game_service),
     db: Session = Depends(get_db)
@@ -94,7 +111,7 @@ async def get_games(
     
     if use_etag:
         # Generate ETag for this request
-        etag = game_service.get_catalog_etag(system, '')
+        etag = game_service.get_catalog_etag(system, '', catalog_type)
         
         # Check if client has cached version (If-None-Match header)
         if_none_match = request.headers.get("if-none-match", "")
@@ -104,11 +121,11 @@ async def get_games(
     
     # If limit is very large, get all games in one call
     if limit >= 10000:
-        games = game_service.get_games_by_system(system, 1, 100000, search or '')
+        games = game_service.get_games_by_system(system, 1, 100000, search or '', catalog_type)
         has_more = False
     else:
-        games = game_service.get_games_by_system(system, page, limit, search or '')
-        has_more = game_service.has_more_games(system, page, limit)
+        games = game_service.get_games_by_system(system, page, limit, search or '', catalog_type)
+        has_more = game_service.has_more_games(system, page, limit, catalog_type)
     
     # Get system download_enabled status from database and add to each game
     db_system = db.query(System).filter(System.id == system).first()
@@ -118,7 +135,7 @@ async def get_games(
     [game.update({'download_enabled': download_enabled}) for game in games]
     
     # Get subdirectory counts for this system
-    subdirectory_counts = game_service.get_subdirectory_counts(system)
+    subdirectory_counts = game_service.get_subdirectory_counts(system, catalog_type)
     
     response_data = {
         "games": games,
@@ -144,6 +161,7 @@ async def search_games(
     q: str = Query(..., min_length=1),
     page: int = Query(1, ge=1),
     limit: int = Query(12, ge=1, le=100),
+    catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
     current_user: dict = Depends(require_guild_member),
     game_service: GameService = Depends(get_game_service),
     db: Session = Depends(get_db)
@@ -152,7 +170,7 @@ async def search_games(
     # Use indexed search - get enough results for pagination
     # Calculate how many we need: current page + 1 extra page to check if there's more
     max_results_needed = page * limit + limit
-    all_results = game_service.search_indexed_games(q, limit=max_results_needed)
+    all_results = game_service.search_indexed_games(q, limit=max_results_needed, catalog_type=catalog_type)
     
     # Get download_enabled status for all systems in results
     systems_in_results = {game['system'] for game in all_results}
@@ -179,12 +197,13 @@ async def search_games(
 async def quick_search(
     q: str = Query(..., min_length=1),
     limit: int = Query(20, ge=1, le=50),
+    catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
     current_user: dict = Depends(require_guild_member),
     game_service: GameService = Depends(get_game_service),
     db: Session = Depends(get_db)
 ):
     """Quick search using indexed games (for header search)."""
-    games = game_service.search_indexed_games(q, limit)
+    games = game_service.search_indexed_games(q, limit, catalog_type=catalog_type)
     
     # Get download_enabled status for all systems in results
     systems_in_results = {game['system'] for game in games}
@@ -206,6 +225,7 @@ async def quick_search(
 async def get_game_details(
     system: str,
     game_id: str,
+    catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
     current_user: dict = Depends(require_guild_member),
     game_service: GameService = Depends(get_game_service),
     db: Session = Depends(get_db)
@@ -228,10 +248,10 @@ async def get_game_details(
     # Remove leading ./ if present
     decoded_game_id = decoded_game_id.lstrip('./')
     
-    logger.info(f"Getting game details - system: {system}, game_id: {game_id}, decoded: {decoded_game_id}")
+    logger.info(f"Getting game details - system: {system}, game_id: {game_id}, decoded: {decoded_game_id}, catalog_type: {catalog_type}")
     
     # get_game_by_id expects just the rompath (relative to system directory)
-    game = game_service.get_game_by_id(decoded_game_id)
+    game = game_service.get_game_by_id(decoded_game_id, catalog_type)
     
     if not game:
         from fastapi import HTTPException, status
@@ -241,53 +261,8 @@ async def get_game_details(
             detail="Game not found"
         )
     
-    # Normalize media paths for frontend display (add system prefix)
-    # The frontend expects paths like "bbcmicro/media/thumbnails/game.png"
-    # but get_game_by_id returns original paths like "./media/thumbnails/game.png"
-    # Use the system from game data to ensure we use the correct system ID
-    game_system = game.get('system', system)
-    if not game_system:
-        logger.warning(f"No system found in game data or route parameter for game {decoded_game_id}")
-        game_system = system
-    
-    def normalize_media_path_for_frontend(path_value, system_id):
-        """Normalize media path to include system prefix for frontend display."""
-        if not path_value:
-            return ''
-        # Remove leading ./
-        path = path_value.lstrip('./')
-        # Add system prefix if not already present
-        if path and not path.startswith(f"{system_id}/"):
-            path = f"{system_id}/{path}"
-        logger.debug(f"Normalized media path: '{path_value}' -> '{path}' (system: {system_id})")
-        return path
-    
-    def is_media_path(value):
-        """Check if a value looks like a media file path by checking for common media extensions."""
-        if not value or not isinstance(value, str):
-            return False
-        # Common media file extensions
-        media_extensions = [
-            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',  # Images
-            '.mp4', '.avi', '.mkv', '.mov', '.webm', '.flv',  # Videos
-            '.pdf', '.svg', '.ico'  # Other media
-        ]
-        # Check if the value ends with a media extension (case-insensitive)
-        value_lower = value.lower()
-        return any(value_lower.endswith(ext) for ext in media_extensions)
-    
-    # Normalize media paths for frontend - detect by file extension instead of field name
-    for field_name, field_value in game.items():
-        # Skip system metadata fields
-        if field_name in ['id', 'system', 'systemName', 'download_enabled']:
-            continue
-        # Check if this field value looks like a media path
-        if field_value and is_media_path(field_value):
-            original_path = field_value
-            normalized_path = normalize_media_path_for_frontend(original_path, game_system)
-            game[field_name] = normalized_path
-            if original_path != normalized_path:
-                logger.debug(f"Normalized {field_name}: '{original_path}' -> '{normalized_path}'")
+    # Media paths are already normalized in get_game_by_id (including snapshot prefix for Releases)
+    # No additional normalization needed here
     
     # Get system download_enabled status from database
     from app.database import System
@@ -309,4 +284,23 @@ async def refresh_catalog(
     logger.info(f"Admin {current_user.get('username')} requested catalog refresh")
     result = game_service.refresh_catalog()
     return result
+
+@router.get("/preference")
+async def get_catalog_preference(
+    request: Request,
+    current_user: dict = Depends(require_guild_member)
+):
+    """Get user's catalog type preference from session."""
+    catalog_type = request.session.get('catalog_type', 'releases')
+    return {"catalog_type": catalog_type}
+
+@router.put("/preference")
+async def set_catalog_preference(
+    request: Request,
+    catalog_type: str = Query(..., regex='^(wip|releases)$'),
+    current_user: dict = Depends(require_guild_member)
+):
+    """Set user's catalog type preference in session."""
+    request.session['catalog_type'] = catalog_type
+    return {"catalog_type": catalog_type, "message": "Preference updated"}
 

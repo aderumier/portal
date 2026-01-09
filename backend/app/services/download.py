@@ -76,32 +76,58 @@ class DownloadService:
             path = f"{system_id}/{path}"
         return path
     
-    def add_to_queue(self, user_id: str, game_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None) -> bool:
+    def add_to_queue(self, user_id: str, game_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None, catalog_version: Optional[str] = None) -> bool:
         """Add a game to the user's FIFO queue."""
         try:
-            logger.info(f"Adding to user queue - Game ID: {game_id}, User ID: {user_id}")
+            logger.info(f"Adding to user queue - Game ID: {game_id}, User ID: {user_id}, catalog_version: {catalog_version}")
             
-            # Clean up the game path by removing ./ prefix
-            game_id = game_id.lstrip('./')
+            # Clean up the game path by removing ./ prefix only if it's actually "./"
+            # But preserve leading dot in snapshot paths like ".zfs/snapshot/..."
+            if game_id.startswith('./'):
+                game_id = game_id[2:]  # Remove './' prefix only
             logger.info(f"Cleaned game ID: {game_id}")
             
             # Determine queue type based on user role (will be used when promoted to global queue)
             queue_type = 'fast' if user_has_fastdownload else 'slow'
             logger.info(f"Queue type determined: {queue_type}")
             
+            # Determine catalog_type from catalog_version (if version exists, it's Releases, otherwise WIP)
+            catalog_type = 'releases' if catalog_version else 'wip'
+            logger.info(f"Catalog type: {catalog_type}, version: {catalog_version}")
+            
             # Check if game exists
-            game = self.game_service.get_game_by_id(game_id)
+            # Remove snapshot path prefix to get original game_id for lookup if needed
+            lookup_game_id = game_id
+            if catalog_type == 'releases' and catalog_version:
+                # Extract original game_id after snapshot path
+                # game_id format: ".zfs/snapshot/v10.5/game.zip"
+                import re
+                
+                # Pattern to match: .zfs/snapshot/v2-RGS_bbc/(.*) where catalog_version is "v2-RGS_bbc"
+                # Escape the version string in case it has special regex characters
+                escaped_version = re.escape(catalog_version)
+                pattern = re.compile(r'\.zfs/snapshot/' + escaped_version + r'/(.*)')
+                match = pattern.match(game_id)
+                
+                if match:
+                    lookup_game_id = match.group(1)
+                    logger.info(f"Extracted original game_id: '{lookup_game_id}' from: '{game_id}'")
+                else:
+                    logger.warning(f"Could not extract original game_id from: {game_id} (catalog_version: {catalog_version})")
+            
+            game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
             if not game:
-                logger.warning(f"Game not found: {game_id}")
+                logger.warning(f"Game not found: {lookup_game_id} (catalog_type: {catalog_type}, catalog_version: {catalog_version}, original game_id: {game_id})")
                 return False
             
             logger.info(f"Game found, adding to user queue: {game['name']}")
             
-            # Check if already in queue (any status)
+            # Check if already in queue (any status) - also check catalog_version to avoid duplicates
             existing = self.db.query(DownloadQueue).filter(
                 and_(
                     DownloadQueue.user_id == user_id,
                     DownloadQueue.game_id == game_id,
+                    DownloadQueue.catalog_version == catalog_version,
                     DownloadQueue.status.in_(['user_queue', 'pending', 'downloading'])
                 )
             ).first()
@@ -141,7 +167,8 @@ class DownloadService:
                 status='user_queue',  # User queue status
                 queue_type=queue_type,  # Store queue type for when promoted
                 file_size=file_size,
-                token_id=token_id  # Associate with token if provided
+                token_id=token_id,  # Associate with token if provided
+                catalog_version=catalog_version  # Store catalog version (e.g., "v2-RGS_bbc") for Releases, None for WIP
             )
             
             self.db.add(queue_item)
@@ -172,7 +199,22 @@ class DownloadService:
             # Enrich queue items with game information
             enriched_items = []
             for item in queue_items:
-                game = self.game_service.get_game_by_id(item.game_id)
+                # Get catalog_version from queue item and derive catalog_type
+                catalog_version = item.catalog_version
+                catalog_type = 'releases' if catalog_version else 'wip'
+                # Remove snapshot path prefix to get original game_id for lookup
+                lookup_game_id = item.game_id
+                if catalog_type == 'releases' and catalog_version:
+                    # Extract original game_id after snapshot path
+                    # game_id format: ".zfs/snapshot/v2-RGS_bbc/game.rom"
+                    import re
+                    escaped_version = re.escape(catalog_version)
+                    pattern = re.compile(r'\.zfs/snapshot/' + escaped_version + r'/(.*)')
+                    match = pattern.match(item.game_id)
+                    if match:
+                        lookup_game_id = match.group(1)
+                
+                game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
                 if game:
                     # Calculate progress for active downloads
                     progress_percent = 0
@@ -204,7 +246,8 @@ class DownloadService:
                         'file_size': item.file_size,
                         'bandwidth_used': item.bandwidth_used,
                         'token_name': token_name,
-                        'download_id': item.id  # Include download_id for pause/resume actions
+                        'download_id': item.id,  # Include download_id for pause/resume actions
+                        'catalog_version': catalog_version  # Include catalog version (e.g., "v2-RGS_bbc")
                     }
                     enriched_items.append(enriched_item)
             
@@ -239,8 +282,33 @@ class DownloadService:
             slow_queue = []
             
             for item in all_downloads:
-                game = self.game_service.get_game_by_id(item.game_id)
-                if not game:
+                try:
+                    # Get catalog_version from queue item and derive catalog_type
+                    catalog_version = item.catalog_version
+                    catalog_type = 'releases' if catalog_version else 'wip'
+                    
+                    # Remove snapshot path prefix to get original game_id for lookup
+                    lookup_game_id = item.game_id
+                    if catalog_type == 'releases' and catalog_version:
+                        # Extract original game_id after snapshot path
+                        # game_id format: ".zfs/snapshot/v2-RGS_bbc/game.rom"
+                        import re
+                        escaped_version = re.escape(catalog_version)
+                        pattern = re.compile(r'\.zfs/snapshot/' + escaped_version + r'/(.*)')
+                        match = pattern.match(item.game_id)
+                        if match:
+                            lookup_game_id = match.group(1)
+                            logger.debug(f"Extracted lookup_game_id: {lookup_game_id} from game_id: {item.game_id}")
+                        else:
+                            logger.warning(f"Could not extract lookup_game_id from: {item.game_id} (catalog_version: {catalog_version})")
+                    
+                    logger.debug(f"Looking up game: lookup_game_id={lookup_game_id}, catalog_type={catalog_type}, catalog_version={catalog_version}")
+                    game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+                    if not game:
+                        logger.warning(f"Game not found: lookup_game_id={lookup_game_id}, catalog_type={catalog_type}, catalog_version={catalog_version}, original game_id={item.game_id}")
+                        continue
+                except Exception as e:
+                    logger.error(f"Error processing download item {item.id}: {e}", exc_info=True)
                     continue
                 
                 # Calculate progress percentage
@@ -266,7 +334,8 @@ class DownloadService:
                     'progress_percent': progress_percent,
                     'started_at': item.started_at.isoformat() if item.started_at else None,
                     'created_at': item.created_at.isoformat() if item.created_at else None,
-                    'assigned_to_service': item.assigned_to_service
+                    'assigned_to_service': item.assigned_to_service,
+                    'catalog_version': catalog_version  # Include catalog version (e.g., "v2-RGS_bbc")
                 }
                 
                 if item.queue_type == 'fast':
@@ -318,8 +387,9 @@ class DownloadService:
         try:
             logger.info(f"Removing from queue - Game ID: {game_id}, User ID: {user_id}")
             
-            # Clean up the game ID
-            game_id = game_id.lstrip('./')
+            # Clean up the game ID - only remove './' prefix, preserve paths starting with '.zfs'
+            if game_id.startswith('./'):
+                game_id = game_id[2:]  # Remove './' prefix only
             logger.info(f"Cleaned game ID: {game_id}")
             
             queue_item = self.db.query(DownloadQueue).filter(
@@ -433,7 +503,20 @@ class DownloadService:
         """Enrich queue items with game metadata."""
         enriched = []
         for item in queue_items:
-            game = self.game_service.get_game_by_id(item.get('game_id', ''))
+            catalog_type = item.get('catalog_type', 'releases')
+            game_id = item.get('game_id', '')
+            # Remove snapshot path prefix if needed to get original game_id for lookup
+            lookup_game_id = game_id
+            if catalog_type == 'releases' and '.zfs/snapshot' in game_id:
+                parts = game_id.split('.zfs/snapshot/', 1)
+                if len(parts) > 1:
+                    after_snapshot = parts[1]
+                    if '/' in after_snapshot:
+                        lookup_game_id = '/'.join(after_snapshot.split('/')[1:])
+                    else:
+                        lookup_game_id = after_snapshot
+            
+            game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
             if game:
                 enriched_item = item.copy()
                 enriched_item['game_name'] = game['name']
@@ -560,9 +643,23 @@ class DownloadService:
                 self.db.commit()
                 
                 # Get game info
-                game = self.game_service.get_game_by_id(resumable_download.game_id)
+                # Get catalog_version from download queue item and derive catalog_type
+                catalog_version = resumable_download.catalog_version
+                catalog_type = 'releases' if catalog_version else 'wip'
+                # Remove snapshot path prefix if needed to get original game_id for lookup
+                lookup_game_id = resumable_download.game_id
+                if catalog_type == 'releases' and '.zfs/snapshot' in resumable_download.game_id:
+                    parts = resumable_download.game_id.split('.zfs/snapshot/', 1)
+                    if len(parts) > 1:
+                        after_snapshot = parts[1]
+                        if '/' in after_snapshot:
+                            lookup_game_id = '/'.join(after_snapshot.split('/')[1:])
+                        else:
+                            lookup_game_id = after_snapshot
+                
+                game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
                 if not game:
-                    logger.warning(f"Game not found: {resumable_download.game_id}")
+                    logger.warning(f"Game not found: {lookup_game_id} (catalog_type: {catalog_type}, version: {catalog_version})")
                     # Archive and remove from queue since game doesn't exist
                     self.archive_download(resumable_download.id, 'error')
                     self.db.delete(resumable_download)
@@ -705,10 +802,24 @@ class DownloadService:
                 logger.warning(f"User {pending_download.user_id} already has active download, skipping")
                 return None
             
+            # Get catalog_version from download queue item and derive catalog_type
+            catalog_version = pending_download.catalog_version
+            catalog_type = 'releases' if catalog_version else 'wip'
+            # Remove snapshot path prefix if needed to get original game_id for lookup
+            lookup_game_id = pending_download.game_id
+            if catalog_type == 'releases' and '.zfs/snapshot' in pending_download.game_id:
+                parts = pending_download.game_id.split('.zfs/snapshot/', 1)
+                if len(parts) > 1:
+                    after_snapshot = parts[1]
+                    if '/' in after_snapshot:
+                        lookup_game_id = '/'.join(after_snapshot.split('/')[1:])
+                    else:
+                        lookup_game_id = after_snapshot
+            
             # Get game info
-            game = self.game_service.get_game_by_id(pending_download.game_id)
+            game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
             if not game:
-                logger.warning(f"Game not found: {pending_download.game_id}")
+                logger.warning(f"Game not found: {lookup_game_id} (catalog_type: {catalog_type}, version: {catalog_version})")
                 # Archive and remove from queue since game doesn't exist
                 self.archive_download(pending_download.id, 'error')
                 self.db.delete(pending_download)
@@ -889,9 +1000,23 @@ class DownloadService:
                 return False
             
             # Get game information
-            game = self.game_service.get_game_by_id(download.game_id)
+            # Get catalog_version from download queue item and derive catalog_type
+            catalog_version = download.catalog_version
+            catalog_type = 'releases' if catalog_version else 'wip'
+            # Remove snapshot path prefix if needed to get original game_id for lookup
+            lookup_game_id = download.game_id
+            if catalog_type == 'releases' and '.zfs/snapshot' in download.game_id:
+                parts = download.game_id.split('.zfs/snapshot/', 1)
+                if len(parts) > 1:
+                    after_snapshot = parts[1]
+                    if '/' in after_snapshot:
+                        lookup_game_id = '/'.join(after_snapshot.split('/')[1:])
+                    else:
+                        lookup_game_id = after_snapshot
+            
+            game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
             if not game:
-                logger.warning(f"Game not found for download {download_id}, using game_id as game_name")
+                logger.warning(f"Game not found for download {download_id} (game_id: {lookup_game_id}, catalog_type: {catalog_type}, version: {catalog_version}), using game_id as game_name")
                 game_name = download.game_id
                 system = None
             else:
@@ -915,7 +1040,8 @@ class DownloadService:
                 rompath=download.game_id,
                 download_status=status,
                 bytes_transferred=download.bytes_transferred or 0,
-                file_size=download.file_size
+                file_size=download.file_size,
+                catalog_version=download.catalog_version  # Store catalog version (e.g., "v2-RGS_bbc") for Releases, None for WIP
             )
             
             self.db.add(archive_entry)
@@ -940,8 +1066,23 @@ class DownloadService:
             
             history = []
             for item in archive_items:
+                # Get catalog_version from archive item and derive catalog_type
+                catalog_version = item.catalog_version
+                catalog_type = 'releases' if catalog_version else 'wip'
+                # Remove snapshot path prefix to get original game_id for lookup
+                lookup_game_id = item.rompath
+                if catalog_type == 'releases' and catalog_version:
+                    # Extract original game_id after snapshot path
+                    # rompath format: ".zfs/snapshot/v2-RGS_bbc/game.rom"
+                    import re
+                    escaped_version = re.escape(catalog_version)
+                    pattern = re.compile(r'\.zfs/snapshot/' + escaped_version + r'/(.*)')
+                    match = pattern.match(item.rompath)
+                    if match:
+                        lookup_game_id = match.group(1)
+                
                 # Get game information if available
-                game = self.game_service.get_game_by_id(item.rompath) if item.rompath else None
+                game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type) if lookup_game_id else None
                 
                 history_item = {
                     'id': item.id,
@@ -954,7 +1095,8 @@ class DownloadService:
                     'bytes_transferred': item.bytes_transferred or 0,
                     'file_size': item.file_size,
                     'timestamp': item.timestamp.isoformat() if item.timestamp else None,
-                    'image': ''
+                    'image': '',
+                    'catalog_version': catalog_version  # Include catalog version (e.g., "v2-RGS_bbc")
                 }
                 
                 # Add game image if available

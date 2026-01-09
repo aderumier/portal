@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { useCatalog } from '../../context/CatalogContext'
 import './SystemsList.css'
 
 const SystemsList = ({ systems }) => {
+  const { catalogType } = useCatalog()
   const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
   const [selectedHardware, setSelectedHardware] = useState(null) // null = all, or specific hardware type
 
@@ -94,6 +96,14 @@ const SystemsList = ({ systems }) => {
     return `/systems_logos/${systemId}.webp`
   }
 
+  // Extract version number from version string (e.g., "v10.5" -> "10.5")
+  const extractVersionNumber = (version) => {
+    if (!version) return null
+    // Match digits and dots after 'v' prefix (e.g., "v10.5" -> "10.5")
+    const match = version.match(/v?(\d+(?:\.\d+)?)/)
+    return match ? match[1] : null
+  }
+
   return (
     <div className="systems-list">
       <div className="systems-header">
@@ -172,6 +182,9 @@ const SystemsList = ({ systems }) => {
                       </div>
                       <div className="system-card-content">
                         <h2>{system.name}</h2>
+                        {catalogType === 'releases' && system.version && extractVersionNumber(system.version) && (
+                          <p className="system-version-text">version {extractVersionNumber(system.version)}</p>
+                        )}
                         <p>{system.gameCount} games</p>
                       </div>
                     </Link>
@@ -216,6 +229,9 @@ const SystemsList = ({ systems }) => {
                             <Link to={`/system/${system.id}`} className="system-link">
                               {system.name}
                             </Link>
+                            {catalogType === 'releases' && system.version && extractVersionNumber(system.version) && (
+                              <div className="system-version-text">version {extractVersionNumber(system.version)}</div>
+                            )}
                           </td>
                           <td className="system-games-cell">
                             <span className="games-count">{system.gameCount} games</span>

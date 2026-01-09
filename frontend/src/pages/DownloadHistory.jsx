@@ -85,6 +85,7 @@ const DownloadHistory = () => {
               <tr>
                 <th>Game</th>
                 <th>System</th>
+                <th>Version</th>
                 <th>Status</th>
                 <th>Size</th>
                 <th>Downloaded</th>
@@ -115,6 +116,9 @@ const DownloadHistory = () => {
                     </div>
                   </td>
                   <td>{item.system_name || item.system}</td>
+                  <td>
+                    <span className="version-tag">{item.catalog_version || 'WIP'}</span>
+                  </td>
                   <td>
                     <span className={`status-badge ${getStatusBadgeClass(item.status)}`}>
                       {item.status}

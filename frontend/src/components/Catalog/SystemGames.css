@@ -10,7 +10,15 @@
   gap: 1rem;
 }
 
-.system-games h1 {
+.system-games-title-section {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.system-games-title-section h1 {
   margin: 0 0 0.5rem 0;
   font-size: 2.5rem;
   font-weight: 700;
@@ -18,6 +26,14 @@
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+.system-version {
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--text-secondary);
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .system-games p {

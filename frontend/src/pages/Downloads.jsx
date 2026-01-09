@@ -212,6 +212,7 @@ const Downloads = () => {
                 <th>#</th>
                 <th>Game</th>
                 <th>System</th>
+                <th>Version</th>
                 <th>Token</th>
                 <th>Status</th>
                 <th>Progress</th>
@@ -235,6 +236,9 @@ const Downloads = () => {
                   </td>
                   <td className="system-cell">
                     <span className="system-tag">{item.system_name || 'Unknown System'}</span>
+                  </td>
+                  <td className="version-cell">
+                    <span className="version-tag">{item.catalog_version || 'WIP'}</span>
                   </td>
                   <td className="token-cell">
                     <span className="token-tag">{item.token_name || '-'}</span>

@@ -214,6 +214,14 @@
   font-weight: 500;
 }
 
+.system-version-text {
+  margin: 0.25rem 0;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
 /* Table View Styles */
 .systems-table-container {
   background: var(--bg-card);
@@ -285,6 +293,7 @@
   text-decoration: none;
   transition: color 0.2s ease;
   font-size: 1.1rem;
+  display: block;
 }
 
 .system-link:hover {

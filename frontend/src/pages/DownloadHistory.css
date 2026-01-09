@@ -148,6 +148,17 @@
   color: #6b7280;
 }
 
+.version-tag {
+  display: inline-block;
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  font-family: monospace;
+  background-color: rgba(99, 102, 241, 0.2);
+  color: #6366f1;
+}
+
 .loading, .error {
   text-align: center;
   padding: 3rem;

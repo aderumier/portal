@@ -170,6 +170,10 @@
   min-width: 120px;
 }
 
+.version-cell {
+  min-width: 100px;
+}
+
 .token-cell {
   min-width: 150px;
 }
@@ -370,6 +374,18 @@
   color: #fff;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.version-tag {
+  padding: 0.35rem 0.75rem;
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.2));
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary, #e0e0e0);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  display: inline-block;
+  font-family: monospace;
 }
 
 .token-tag {
