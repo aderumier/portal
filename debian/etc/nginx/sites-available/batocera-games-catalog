@@ -1,5 +1,11 @@
-# Batocera Games Catalog - Nginx Configuration
+# Batocera Games Catalog - Backend Nginx Configuration
 # This file should be symlinked to /etc/nginx/sites-enabled/
+# NOTE: This backend nginx runs on the backend server (different machine)
+# It listens on ports 80/443 and serves:
+# - Media files (/media/)
+# - Static frontend files (/)
+# - Proxies API requests to FastAPI backend (/api -> http://127.0.0.1:8000)
+# The front reverse proxy (on a different server) proxies requests to this backend server.
 
 # HTTP server - redirect to HTTPS and handle Let's Encrypt challenges
 server {
@@ -140,7 +146,7 @@ server {
         }
     }
 
-    # Let's Encrypt renewal endpoint (keep HTTP accessible)
+    # Let's Encrypt renewal endpoint
     location /.well-known/acme-challenge/ {
         root /var/www/html;
         try_files $uri =404;

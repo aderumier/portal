@@ -66,15 +66,136 @@ class DownloadService:
         self.bandwidth_manager = BandwidthManager(db)
     
     def _normalize_media_path_for_frontend(self, path_value: str, system_id: str) -> str:
-        """Normalize media path to include system prefix for frontend display."""
+        """Normalize media path to include system prefix for frontend display.
+        
+        For Releases catalog, paths already include the snapshot prefix (e.g., 'bbc/.zfs/snapshot/v1/media/image.png').
+        For WIP catalog, paths need the system prefix added (e.g., 'bbc/media/image.png').
+        """
         if not path_value:
             return ''
-        # Remove leading ./
-        path = path_value.lstrip('./')
-        # Add system prefix if not already present
+        
+        # Only remove './' prefix if present, preserve paths starting with '.zfs'
+        path = path_value
+        if path.startswith('./'):
+            path = path[2:]
+        
+        # For Releases catalog paths (already normalized with snapshot prefix), they should already have system prefix
+        # Check if path already starts with system_id (including snapshot paths like 'system/.zfs/snapshot/...')
         if path and not path.startswith(f"{system_id}/"):
+            # Only add system prefix for WIP catalog paths (paths without snapshot prefix)
+            # This ensures we don't break Releases catalog paths that already have the full path
             path = f"{system_id}/{path}"
+        
         return path
+    
+    def _remove_snapshot_path_from_media_path(self, path_value: str, system_id: str, catalog_version: Optional[str]) -> str:
+        """Remove snapshot path from media path for download client destination paths.
+        
+        For Releases catalog games, media paths include snapshot prefix (e.g., 'system/.zfs/snapshot/v1/media/image.png').
+        The download client should save to destination without snapshot path (e.g., 'system/media/image.png').
+        
+        Args:
+            path_value: Media path that may include snapshot prefix
+            system_id: System ID
+            catalog_version: Catalog version (if None, it's WIP catalog)
+        
+        Returns:
+            Media path without snapshot prefix for destination path
+        """
+        if not path_value or not catalog_version:
+            # WIP catalog or empty path - return as-is
+            return path_value
+        
+        # For Releases catalog, remove snapshot path
+        # Path format: 'system/.zfs/snapshot/vX.Y/media/...' -> 'system/media/...'
+        import re
+        escaped_version = re.escape(catalog_version)
+        # Pattern to match snapshot path: system/.zfs/snapshot/vX.Y/
+        pattern = re.compile(rf'^{re.escape(system_id)}/\.zfs/snapshot/{escaped_version}/(.+)$')
+        match = pattern.match(path_value)
+        
+        if match:
+            # Extract path after snapshot directory
+            path_after_snapshot = match.group(1)
+            # Reconstruct path without snapshot: system/path_after_snapshot
+            return f"{system_id}/{path_after_snapshot}"
+        
+        # If pattern doesn't match, return original path
+        return path_value
+    
+    def _remove_snapshot_path_from_game_id(self, game_id: str, catalog_version: Optional[str]) -> str:
+        """Remove snapshot path from game_id for download client destination paths.
+        
+        For Releases catalog games, game_id includes snapshot prefix (e.g., '.zfs/snapshot/v1/game.rom').
+        The download client should save to destination without snapshot path (e.g., 'game.rom').
+        This also applies to directory paths (e.g., '.zfs/snapshot/v1/game_dir/' -> 'game_dir/').
+        
+        Args:
+            game_id: Game ID (rom path) that may include snapshot prefix
+            catalog_version: Catalog version (if None, it's WIP catalog)
+        
+        Returns:
+            Game ID without snapshot prefix for destination path
+        """
+        if not game_id or not catalog_version:
+            # WIP catalog or empty path - return as-is (but remove ./ if present)
+            if game_id and game_id.startswith('./'):
+                return game_id[2:]
+            return game_id
+        
+        # For Releases catalog, remove snapshot path
+        # Path format: '.zfs/snapshot/vX.Y/game.rom' -> 'game.rom'
+        # Or: '.zfs/snapshot/vX.Y/game_dir/' -> 'game_dir/'
+        import re
+        escaped_version = re.escape(catalog_version)
+        # Pattern to match snapshot path: .zfs/snapshot/vX.Y/
+        pattern = re.compile(rf'^\.zfs/snapshot/{escaped_version}/(.+)$')
+        match = pattern.match(game_id)
+        
+        if match:
+            # Extract path after snapshot directory
+            return match.group(1)
+        
+        # If pattern doesn't match, try removing ./ prefix if present
+        if game_id.startswith('./'):
+            return game_id[2:]
+        
+        # Return as-is
+        return game_id
+    
+    def _normalize_game_details_for_client(self, game: Dict, catalog_version: Optional[str]) -> Dict:
+        """Normalize game_details by removing snapshot paths from media paths for download client.
+        
+        The download client needs destination paths without snapshot prefixes, even for Releases catalog.
+        
+        Args:
+            game: Game dictionary with media paths
+            catalog_version: Catalog version (if None, it's WIP catalog)
+        
+        Returns:
+            Game dictionary with media paths normalized for client destination paths
+        """
+        if not game or not catalog_version:
+            # WIP catalog - return as-is
+            return game
+        
+        # Create a copy to avoid modifying original
+        normalized_game = game.copy()
+        system_id = game.get('system', '')
+        
+        # Media fields that may contain paths with snapshot prefix
+        media_fields = ['thumbnail', 'boxart', 'image', 'video', 'marquee', 'wheel', 
+                       'extra1', 'extra2', 'extra3', 'extra4', 'mix', 'catalog_image']
+        
+        for field in media_fields:
+            if field in normalized_game and normalized_game[field]:
+                normalized_game[field] = self._remove_snapshot_path_from_media_path(
+                    normalized_game[field], 
+                    system_id, 
+                    catalog_version
+                )
+        
+        return normalized_game
     
     def add_to_queue(self, user_id: str, game_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None, catalog_version: Optional[str] = None) -> bool:
         """Add a game to the user's FIFO queue."""
@@ -233,7 +354,7 @@ class DownloadService:
                     enriched_item = {
                         'id': item.id,
                         'user_id': item.user_id,
-                        'game_id': item.game_id,
+                        'game_id': item.game_id,  # Keep original game_id (matches database)
                         'status': item.status,
                         'queue_type': item.queue_type,
                         'created_at': item.created_at.isoformat() if item.created_at else None,
@@ -732,16 +853,24 @@ class DownloadService:
                 
                 # Construct HTTP URL for the file
                 import urllib.parse
-                clean_game_id = resumable_download.game_id.lstrip('./')
+                # Only remove './' prefix if present, preserve paths starting with '.zfs'
+                clean_game_id = resumable_download.game_id
+                if clean_game_id.startswith('./'):
+                    clean_game_id = clean_game_id[2:]
                 encoded_game_id = urllib.parse.quote(clean_game_id, safe='/')
                 encoded_system = urllib.parse.quote(system, safe='')
                 # Use DOWNLOAD_FILE_URL if set, otherwise fall back to API_URL
                 base_url = settings.DOWNLOAD_FILE_URL if settings.DOWNLOAD_FILE_URL else settings.API_URL
                 http_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}"
                 
+                # For client: we need both original game_id (for URL construction) and normalized game_id (for destination paths)
+                # Keep original game_id and add normalized rom_path for destination
+                normalized_game_id = self._remove_snapshot_path_from_game_id(resumable_download.game_id, catalog_version)
+                
                 download_info = {
                     'download_id': resumable_download.id,
-                    'game_id': resumable_download.game_id,
+                    'game_id': resumable_download.game_id,  # Keep original for URL construction (needed for directory downloads)
+                    'rom_path': normalized_game_id,  # Normalized path for client destination (without snapshot path)
                     'user_id': resumable_download.user_id,
                     'file_path': file_path,
                     'file_url': http_url,  # HTTP URL for downloading the file
@@ -752,7 +881,7 @@ class DownloadService:
                     'game_name': game.get('name', ''),
                     'system': game.get('system', ''),  # Include system for download service
                     'batocera_system': target_system,  # Include system prefix for destination path (batocera_system for Linux, retrobat_system for Windows)
-                    'game_details': game  # Include full game details for media download
+                    'game_details': self._normalize_game_details_for_client(game, catalog_version)  # Include full game details for media download (snapshot paths removed)
                 }
                 
                 logger.info(f"Resuming download {resumable_download.id} from {resumable_download.bytes_transferred} bytes")
@@ -898,16 +1027,24 @@ class DownloadService:
             
             # Construct HTTP URL for the file
             import urllib.parse
-            clean_game_id = pending_download.game_id.lstrip('./')
+            # Only remove './' prefix if present, preserve paths starting with '.zfs'
+            clean_game_id = pending_download.game_id
+            if clean_game_id.startswith('./'):
+                clean_game_id = clean_game_id[2:]
             encoded_game_id = urllib.parse.quote(clean_game_id, safe='/')
             encoded_system = urllib.parse.quote(system, safe='')
             # Use DOWNLOAD_FILE_URL if set, otherwise fall back to API_URL
             base_url = settings.DOWNLOAD_FILE_URL if settings.DOWNLOAD_FILE_URL else settings.API_URL
             http_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}"
             
+            # For client: we need both original game_id (for URL construction) and normalized game_id (for destination paths)
+            # Keep original game_id and add normalized rom_path for destination
+            normalized_game_id = self._remove_snapshot_path_from_game_id(pending_download.game_id, catalog_version)
+            
             download_info = {
                 'download_id': pending_download.id,
-                'game_id': pending_download.game_id,
+                'game_id': pending_download.game_id,  # Keep original for URL construction (needed for directory downloads)
+                'rom_path': normalized_game_id,  # Normalized path for client destination (without snapshot path)
                 'user_id': pending_download.user_id,
                 'file_path': file_path,
                 'file_url': http_url,  # HTTP URL for downloading the file
@@ -918,7 +1055,7 @@ class DownloadService:
                 'game_name': game.get('name', ''),
                 'system': game.get('system', ''),
                 'batocera_system': target_system,  # Include system prefix for destination path (batocera_system for Linux, retrobat_system for Windows)
-                'game_details': game  # Include full game details for media download
+                'game_details': self._normalize_game_details_for_client(game, catalog_version)  # Include full game details for media download (snapshot paths removed)
             }
             
             logger.info(f"Assigned download {pending_download.id} to service {service_id} with {allocated_bandwidth} bytes/s")

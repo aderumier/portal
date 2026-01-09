@@ -706,7 +706,9 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
             file_size = file_info['size']
             
             # Construct URL for this file
-            encoded_game_id = urllib.parse.quote(game_id.lstrip('./'), safe='/')
+            # Only remove './' prefix if present, preserve paths starting with '.zfs'
+            clean_game_id = game_id[2:] if game_id.startswith('./') else game_id
+            encoded_game_id = urllib.parse.quote(clean_game_id, safe='/')
             encoded_system = urllib.parse.quote(system, safe='')
             encoded_rel_path = urllib.parse.quote(relative_path, safe='/')
             file_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}&relative_path={encoded_rel_path}"
@@ -846,15 +848,45 @@ def normalize_media_path(path):
     """Normalize media paths from gamelist.xml (remove `./`, handle relative paths).
     
     Args:
-        path: Media path from gamelist.xml (e.g., "./media/thumbnails/game.png" or "media/thumbnails/game.png")
+        path: Media path from gamelist.xml (e.g., "./media/thumbnails/game.png")
     
     Returns:
         str: Normalized path without leading `./`
+    
+    Note:
+        Media paths are already normalized by the backend (snapshot paths removed).
+        This function only removes leading `./` for backwards compatibility.
     """
     if not path:
         return ''
     # Remove leading ./
     normalized = path.lstrip('./')
+    
+    return normalized
+
+def remove_snapshot_path_from_game_id(game_id):
+    """Remove snapshot path from game_id for destination path construction.
+    
+    Args:
+        game_id: Game ID that may include snapshot path (e.g., ".zfs/snapshot/v1/game.rom")
+    
+    Returns:
+        str: Game ID without snapshot path (e.g., "game.rom")
+    """
+    if not game_id:
+        return game_id
+    
+    # Remove leading ./
+    normalized = game_id.lstrip('./')
+    
+    # Remove snapshot paths (e.g., ".zfs/snapshot/v1/game.rom" -> "game.rom")
+    import re
+    # Match pattern: .zfs/snapshot/v(anything)/path
+    pattern = r'^\.zfs/snapshot/v[^/]+/(.+)$'
+    match = re.match(pattern, normalized)
+    if match:
+        normalized = match.group(1)
+    
     return normalized
 
 def format_path_for_xml(path):
@@ -941,13 +973,15 @@ def download_game_media(system, game_id, download_id, batocera_system):
             # Construct HTTP URL: {API_URL}/media/{normalized_path}
             media_url = f"{API_URL}/media/{media_path}"
             
-            # Normalize the media path for local storage (remove system prefix and ./)
+            # Normalize the media path for local storage (remove snapshot paths, system prefix and ./)
+            # normalize_media_path already removes snapshot paths, so this should be clean
             normalized_path = normalize_media_path(media_path)
             if not normalized_path:
                 continue
             
             # Remove system prefix from normalized_path for local storage
             # We need just the relative path from the system directory for local storage
+            # After normalization, paths should be like "system/media/..." or "media/..."
             if normalized_path.startswith(f"{system}/"):
                 normalized_path = normalized_path[len(system) + 1:]
             
@@ -1106,7 +1140,8 @@ def download_game(download_info):
     """Download a game file or directory via HTTP with progress reporting and resume support."""
     try:
         download_id = download_info['download_id']
-        game_id = download_info['game_id']  # This is the rompath (e.g., "apshai.zip" or "board/chess/")
+        game_id = download_info['game_id']  # Original game_id (may include snapshot path) - used for URL construction
+        rom_path = download_info.get('rom_path')  # Normalized game_id (without snapshot path) - used for destination paths
         system = download_info.get('system', '')  # System ID (e.g., "atari2600") - used for API calls
         batocera_system = download_info.get('batocera_system', '')  # Batocera system directory name - used for local paths
         expected_file_size = download_info.get('file_size')
@@ -1126,18 +1161,25 @@ def download_game(download_info):
             logger.error(f"Missing batocera_system in download_info for system: {system}")
             return False
         
+        # Use rom_path for destination paths (normalized by backend, without snapshot path)
+        if not rom_path:
+            logger.error(f"Missing rom_path in download_info for game_id: {game_id}")
+            return False
+        
+        normalized_game_id = rom_path
         target_system = batocera_system
         
         logger.info(f"Downloading via HTTP")
         logger.info(f"  HTTP URL: {http_url}")
         logger.info(f"  Download ID: {download_id}")
         logger.info(f"  Game ID: {game_id}")
+        logger.info(f"  ROM Path: {normalized_game_id}")
         logger.info(f"  System: {system}")
         logger.info(f"  Batocera System: {target_system}")
         
-        # Determine destination base path: ROMS_PATH/batocera_system/rompath
+        # Determine destination base path: ROMS_PATH/batocera_system/rompath (without snapshot path)
         if target_system:
-            dest_base_path = os.path.join(ROMS_PATH, target_system, game_id)
+            dest_base_path = os.path.join(ROMS_PATH, target_system, normalized_game_id)
             logger.info(f"Destination base path: {dest_base_path}")
         else:
             logger.warning(f"Target system not provided in download_info, using game_id only: {game_id}")

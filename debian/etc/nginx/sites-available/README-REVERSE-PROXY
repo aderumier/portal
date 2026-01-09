@@ -1,0 +1,124 @@
+# Nginx Reverse Proxy Setup Instructions
+
+This setup uses nginx reverse proxy on a **different server**:
+1. **Front Reverse Proxy Server** (`batocera-games-catalog-reverse-proxy`) - Listens on ports 80/443, handles SSL termination
+2. **Backend Server** - Has nginx serving media files and proxying API requests to FastAPI on port 8000
+
+## Setup Steps
+
+### 1. On the Front Reverse Proxy Server:
+
+#### 1.1. Update backend server addresses
+Edit `batocera-games-catalog-reverse-proxy` and update both upstream blocks:
+
+```
+upstream backend_nginx {
+    server BACKEND_SERVER_IP:80;  # Backend nginx on port 80
+}
+
+upstream backend_api {
+    server BACKEND_SERVER_IP:8000;  # FastAPI backend on port 8000
+}
+```
+
+For example:
+```
+upstream backend_nginx {
+    server 192.168.1.100:80;
+    # OR
+    server backend.example.com:80;
+}
+
+upstream backend_api {
+    server 192.168.1.100:8000;
+    # OR
+    server backend.example.com:8000;
+}
+```
+
+#### 1.2. Update domain name
+Replace `YOUR_DOMAIN` with your actual domain name and `_` in `server_name` directives.
+
+#### 1.3. Enable the configuration
+```bash
+sudo ln -s /etc/nginx/sites-available/batocera-games-catalog-reverse-proxy /etc/nginx/sites-enabled/
+```
+
+### 2. On the Backend Server:
+
+The backend server should have nginx configured with:
+- Serving media files from `/media/`
+- Proxying `/api` requests to FastAPI on `http://127.0.0.1:8000`
+- Serving static frontend files from `/`
+
+Use the `batocera-games-catalog` configuration file (or your existing nginx config).
+
+### 3. Setup SSL certificates (if not already done)
+On the front reverse proxy server, generate certificates using certbot:
+```bash
+sudo certbot certonly --nginx -d your-domain.com
+```
+
+### 4. Update certificate paths
+On the front reverse proxy server, update the SSL certificate paths in `batocera-games-catalog-reverse-proxy`:
+```
+ssl_certificate /etc/letsencrypt/live/YOUR_DOMAIN/fullchain.pem;
+ssl_certificate_key /etc/letsencrypt/live/YOUR_DOMAIN/privkey.pem;
+```
+
+### 5. Test and reload nginx
+On the front reverse proxy server:
+```bash
+# Test configuration
+sudo nginx -t
+
+# Reload nginx
+sudo systemctl reload nginx
+```
+
+## Architecture
+
+```
+Internet
+   |
+   v
+[Front Reverse Proxy Server - Different Machine]
+Ports: 80 (HTTP), 443 (HTTPS)
+SSL Termination
+   |
+   +---> /api requests → [Backend Server Port 8000] (FastAPI)
+   |
+   +---> All other requests → [Backend Server Port 80] (Nginx)
+                                |
+                                +---> Serves static files (/)
+                                +---> Serves media files (/media/)
+```
+
+## Firewall Configuration
+
+### Front Reverse Proxy Server:
+- Port 80 (HTTP) - Allow from Internet
+- Port 443 (HTTPS) - Allow from Internet
+- Port for backend connection - Allow outbound to backend server
+
+### Backend Server:
+- Port 80 (backend nginx) - Allow from front reverse proxy server IP only
+- Port 8000 (FastAPI) - Allow from front reverse proxy server IP only
+
+## Notes
+
+- The front reverse proxy handles SSL termination
+- The connection between front proxy and backend servers can be HTTP (if on private network) or HTTPS (for better security)
+- All security headers are set in the front reverse proxy
+- Request routing:
+  - `/api` requests are proxied directly to FastAPI on port 8000
+  - All other requests (media, static files, frontend) are proxied to backend nginx on port 80
+- Backend server's nginx (port 80) handles:
+  - Media file serving with thumbnail resizing
+  - Static frontend file serving
+- FastAPI backend (port 8000) receives API requests directly from the reverse proxy
+- Both backend services (nginx:80 and FastAPI:8000) should only be accessible from the front reverse proxy server IP
+- Logs are separated:
+  - Front proxy: `/var/log/nginx/batocera-games-catalog-reverse-proxy-*.log`
+  - Backend: `/var/log/nginx/batocera-games-catalog-*.log`
+
