@@ -89,18 +89,9 @@ const SystemsList = ({ systems }) => {
     return hardware.charAt(0).toUpperCase() + hardware.slice(1).replace(/([A-Z])/g, ' $1')
   }
 
-  // Get system image path, removing _batocera, _retrobat, or _lite suffix if present
+  // Get system image path using system ID directly (no suffix stripping)
   const getSystemImagePath = (systemId) => {
-    let imageId = systemId
-    // Remove suffix if present
-    if (systemId.endsWith('_batocera')) {
-      imageId = systemId.slice(0, -9) // Remove '_batocera'
-    } else if (systemId.endsWith('_retrobat')) {
-      imageId = systemId.slice(0, -9) // Remove '_retrobat'
-    } else if (systemId.endsWith('_lite')) {
-      imageId = systemId.slice(0, -5) // Remove '_lite'
-    }
-    return `/systems_logos/${imageId}.webp`
+    return `/systems_logos/${systemId}.webp`
   }
 
   return (

@@ -245,6 +245,16 @@ else:
     logger.warning(f"GAMES_PATH not set or does not exist: {settings.GAMES_PATH}. Media files will not be served.")
 
 
+@app.get("/robots.txt")
+async def robots_txt():
+    """Serve robots.txt - disallow all indexing."""
+    content = """User-agent: *
+Disallow: /
+"""
+    from fastapi.responses import Response
+    return Response(content=content, media_type="text/plain")
+
+
 @app.get("/")
 async def root():
     """Root endpoint."""

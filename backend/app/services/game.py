@@ -855,6 +855,10 @@ class GameService:
             game_data['system'] = system_id
             game_data['systemName'] = self.get_system_name(system_id)
             
+            # Map 'desc' field from gamelist.xml to 'description' for frontend
+            if 'desc' in game_data and 'description' not in game_data:
+                game_data['description'] = game_data.get('desc', '')
+            
             # Ensure required fields exist (with defaults if missing)
             if 'name' not in game_data:
                 game_data['name'] = ''

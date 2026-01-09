@@ -56,11 +56,19 @@
 }
 
 .game-card-title {
-  margin: 0 0 1rem 0;
+  margin: 0 0 0.5rem 0;
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-primary);
   line-height: 1.4;
+}
+
+.game-card-system {
+  margin: 0 0 1rem 0;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--text-secondary);
+  line-height: 1.3;
 }
 
 .game-card-actions {

@@ -66,3 +66,7 @@ echo "3. Check nginx error logs: sudo tail -f /var/log/nginx/error.log"
 
 
 
+
+
+
+

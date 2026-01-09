@@ -175,16 +175,8 @@ const SystemsConfiguration = () => {
   }
 
   const getSystemImageUrl = (systemId) => {
-    // Get base system ID (remove suffixes)
-    let imageId = systemId
-    if (systemId.endsWith('_batocera')) {
-      imageId = systemId.slice(0, -9)
-    } else if (systemId.endsWith('_retrobat')) {
-      imageId = systemId.slice(0, -9)
-    } else if (systemId.endsWith('_lite')) {
-      imageId = systemId.slice(0, -5)
-    }
-    return `/systems_logos/${imageId}.webp`
+    // Use system ID directly (no suffix stripping)
+    return `/systems_logos/${systemId}.webp`
   }
 
   const handleImageDoubleClick = (systemId, event) => {
