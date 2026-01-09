@@ -473,8 +473,17 @@ async def get_download_game_details(
             detail="Game not found"
         )
     
-    # Media paths are already normalized with snapshot prefix in get_game_by_id for Releases
-    # No additional normalization needed
+    # Ensure media paths match browsing format (same as frontend)
+    # Apply same normalization as frontend browsing for URL construction
+    system_id = game.get('system', '')
+    if system_id:
+        # Normalize media paths for URL construction (same format as browsing)
+        media_fields = ['thumbnail', 'boxart', 'image', 'video', 'marquee', 'wheel', 
+                       'extra1', 'extra2', 'extra3', 'extra4', 'mix', 'catalog_image',
+                       'boxback', 'cartridge', 'titleshot', 'fanart', 'screenshot']
+        for field in media_fields:
+            if field in game and game[field]:
+                game[field] = download_service._normalize_media_path_for_frontend(game[field], system_id)
     
     return game
 

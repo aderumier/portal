@@ -336,7 +336,8 @@ class DownloadService:
         
         # Media fields that may contain paths with snapshot prefix
         media_fields = ['thumbnail', 'boxart', 'image', 'video', 'marquee', 'wheel', 
-                       'extra1', 'extra2', 'extra3', 'extra4', 'mix', 'catalog_image']
+                       'extra1', 'extra2', 'extra3', 'extra4', 'mix', 'catalog_image',
+                       'boxback', 'cartridge', 'titleshot', 'fanart', 'screenshot']
         
         for field in media_fields:
             if field in normalized_game and normalized_game[field]:

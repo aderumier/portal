@@ -845,22 +845,36 @@ def ensure_directory_exists(path):
         raise
 
 def normalize_media_path(path):
-    """Normalize media paths from gamelist.xml (remove `./`, handle relative paths).
+    """Normalize media paths for local storage (remove snapshot paths and leading `./`, keep system prefix).
+    
+    Media files should always be saved to {ROM_PATH}/{system}/media/... regardless of whether
+    they come from WIP or Releases catalog. Snapshot paths must be removed from destination paths.
+    The system prefix should be preserved.
     
     Args:
-        path: Media path from gamelist.xml (e.g., "./media/thumbnails/game.png")
+        path: Media path from backend (e.g., "system/media/thumbnails/game.png" or 
+              "system/.zfs/snapshot/v1/media/thumbnails/game.png")
     
     Returns:
-        str: Normalized path without leading `./`
-    
-    Note:
-        Media paths are already normalized by the backend (snapshot paths removed).
-        This function only removes leading `./` for backwards compatibility.
+        str: Normalized path without snapshot paths or leading `./`, but with system prefix
+        (e.g., "system/media/thumbnails/game.png")
     """
     if not path:
         return ''
+    
     # Remove leading ./
     normalized = path.lstrip('./')
+    
+    # Remove snapshot paths (e.g., "system/.zfs/snapshot/v1/media/..." -> "system/media/...")
+    # Pattern: system/.zfs/snapshot/v(anything)/media/... -> system/media/...
+    import re
+    # Match pattern: system/.zfs/snapshot/v(anything)/path
+    snapshot_pattern = r'^([^/]+)/\.zfs/snapshot/v[^/]+/(.+)$'
+    match = re.match(snapshot_pattern, normalized)
+    if match:
+        system_name = match.group(1)
+        path_after_snapshot = match.group(2)
+        normalized = f"{system_name}/{path_after_snapshot}"
     
     return normalized
 
@@ -968,24 +982,52 @@ def download_game_media(system, game_id, download_id, batocera_system):
             if not media_path:
                 continue  # Skip missing media
             
-            # The API now returns normalized paths (with system prefix) for downloading
-            # e.g., "bbcmicro/media/thumbnails/game.png"
-            # Construct HTTP URL: {API_URL}/media/{normalized_path}
-            media_url = f"{API_URL}/media/{media_path}"
+            # Use media path as-is from backend (same as frontend browsing)
+            # Backend should return paths in the format used by the frontend:
+            # - WIP: "system/media/thumbnails/game.png"
+            # - Releases: "system/.zfs/snapshot/v1/media/thumbnails/game.png"
+            # However, some paths might be missing the system prefix (e.g., "media/thumbnails/...")
+            # We need to ensure system prefix is present for URL construction
+            if not media_path:
+                continue
             
-            # Normalize the media path for local storage (remove snapshot paths, system prefix and ./)
-            # normalize_media_path already removes snapshot paths, so this should be clean
+            # Remove leading ./ if present
+            clean_media_path = media_path.lstrip('./')
+            
+            # Ensure system prefix is present for URL construction (same as frontend browsing)
+            # If path doesn't start with system prefix, add it
+            if not clean_media_path.startswith(f"{system}/"):
+                # Path is missing system prefix (e.g., "media/thumbnails/...")
+                # Add system prefix for correct URL
+                clean_media_path = f"{system}/{clean_media_path}"
+            
+            # Construct URL same way as frontend: /media/{mediaPath}
+            media_url = f"{API_URL}/media/{clean_media_path}"
+            
+            # Normalize the media path for local storage (remove snapshot paths and ./)
+            # normalize_media_path removes snapshot paths but keeps system prefix if present
+            # Use original media_path for normalization
             normalized_path = normalize_media_path(media_path)
             if not normalized_path:
                 continue
             
-            # Remove system prefix from normalized_path for local storage
-            # We need just the relative path from the system directory for local storage
-            # After normalization, paths should be like "system/media/..." or "media/..."
-            if normalized_path.startswith(f"{system}/"):
-                normalized_path = normalized_path[len(system) + 1:]
+            # Extract just the media part (remove system prefix if present)
+            # After normalization, path can be: "system/media/thumbnails/..." or "media/thumbnails/..."
+            # We want: "media/thumbnails/..." (we'll use target_system instead of the system prefix)
+            if '/' in normalized_path:
+                parts = normalized_path.split('/', 1)
+                if parts[1].startswith('media/'):
+                    # Has system prefix: "system/media/..." -> "media/..."
+                    normalized_path = parts[1]
+                elif normalized_path.startswith('media/'):
+                    # Already just "media/...", keep as-is
+                    pass
+                # else: path doesn't start with media/, which shouldn't happen for media files
+                # but we'll use it as-is
             
-            # Destination path: ROMS_PATH/batocera_system/{normalized_path}
+            # Destination path: ROMS_PATH/target_system/media/...
+            # Media files always go to {ROM_PATH}/{system}/media/... (never .zfs directories)
+            # This ensures consistent paths for both WIP and Releases catalog
             dest_path = os.path.join(ROMS_PATH, target_system, normalized_path)
             
             # Ensure destination directory exists
