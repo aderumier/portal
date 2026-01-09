@@ -585,43 +585,97 @@ async def download_file(
         # The game_id should be in format: .zfs/snapshot/v10.5/game.zip
         # So base_path will be: GAMES_PATH/system/.zfs/snapshot/v10.5/game.zip
         
-        # Check if this is a .m3u file (when relative_path is not provided)
-        if relative_path is None and os.path.isfile(base_path) and base_path.lower().endswith('.m3u'):
-            # .m3u file downloads - parse and return list of files to download
-            from app.services.download import parse_m3u_file
-            m3u_files = parse_m3u_file(base_path)
+        # Check if this is a special file type that needs parsing (when relative_path is not provided)
+        if relative_path is None and os.path.isfile(base_path):
+            from app.services.download import detect_and_parse_special_file
+            parsed_info = detect_and_parse_special_file(base_path)
             
-            # Get the directory containing the .m3u file
-            m3u_dir = os.path.dirname(base_path)
-            
-            files_list = []
-            for rel_file in m3u_files:
-                # Build full path to the file
-                file_full_path = os.path.normpath(os.path.join(m3u_dir, rel_file))
+            if parsed_info:
+                # This is a special file type (.m3u, .cue, or .xbox360)
+                source_dir = os.path.dirname(base_path)
+                base_path_type = parsed_info['base_path_type']
+                parsed_files = parsed_info['files']
+                source_file = parsed_info['source_file']
                 
-                # Verify the file exists and is within the games directory
-                if os.path.exists(file_full_path) and os.path.isfile(file_full_path):
-                    # Ensure the file is within the games directory (security check)
-                    try:
-                        if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_full_path)]) == os.path.abspath(settings.GAMES_PATH):
-                            file_size = os.path.getsize(file_full_path)
-                            files_list.append({
-                                'relative_path': rel_file.replace('\\', '/'),  # Normalize path separators
-                                'size': file_size
-                            })
-                        else:
-                            logger.warning(f"File {file_full_path} is outside games directory, skipping")
-                    except ValueError:
-                        logger.warning(f"File {file_full_path} path validation failed, skipping")
-                else:
-                    logger.warning(f"File listed in .m3u does not exist: {file_full_path}")
-            
-            return ORJSONResponse({
-                'is_m3u': True,
-                'files': files_list,
-                'total_files': len(files_list),
-                'total_size': sum(f['size'] for f in files_list)
-            })
+                files_list = []
+                
+                if base_path_type == 'file':
+                    # Check if this is a .xbox360 file (special handling for directory downloads)
+                    if source_file.lower().endswith('.xbox360'):
+                        # For .xbox360 files: parsed_files contains the directory name
+                        # Build full path to the directory (relative to .xbox360 file's directory)
+                        if parsed_files:
+                            directory_name = parsed_files[0]
+                            dir_full_path = os.path.normpath(os.path.join(source_dir, directory_name))
+                            
+                            # Verify the directory exists and is within the games directory
+                            if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                                # Ensure the directory is within the games directory (security check)
+                                try:
+                                    if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                        # Walk the directory and add all files
+                                        # For .xbox360 files, relative paths should be relative to the .xbox360 file's directory
+                                        # So we need to include the directory name in the path
+                                        for root, dirs, files in os.walk(dir_full_path):
+                                            for filename in files:
+                                                file_full_path = os.path.join(root, filename)
+                                                # Get relative path from the directory root
+                                                rel_path_from_dir = os.path.relpath(file_full_path, dir_full_path)
+                                                # Make it relative to the .xbox360 file's directory by prepending the directory name
+                                                rel_path = os.path.join(directory_name, rel_path_from_dir)
+                                                file_size = os.path.getsize(file_full_path)
+                                                files_list.append({
+                                                    'relative_path': rel_path.replace('\\', '/'),  # Normalize path separators
+                                                    'size': file_size
+                                                })
+                                        
+                                        # Note: We don't include the .xbox360 file itself here because:
+                                        # - The directory download will place files in the directory structure
+                                        # - The .xbox360 file is a sibling of the directory, not inside it
+                                        # - Including it would require complex path calculations
+                                        # The .xbox360 file should be downloaded separately if needed
+                                    else:
+                                        logger.warning(f"Directory {dir_full_path} is outside games directory, skipping")
+                                except ValueError:
+                                    logger.warning(f"Directory {dir_full_path} path validation failed, skipping")
+                            else:
+                                logger.warning(f"Directory listed in {source_file} does not exist: {dir_full_path}")
+                    else:
+                        # For .m3u and .cue files: files are relative to the source file's directory
+                        for rel_file in parsed_files:
+                            # Build full path to the file
+                            file_full_path = os.path.normpath(os.path.join(source_dir, rel_file))
+                            
+                            # Verify the file exists and is within the games directory
+                            if os.path.exists(file_full_path) and os.path.isfile(file_full_path):
+                                # Ensure the file is within the games directory (security check)
+                                try:
+                                    if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                        file_size = os.path.getsize(file_full_path)
+                                        files_list.append({
+                                            'relative_path': rel_file.replace('\\', '/'),  # Normalize path separators
+                                            'size': file_size
+                                        })
+                                    else:
+                                        logger.warning(f"File {file_full_path} is outside games directory, skipping")
+                                except ValueError:
+                                    logger.warning(f"File {file_full_path} path validation failed, skipping")
+                            else:
+                                logger.warning(f"File listed in {source_file} does not exist: {file_full_path}")
+                
+                elif base_path_type == 'directory':
+                    # Regular directory downloads (shouldn't happen with special files, but handle for completeness)
+                    # This branch is for future use or fallback scenarios
+                    pass
+                
+                return ORJSONResponse({
+                    'is_directory': True,  # Generic flag for all multi-file downloads
+                    'files': files_list,
+                    'total_files': len(files_list),
+                    'total_size': sum(f['size'] for f in files_list),
+                    'base_path_type': base_path_type,  # Indicates how to interpret paths
+                    'source_file': source_file  # Original file that was parsed (for logging)
+                })
         
         # Check if base_path is a directory first (when relative_path is not provided)
         if relative_path is None and os.path.isdir(base_path):
@@ -656,23 +710,48 @@ async def download_file(
                     detail="Invalid relative path"
                 )
             
-            # Check if base_path is a .m3u file - if so, relative_path is relative to the .m3u file's directory
-            if os.path.isfile(base_path) and base_path.lower().endswith('.m3u'):
-                # For .m3u files, relative_path is relative to the .m3u file's directory
-                m3u_dir = os.path.dirname(base_path)
-                file_path = os.path.normpath(os.path.join(m3u_dir, relative_path))
-                # Ensure the file is within the games directory (security check)
-                try:
-                    if not os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_path)]) == os.path.abspath(settings.GAMES_PATH):
+            # Check if base_path is a special file type - if so, relative_path handling depends on base_path_type
+            if os.path.isfile(base_path):
+                from app.services.download import detect_and_parse_special_file
+                parsed_info = detect_and_parse_special_file(base_path)
+                
+                if parsed_info:
+                    if parsed_info['base_path_type'] == 'file':
+                        source_file_name = parsed_info.get('source_file', '')
+                        if source_file_name.lower().endswith('.xbox360'):
+                            # For .xbox360 files: relative_path includes directory name and is relative to source file's directory
+                            source_dir = os.path.dirname(base_path)
+                            file_path = os.path.normpath(os.path.join(source_dir, relative_path))
+                        else:
+                            # For .m3u and .cue files: relative_path is relative to the source file's directory
+                            source_dir = os.path.dirname(base_path)
+                            file_path = os.path.normpath(os.path.join(source_dir, relative_path))
+                    elif parsed_info['base_path_type'] == 'directory':
+                        # For .xbox360 files: relative_path is relative to the referenced directory
+                        source_dir = os.path.dirname(base_path)
+                        directory_name = parsed_info['files'][0] if parsed_info['files'] else None
+                        if directory_name:
+                            dir_full_path = os.path.normpath(os.path.join(source_dir, directory_name))
+                            file_path = os.path.normpath(os.path.join(dir_full_path, relative_path))
+                        else:
+                            # Fallback: treat as regular directory
+                            file_path = os.path.join(base_path, relative_path)
+                    else:
+                        # Fallback: treat as regular file
+                        file_path = os.path.join(base_path, relative_path)
+                    
+                    # Ensure the file is within the games directory (security check)
+                    try:
+                        if not os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_path)]) == os.path.abspath(settings.GAMES_PATH):
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Invalid relative path (outside games directory)"
+                            )
+                    except ValueError:
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Invalid relative path (outside games directory)"
+                            detail="Invalid relative path"
                         )
-                except ValueError:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Invalid relative path"
-                    )
             else:
                 # For directories, relative_path is relative to the directory
                 file_path = os.path.join(base_path, relative_path)

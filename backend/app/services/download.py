@@ -57,6 +57,157 @@ def parse_m3u_file(m3u_file_path: str) -> List[str]:
         # Return at least the .m3u file itself
         return [os.path.basename(m3u_file_path)]
 
+
+def parse_cue_file(cue_file_path: str) -> List[str]:
+    """Parse a .cue file and return list of file paths (relative to cue file location).
+    
+    Args:
+        cue_file_path: Full path to the .cue file
+        
+    Returns:
+        List of file paths relative to the .cue file directory (including the .cue file itself)
+    """
+    files_to_download = []
+    
+    try:
+        # Get the directory containing the .cue file
+        cue_dir = os.path.dirname(cue_file_path)
+        cue_filename = os.path.basename(cue_file_path)
+        
+        # Always include the .cue file itself
+        files_to_download.append(cue_filename)
+        
+        # Read and parse the .cue file
+        if not os.path.exists(cue_file_path):
+            logger.warning(f".cue file not found: {cue_file_path}")
+            return files_to_download
+        
+        import re
+        with open(cue_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines
+                if not line:
+                    continue
+                
+                # Parse lines starting with FILE keyword
+                # Format: FILE "filename.bin" BINARY
+                if line.upper().startswith('FILE'):
+                    # Extract filename from quotes
+                    # Match pattern: FILE "filename" [TYPE]
+                    match = re.match(r'FILE\s+"([^"]+)"', line, re.IGNORECASE)
+                    if match:
+                        filename = match.group(1)
+                        # Files are always in the same directory as the .cue file
+                        # Normalize path separators
+                        file_path = filename.replace('\\', '/')
+                        files_to_download.append(file_path)
+        
+        logger.info(f"Parsed .cue file {cue_file_path}: found {len(files_to_download)} files to download")
+        return files_to_download
+        
+    except Exception as e:
+        logger.error(f"Error parsing .cue file {cue_file_path}: {e}", exc_info=True)
+        # Return at least the .cue file itself
+        return [os.path.basename(cue_file_path)]
+
+
+def parse_xbox360_file(xbox360_file_path: str) -> str:
+    """Parse a .xbox360 file and return the directory name to download.
+    
+    Args:
+        xbox360_file_path: Full path to the .xbox360 file
+        
+    Returns:
+        Directory name relative to the .xbox360 file's directory
+    """
+    try:
+        # Read and parse the .xbox360 file
+        if not os.path.exists(xbox360_file_path):
+            logger.warning(f".xbox360 file not found: {xbox360_file_path}")
+            return None
+        
+        with open(xbox360_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines
+                if not line:
+                    continue
+                
+                # Parse line format: /Age of Booty (World)/584108F0/000D0000/...
+                # Extract the first directory (relative to .xbox360 file's directory)
+                if line.startswith('/'):
+                    # Remove leading slash
+                    line = line[1:]
+                    # Extract first directory name
+                    parts = line.split('/')
+                    if parts:
+                        directory_name = parts[0]
+                        logger.info(f"Parsed .xbox360 file {xbox360_file_path}: found directory '{directory_name}'")
+                        return directory_name
+        
+        logger.warning(f"No valid directory found in .xbox360 file: {xbox360_file_path}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error parsing .xbox360 file {xbox360_file_path}: {e}", exc_info=True)
+        return None
+
+
+def detect_and_parse_special_file(file_path: str) -> Optional[Dict]:
+    """Detect and parse special file types that require additional files to be downloaded.
+    
+    Args:
+        file_path: Full path to the file
+        
+    Returns:
+        Dict with parsed information, or None if not a special file type:
+        {
+            'files': List[str],  # List of relative file paths
+            'base_path_type': str,  # 'file' for .m3u/.cue (files relative to file's dir), 'directory' for .xbox360/regular dirs
+            'source_file': str  # Original file that was parsed (e.g., "game.cue")
+        }
+    """
+    if not os.path.isfile(file_path):
+        return None
+    
+    file_lower = file_path.lower()
+    source_filename = os.path.basename(file_path)
+    
+    # Check for .m3u files
+    if file_lower.endswith('.m3u'):
+        files = parse_m3u_file(file_path)
+        return {
+            'files': files,
+            'base_path_type': 'file',
+            'source_file': source_filename
+        }
+    
+    # Check for .cue files
+    if file_lower.endswith('.cue'):
+        files = parse_cue_file(file_path)
+        return {
+            'files': files,
+            'base_path_type': 'file',
+            'source_file': source_filename
+        }
+    
+    # Check for .xbox360 files
+    if file_lower.endswith('.xbox360'):
+        directory_name = parse_xbox360_file(file_path)
+        if directory_name:
+            # For .xbox360 files, we return the directory name as a single-item list
+            # The actual directory walk will happen in the API endpoint
+            # Use base_path_type='file' so client adjusts dest_base_path to the .xbox360 file's directory
+            # The relative paths returned will include the directory name, so files are placed correctly
+            return {
+                'files': [directory_name],  # This will be treated as a directory path
+                'base_path_type': 'file',
+                'source_file': source_filename
+            }
+    
+    return None
+
 class DownloadService:
     """Service for managing download queue."""
     
@@ -981,14 +1132,8 @@ class DownloadService:
                 logger.info(f"Removed download {pending_download.id} from queue - file not found")
                 return None
             
-            # Check if this is a .m3u file and parse it
-            is_m3u_file = False
-            m3u_files = []
-            if os.path.isfile(file_path) and file_path.lower().endswith('.m3u'):
-                is_m3u_file = True
-                logger.info(f"Detected .m3u file: {file_path}")
-                m3u_files = parse_m3u_file(file_path)
-                logger.info(f"Parsed .m3u file, found {len(m3u_files)} files to download: {m3u_files}")
+            # Special file parsing is now handled by the API endpoint when the file is requested
+            # No need to parse here
             
             # Mark as active
             pending_download.active_download = True

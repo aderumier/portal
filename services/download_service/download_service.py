@@ -1216,19 +1216,21 @@ def download_game(download_info):
                     response.close()  # Close the connection
                     
                     logger.debug(f"Successfully parsed as JSON. Keys: {list(dir_info.keys()) if isinstance(dir_info, dict) else 'Not a dict'}")
-                    if isinstance(dir_info, dict) and (dir_info.get('is_directory') or dir_info.get('is_m3u')):
-                        # It's a directory listing or .m3u file listing
-                        is_m3u = dir_info.get('is_m3u', False)
+                    if isinstance(dir_info, dict) and dir_info.get('is_directory'):
+                        # It's a multi-file download (directory, .m3u, .cue, .xbox360, etc.)
                         files_list = dir_info.get('files', [])
-                        download_type = ".m3u file" if is_m3u else "directory"
+                        base_path_type = dir_info.get('base_path_type', 'directory')
+                        source_file = dir_info.get('source_file', 'directory')
+                        download_type = source_file if source_file != 'directory' else "directory"
                         logger.info(f"✓ {download_type} download detected: {len(files_list)} files, {dir_info.get('total_size', 0)} bytes")
                         
-                        # For .m3u files, dest_base_path should be the directory containing the .m3u file
-                        # (not the .m3u file itself, since relative_path values are relative to the .m3u's directory)
-                        if is_m3u:
-                            # dest_base_path currently points to the .m3u file, change it to its directory
+                        # For special files with base_path_type='file' (.m3u, .cue, etc.),
+                        # dest_base_path should be the directory containing the source file
+                        # (not the file itself, since relative_path values are relative to the file's directory)
+                        if base_path_type == 'file':
+                            # dest_base_path currently points to the source file, change it to its directory
                             dest_base_path = os.path.dirname(dest_base_path)
-                            logger.info(f"Adjusted dest_base_path for .m3u file to directory: {dest_base_path}")
+                            logger.info(f"Adjusted dest_base_path for {source_file} to directory: {dest_base_path}")
                         
                         # Calculate already downloaded bytes by checking existing files
                         bytes_already_downloaded = 0
