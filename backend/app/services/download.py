@@ -409,7 +409,7 @@ class DownloadService:
                 return False
             
             # Get file size if possible (game_id is rompath, need to prepend system)
-            # Handle both files and directories
+            # Handle both files and directories, including special file types (.m3u, .cue, .xbox360)
             file_size = None
             if settings.GAMES_PATH:
                 system = game.get('system', '')
@@ -418,11 +418,63 @@ class DownloadService:
                 else:
                     game_path = os.path.join(settings.GAMES_PATH, game_id)
                 if os.path.exists(game_path):
-                    if os.path.isfile(game_path):
+                    # Check if it's a special file type that needs parsing
+                    parsed_info = detect_and_parse_special_file(game_path)
+                    
+                    if parsed_info:
+                        # It's a special file type (.m3u, .cue, .xbox360)
+                        # Calculate total size of all files that will be downloaded
+                        source_dir = os.path.dirname(game_path)
+                        base_path_type = parsed_info['base_path_type']
+                        parsed_files = parsed_info['files']
+                        source_file = parsed_info['source_file']
+                        
+                        total_size = 0
+                        
+                        if base_path_type == 'file':
+                            if source_file.lower().endswith('.xbox360'):
+                                # For .xbox360 files: parsed_files contains the directory name
+                                if parsed_files:
+                                    directory_name = parsed_files[0]
+                                    dir_full_path = os.path.normpath(os.path.join(source_dir, directory_name))
+                                    
+                                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                                        # Security check: ensure directory is within games directory
+                                        try:
+                                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                                # Walk the directory and sum all file sizes
+                                                for root, dirs, files in os.walk(dir_full_path):
+                                                    for filename in files:
+                                                        file_full_path = os.path.join(root, filename)
+                                                        if os.path.isfile(file_full_path):
+                                                            total_size += os.path.getsize(file_full_path)
+                                        except ValueError:
+                                            logger.warning(f"Directory {dir_full_path} path validation failed, skipping from size calculation")
+                                    
+                                    # Include the .xbox360 file itself in the total size
+                                    if os.path.exists(game_path) and os.path.isfile(game_path):
+                                        total_size += os.path.getsize(game_path)
+                            else:
+                                # For .m3u and .cue files: files are relative to the source file's directory
+                                for rel_file in parsed_files:
+                                    file_full_path = os.path.normpath(os.path.join(source_dir, rel_file))
+                                    if os.path.exists(file_full_path) and os.path.isfile(file_full_path):
+                                        # Security check: ensure file is within games directory
+                                        try:
+                                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                                total_size += os.path.getsize(file_full_path)
+                                        except ValueError:
+                                            logger.warning(f"File {file_full_path} path validation failed, skipping from size calculation")
+                        
+                        file_size = total_size
+                        logger.info(f"Special file ({source_file}) total size: {file_size} bytes ({len(parsed_files)} items parsed)")
+                    
+                    elif os.path.isfile(game_path):
+                        # Regular file
                         file_size = os.path.getsize(game_path)
                         logger.info(f"File size: {file_size} bytes")
                     elif os.path.isdir(game_path):
-                        # Calculate total size of directory recursively
+                        # Regular directory
                         total_size = 0
                         for dirpath, dirnames, filenames in os.walk(game_path):
                             for filename in filenames:

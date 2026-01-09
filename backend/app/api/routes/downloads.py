@@ -629,11 +629,14 @@ async def download_file(
                                                     'size': file_size
                                                 })
                                         
-                                        # Note: We don't include the .xbox360 file itself here because:
-                                        # - The directory download will place files in the directory structure
-                                        # - The .xbox360 file is a sibling of the directory, not inside it
-                                        # - Including it would require complex path calculations
-                                        # The .xbox360 file should be downloaded separately if needed
+                                        # Include the .xbox360 file itself in the download
+                                        # The .xbox360 file is a sibling of the directory, so it's relative to source_dir
+                                        xbox360_rel_path = os.path.relpath(base_path, source_dir)
+                                        xbox360_file_size = os.path.getsize(base_path)
+                                        files_list.append({
+                                            'relative_path': xbox360_rel_path.replace('\\', '/'),
+                                            'size': xbox360_file_size
+                                        })
                                     else:
                                         logger.warning(f"Directory {dir_full_path} is outside games directory, skipping")
                                 except ValueError:
