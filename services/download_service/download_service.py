@@ -603,7 +603,22 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
             total_bytes_downloaded = current_resume_from
                 
             # Open destination file
-            mode = 'ab' if current_resume_from > 0 else 'wb'
+            # When resuming, use 'r+b' mode to seek to the resume position and overwrite from there
+            # This ensures we don't append to a file that might be larger than expected
+            if current_resume_from > 0:
+                # Ensure file exists and is at least as large as resume position
+                if not os.path.exists(dest_path):
+                    # File doesn't exist, create it and start from beginning
+                    mode = 'wb'
+                    current_resume_from = 0
+                    total_bytes_downloaded = 0
+                    logger.warning(f"Resume position {current_resume_from} specified but file doesn't exist, starting from beginning")
+                else:
+                    # File exists - open in r+b mode, truncate to resume position, then seek there
+                    mode = 'r+b'
+            else:
+                mode = 'wb'  # Write mode for new files
+            
             bytes_downloaded_this_session = 0  # Track bytes downloaded in this session only
             chunk_count = 0
             download_start_time = time.time()
@@ -615,6 +630,11 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
             recent_rate_window_seconds = 10.0
             
             with open(dest_path, mode) as f:
+                # If resuming, truncate to resume position and seek there
+                if current_resume_from > 0:
+                    f.truncate(current_resume_from)
+                    f.seek(current_resume_from)
+                    logger.debug(f"Opened file for resume: truncated to {current_resume_from} bytes, positioned at {current_resume_from}")
                 try:
                     for chunk in response.iter_content(chunk_size=chunk_size):
                         # Check if download is paused (every 2 seconds)
@@ -707,6 +727,7 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
         
             # Explicitly close the response to free the connection
             response.close()
+            # File is automatically flushed and closed when exiting the 'with' block above
             
             # Check if stream ended unexpectedly (before all bytes were received)
             # This can happen if the server paused the download mid-stream
@@ -845,7 +866,19 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
     if paused_ref:
         paused_ref[0] = False
     
-    total_bytes_downloaded = bytes_already_transferred
+    # Calculate total bytes already downloaded from local files (don't use API value)
+    # This ensures we only rely on actual file sizes on disk, not potentially incorrect API values
+    total_bytes_downloaded = 0
+    for file_info in files_list:
+        rel_path = file_info['relative_path']
+        dest_file_path = os.path.join(dest_base_path, rel_path)
+        if os.path.exists(dest_file_path):
+            existing_size = os.path.getsize(dest_file_path)
+            file_size = file_info['size']
+            if existing_size <= file_size:
+                # Count existing file size (complete or partial)
+                total_bytes_downloaded += existing_size
+            # If file is larger than expected, it will be deleted later, so don't count it
     bytes_transferred_this_session = [0]
     start_time = time.time()
     last_report_time = start_time
@@ -912,6 +945,49 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
     # Track files with errors
     files_with_errors = []
     
+    # Pre-check phase: Validate all files and delete files with size mismatches
+    # This handles both new downloads and resuming downloads
+    # For special files (.m3u, .cue, .xbox360), files_list includes the special file + all referenced files
+    # Logic:
+    # - If existing_size > expected_size: Delete (corrupted, restart from 0)
+    # - If existing_size < expected_size: Keep (will resume in download loop)
+    # - If existing_size == expected_size: Keep (will skip in download loop)
+    logger.info(f"Pre-checking {len(files_list)} files for size validation...")
+    deleted_files_count = 0
+    for file_info in files_list:
+        relative_path = file_info['relative_path']
+        expected_size = file_info['size']
+        dest_file_path = os.path.join(dest_base_path, relative_path)
+        
+        # Check if file exists
+        if os.path.exists(dest_file_path):
+            try:
+                existing_size = os.path.getsize(dest_file_path)
+                # Delete files that are larger than expected (corrupted)
+                # Keep files that are smaller (will resume) or equal (will skip)
+                if existing_size > expected_size:
+                    logger.warning(f"File size mismatch for {relative_path}: local={existing_size} bytes, server={expected_size} bytes (too large, deleting)")
+                    try:
+                        os.remove(dest_file_path)
+                        deleted_files_count += 1
+                        logger.info(f"Deleted oversized file: {relative_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete oversized file {dest_file_path}: {e}")
+                        files_with_errors.append((relative_path, f"Failed to delete oversized file: {e}"))
+                elif existing_size < expected_size:
+                    logger.debug(f"File {relative_path} is partial: {existing_size}/{expected_size} bytes - will resume")
+                elif existing_size == expected_size:
+                    logger.debug(f"File size matches for {relative_path}: {existing_size} bytes - will skip if complete")
+            except Exception as e:
+                logger.warning(f"Error checking file size for {relative_path}: {e}")
+                # Continue with other files even if one fails
+                continue
+    
+    if deleted_files_count > 0:
+        logger.info(f"Pre-check complete: Deleted {deleted_files_count} file(s) that were larger than expected")
+    else:
+        logger.debug(f"Pre-check complete: No oversized files found")
+    
     try:
         # Download each file in the directory
         for file_info in files_list:
@@ -938,26 +1014,39 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
             os.makedirs(dest_file_dir, exist_ok=True)
             
             # Check if file already exists (for resume)
+            # After pre-check phase, files with size mismatches should have been deleted
+            # So if file exists here, it either has correct size (complete) or was not checked in pre-check
             resume_from = 0
             if os.path.exists(dest_file_path):
-                existing_size = os.path.getsize(dest_file_path)
-                if existing_size > file_size:
-                    # File is larger than expected - corrupted, delete it
-                    logger.error(f"Existing file size mismatch for {relative_path}: {existing_size} bytes, expected {file_size} bytes (file is too large, deleting)")
-                    try:
-                        os.remove(dest_file_path)
-                        logger.info(f"Deleted corrupted existing file: {dest_file_path}")
-                        resume_from = 0  # Start fresh
-                    except Exception as e:
-                        logger.error(f"Failed to delete corrupted existing file {dest_file_path}: {e}")
-                        files_with_errors.append((relative_path, f"Existing file size mismatch: {existing_size} > {file_size}"))
+                try:
+                    existing_size = os.path.getsize(dest_file_path)
+                    if existing_size > file_size:
+                        # File is larger than expected - should have been caught in pre-check, but handle defensively
+                        logger.error(f"File size mismatch for {relative_path}: {existing_size} bytes, expected {file_size} bytes (file is too large, deleting)")
+                        try:
+                            os.remove(dest_file_path)
+                            logger.info(f"Deleted corrupted existing file: {dest_file_path}")
+                            resume_from = 0  # Start fresh
+                        except Exception as e:
+                            logger.error(f"Failed to delete corrupted existing file {dest_file_path}: {e}")
+                            files_with_errors.append((relative_path, f"File size mismatch: {existing_size} > {file_size}"))
+                            continue
+                    elif existing_size < file_size:
+                        # File is smaller - partial download, resume from here
+                        resume_from = existing_size
+                        logger.info(f"Resuming file {relative_path} from byte {resume_from} (partial download)")
+                    elif existing_size == file_size:
+                        # File is complete - skip it
+                        logger.info(f"File already complete: {relative_path}")
+                        total_bytes_downloaded += file_size
                         continue
-                elif existing_size < file_size:
-                    resume_from = existing_size
-                    logger.info(f"Resuming file {relative_path} from byte {resume_from}")
-                elif existing_size == file_size:
-                    logger.info(f"File already complete: {relative_path}")
-                    total_bytes_downloaded += file_size
+                except FileNotFoundError:
+                    # File was deleted between pre-check and here (shouldn't happen, but handle gracefully)
+                    logger.debug(f"File {relative_path} was deleted between pre-check and download loop")
+                    resume_from = 0
+                except Exception as e:
+                    logger.error(f"Error checking file size for {relative_path}: {e}")
+                    files_with_errors.append((relative_path, f"Error checking file: {e}"))
                     continue
             
             logger.info(f"Downloading file: {relative_path} ({file_size} bytes)")
@@ -1618,22 +1707,6 @@ def download_game(download_info):
                             dest_base_path = os.path.dirname(dest_base_path)
                             logger.info(f"Adjusted dest_base_path for {source_file} to directory: {dest_base_path}")
                         
-                        # Calculate already downloaded bytes by checking existing files
-                        bytes_already_downloaded = 0
-                        for file_info in files_list:
-                            rel_path = file_info['relative_path']
-                            dest_file_path = os.path.join(dest_base_path, rel_path)
-                            if os.path.exists(dest_file_path):
-                                existing_size = os.path.getsize(dest_file_path)
-                                if existing_size == file_info['size']:
-                                    bytes_already_downloaded += existing_size
-                                elif existing_size < file_info['size']:
-                                    bytes_already_downloaded += existing_size
-                        
-                        # Use the larger of bytes_already_transferred or bytes_already_downloaded
-                        if bytes_already_downloaded > bytes_already_transferred:
-                            bytes_already_transferred = bytes_already_downloaded
-                        
                         # Extract base URL from http_url
                         from urllib.parse import urlparse
                         parsed = urlparse(http_url)
@@ -1643,9 +1716,10 @@ def download_game(download_info):
                         # Register this download's pause_ref so WebSocket notifications can pause it immediately
                         _active_download_pause_refs[download_id] = paused
                         try:
+                            # Pass 0 as bytes_already_transferred - download_directory_recursive will calculate from local files
                             success = download_directory_recursive(
                                 download_id, system, game_id, base_url, dest_base_path,
-                                files_list, bytes_already_transferred, paused
+                                files_list, 0, paused
                             )
                         finally:
                             # Clear paused_ref before cleanup to prevent false pause logs from old threads
@@ -1761,10 +1835,6 @@ def download_game(download_info):
                 
                 return True
         
-        # Use bytes_already_transferred from API if available and larger
-        if bytes_already_transferred > resume_from:
-            resume_from = bytes_already_transferred
-            logger.info(f"Using progress from API: resuming from byte {resume_from}")
         
         # If we need to resume, we can't reuse the existing response (need Range header)
         if resume_from > 0 and file_response:
