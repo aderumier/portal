@@ -59,14 +59,18 @@ class WebSocketManager:
         """Remove connection info from Redis."""
         redis_client = await self._get_redis_client()
         if not redis_client:
+            logger.debug(f"Redis client not available, skipping Redis cleanup for token_id {token_id}")
             return
         
         try:
             redis_key = f"{self._redis_key_prefix}{token_id}"
-            await redis_client.delete(redis_key)
-            logger.debug(f"Removed connection info from Redis for token_id {token_id}")
+            deleted = await redis_client.delete(redis_key)
+            if deleted:
+                logger.info(f"Removed connection info from Redis for token_id {token_id} (key: {redis_key})")
+            else:
+                logger.debug(f"Connection info not found in Redis for token_id {token_id} (may have been already removed)")
         except Exception as e:
-            logger.warning(f"Failed to remove connection info from Redis: {e}")
+            logger.warning(f"Failed to remove connection info from Redis for token_id {token_id}: {e}")
     
     async def add_connection(self, token_id: int, websocket: WebSocket, ip: Optional[str] = None, client_version: Optional[str] = None, token_string: Optional[str] = None, platform: Optional[str] = None) -> Tuple[bool, Optional[str]]:
         """Add a WebSocket connection for a token_id.

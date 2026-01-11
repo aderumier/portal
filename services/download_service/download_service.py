@@ -2151,14 +2151,14 @@ async def websocket_client():
     
     logger.info(f"Connecting to WebSocket: {ws_url.replace(API_TOKEN, '***')}")
     
-    reconnect_delay = 1  # Start with 1 second
-    max_reconnect_delay = 60  # Max 60 seconds
+    reconnect_delay = 60  # Start with 60 seconds (1 minute) - gives backend time to clean up old connection
+    max_reconnect_delay = 300  # Max 5 minutes
     
     while True:
         try:
             async with websockets.connect(ws_url) as websocket:
                 logger.info("WebSocket connected successfully")
-                reconnect_delay = 1  # Reset delay on successful connection
+                reconnect_delay = 60  # Reset to minimum 60 seconds on successful connection
                 
                 # Handle messages
                 while True:
