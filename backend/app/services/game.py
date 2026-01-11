@@ -1631,15 +1631,43 @@ class GameService:
         systems = self.get_systems()
         total_games = 0
         
-        # Helper function to get media path - paths are already normalized in catalog
+        # Helper function to normalize media path
         def get_media_path(media_type, game_data, system_id):
-            """Get media path - paths are already normalized with system prefix (and snapshot prefix for Releases)."""
-            # Paths in game_data are already normalized during catalog loading, so just return as-is
+            """Normalize media path by adding system prefix and snapshot path if needed.
+            
+            Media paths in catalog are stored exactly as in XML (no normalization),
+            so we need to normalize them here for search results.
+            
+            For WIP: returns {system_id}/{media_path}
+            For Releases: returns {system_id}/{snapshot_dir_path}/{media_path}
+            """
             path = game_data.get(media_type, '')
-            if path:
-                # Just strip any leading ./ if present (shouldn't be, but just in case)
-                path = path.lstrip('./')
-            return path
+            if not path:
+                return ''
+            
+            # Strip leading ./ if present
+            path = path.lstrip('./')
+            
+            # For Releases catalog, prepend snapshot directory path
+            if catalog_type == 'releases':
+                snapshot_path = self.system_snapshot_paths.get(system_id, '')
+                if snapshot_path:
+                    # snapshot_path is in format ".zfs/snapshot/v10.5/" (with leading dot)
+                    # Ensure it ends with / for proper joining
+                    snapshot_prefix = snapshot_path.rstrip('/') + '/'
+                    # Remove system prefix if already present
+                    if path.startswith(f"{system_id}/"):
+                        path = path[len(system_id) + 1:]
+                    # Add system prefix and snapshot path
+                    return f"{system_id}/{snapshot_prefix}{path}"
+            
+            # For WIP, ensure system prefix is present
+            if path.startswith(f"{system_id}/"):
+                # Already has system prefix, return as-is
+                return path
+            else:
+                # Add system prefix
+                return f"{system_id}/{path}"
         
         for system in systems:
             system_id = system['id']
