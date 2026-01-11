@@ -2038,14 +2038,20 @@ def mark_completed(download_id):
             json=data,
             headers=headers
         )
+        
+        # Check for 404 before raising - download may have already been removed/completed
+        # This can happen if the backend auto-completes the download or it was removed
+        if response.status_code == 404:
+            logger.debug(f"Download {download_id} already removed from queue (404) - treating as success since download completed locally")
+            return True  # Treat as success since download is completed locally
+        
         response.raise_for_status()
         logger.info(f"Marked download {download_id} as completed")
         return True
     except requests.exceptions.HTTPError as e:
-        # If 404, the download was already removed from queue (likely completed by another process or auto-removed)
-        # This is acceptable - the download is completed locally
+        # Handle other HTTP errors (shouldn't reach here for 404 since we handle it above, but keep as fallback)
         if e.response and e.response.status_code == 404:
-            logger.debug(f"Download {download_id} already removed from queue (likely completed) - this is OK")
+            logger.debug(f"Download {download_id} already removed from queue (404 in exception handler) - treating as success")
             return True  # Treat as success since download is completed locally
         logger.error(f"Failed to mark download as completed: {e}")
         # Clean up handler even if request failed
