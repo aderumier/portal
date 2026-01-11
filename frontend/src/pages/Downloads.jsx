@@ -246,7 +246,6 @@ const Downloads = () => {
                   <td className="status-cell">
                     <span className={`status-tag ${item.status}`}>
                       {item.status === 'user_queue' ? 'Queued' : 
-                       item.status === 'pending' ? 'Pending' :
                        item.status === 'downloading' ? 'Downloading' :
                        item.status === 'paused' ? 'Paused' :
                        item.status === 'completed' ? 'Completed' :
@@ -282,7 +281,7 @@ const Downloads = () => {
                   </td>
                   <td className="actions-cell">
                     <div className="action-buttons">
-                      {item.status === 'pending' || item.status === 'downloading' ? (
+                      {item.status === 'downloading' ? (
                         <button
                           className="pause-download-btn"
                           onClick={() => handlePause(item.download_id || item.id)}

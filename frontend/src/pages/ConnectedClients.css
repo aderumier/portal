@@ -1,0 +1,75 @@
+.connected-clients {
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.connected-clients h1 {
+  margin-bottom: 20px;
+  color: #333;
+}
+
+.clients-header {
+  margin-bottom: 20px;
+  padding: 10px;
+  background-color: #f5f5f5;
+  border-radius: 4px;
+}
+
+.clients-header p {
+  margin: 0;
+  font-weight: 500;
+  color: #666;
+}
+
+.no-clients {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
+
+.clients-grid {
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.clients-grid-header {
+  display: grid;
+  grid-template-columns: 1.5fr 1.5fr 2fr 1.5fr 1fr 2fr 1fr 1fr;
+  gap: 1px;
+  background-color: #e0e0e0;
+  font-weight: 600;
+  padding: 12px;
+  color: #333;
+}
+
+.clients-grid-row {
+  display: grid;
+  grid-template-columns: 1.5fr 1.5fr 2fr 1.5fr 1fr 2fr 1fr 1fr;
+  gap: 1px;
+  background-color: #f9f9f9;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.clients-grid-row:hover {
+  background-color: #f0f0f0;
+}
+
+.grid-cell {
+  padding: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #333;
+}
+
+.error {
+  color: #d32f2f;
+  padding: 20px;
+  background-color: #ffebee;
+  border-radius: 4px;
+  margin: 20px 0;
+}
+

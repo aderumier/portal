@@ -728,9 +728,22 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
             return True
             
         except requests.exceptions.HTTPError as e:
+            # Handle 410 errors - download was removed from queue, abort immediately
+            if e.response and e.response.status_code == 410:
+                logger.info(f"Download removed from queue (410 Gone) for URL: {http_url}")
+                logger.info(f"Aborting download as it was removed from queue")
+                # Close response if it exists
+                if 'response' in locals() and response:
+                    try:
+                        response.close()
+                    except:
+                        pass
+                # Return None to indicate download was removed (should abort immediately, no retry)
+                return None  # None indicates download was removed (different from False which indicates pause)
             # Handle 403 errors - download is paused
+            # IMPORTANT: Return immediately without retrying - 403 means download is paused
             if e.response and e.response.status_code == 403:
-                logger.info(f"Download paused (403) for URL: {http_url}")
+                logger.info(f"Download paused (403) for URL: {http_url} - aborting immediately, no retry")
                 if paused_ref:
                     paused_ref[0] = True
                 # Close response if it exists
@@ -739,6 +752,7 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                         response.close()
                     except:
                         pass
+                # Return immediately - exit function and while loop, no retry
                 return False  # Return False immediately - do NOT retry on pause
             # Handle 404 errors - file doesn't exist, remove from queue
             if e.response and e.response.status_code == 404:
@@ -926,9 +940,9 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
                 paused_ref=paused_ref
             )
             
-            # Check if file not found (404) or size mismatch (None)
+            # Check if file not found (404), removed from queue (410), or size mismatch (None)
             if success is None:
-                # None can mean either 404 or size mismatch
+                # None can mean 404, 410 (removed), or size mismatch
                 # Check if file exists to determine which case
                 if os.path.exists(dest_file_path):
                     # Size mismatch case - file exists but wrong size
@@ -946,10 +960,15 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
                     files_with_errors.append((relative_path, f"File size mismatch: {final_size} != {file_size}"))
                     continue
                 else:
-                    # 404 case - file not found
-                    logger.error(f"File not found (404) for {relative_path} in download {download_id}")
-                    files_with_errors.append((relative_path, "File not found (404)"))
-                    continue
+                    # 404 or 410 case - file not found or download removed
+                    # For 410 (removed from queue), we should abort immediately
+                    # For 404 (file not found), we should also abort as the file doesn't exist
+                    logger.error(f"File not available (404/410) for {relative_path} in download {download_id} - download was likely removed from queue or file doesn't exist")
+                    logger.info(f"Aborting download as file is no longer available")
+                    # Stop progress reporter thread immediately
+                    progress_thread_running = False
+                    progress_thread.join(timeout=1)
+                    return False  # Abort the entire download
             
             if not success:
                 # Check if this was a pause - only log if not already completed

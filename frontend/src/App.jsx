@@ -18,6 +18,7 @@ import MediaValidation from './pages/MediaValidation'
 import DownloadQueues from './pages/DownloadQueues'
 import UsersStats from './pages/UsersStats'
 import SystemsConfiguration from './pages/SystemsConfiguration'
+import ConnectedClients from './pages/ConnectedClients'
 
 function App() {
   return (
@@ -39,6 +40,7 @@ function App() {
             <Route path="users-stats" element={<ProtectedRoute requireAdmin><UsersStats /></ProtectedRoute>} />
             <Route path="media-validation" element={<ProtectedRoute requireAdmin><MediaValidation /></ProtectedRoute>} />
             <Route path="download-queues" element={<ProtectedRoute requireAdmin><DownloadQueues /></ProtectedRoute>} />
+            <Route path="connected-clients" element={<ProtectedRoute requireAdmin><ConnectedClients /></ProtectedRoute>} />
             <Route path="systems-configuration" element={<ProtectedRoute requireAdmin><SystemsConfiguration /></ProtectedRoute>} />
           </Route>
         </Routes>

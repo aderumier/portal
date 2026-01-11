@@ -115,6 +115,13 @@ const Layout = () => {
                             Download Queues
                           </Link>
                           <Link 
+                            to="/connected-clients" 
+                            className="account-menu-item"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Connected Clients
+                          </Link>
+                          <Link 
                             to="/systems-configuration" 
                             className="account-menu-item"
                             onClick={() => setAccountMenuOpen(false)}

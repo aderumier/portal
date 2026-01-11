@@ -1,17 +1,20 @@
 """Download queue routes."""
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse, ORJSONResponse
 from starlette.requests import Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import and_
 from app.database import get_db, DownloadQueue
 from app.services.download import DownloadService
+from app.services.websocket_manager import get_websocket_manager
 from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.roles import require_download_role, require_admin_role
 from app.api.routes.catalog import get_game_service
 from app.config import settings
 from typing import Optional
 import logging
+import json
 import os
 import asyncio
 import time
@@ -40,6 +43,12 @@ class ProgressRequest(BaseModel):
 
 class MarkCompletedRequest(BaseModel):
     download_id: int
+    client_version: Optional[str] = None  # Download client version
+    log_content: Optional[str] = None  # Download task log content
+
+class MarkErrorRequest(BaseModel):
+    download_id: int
+    error_message: str
     client_version: Optional[str] = None  # Download client version
     log_content: Optional[str] = None  # Download task log content
 
@@ -165,7 +174,7 @@ async def add_to_queue(
                 detail=f"No system ID found for game: {game_id}"
             )
     
-    success = download_service.add_to_queue(user_id, game_id, user_has_fastdownload, token_id=token_id, catalog_version=catalog_version)
+    success = await download_service.add_to_queue(user_id, game_id, user_has_fastdownload, token_id=token_id, catalog_version=catalog_version)
     
     if not success:
         raise HTTPException(
@@ -221,12 +230,203 @@ async def get_download_config(
 ):
     """Get download service configuration (for download_service.py).
     
-    Returns configuration values like polling interval.
+    Returns configuration values like bandwidth update interval.
     """
     return {
-        "polling_interval": settings.POLLING_INTERVAL,
         "bandwidth_update_interval": settings.BANDWIDTH_UPDATE_INTERVAL
     }
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)):
+    """WebSocket endpoint for download service notifications.
+    
+    Clients connect with their API token as a query parameter: ws://host/api/download/ws?token=TOKEN
+    Server will send notifications when games are added to user_queue for the connected token_id.
+    """
+    await websocket.accept()
+    
+    # Get token, version, and platform from query parameters
+    token = websocket.query_params.get("token")
+    version = websocket.query_params.get("version", "unknown")
+    platform = websocket.query_params.get("platform", "unknown")
+    logger.debug(f"WebSocket connection attempt - token: {'present' if token else 'missing'}, version: {version}, platform: {platform}")
+    
+    if not token:
+        logger.warning("WebSocket connection rejected: no token provided")
+        await websocket.close(code=4001, reason="No token provided")
+        return
+    
+    # Validate token and get token_id
+    from app.services.token import ApiTokenService
+    
+    token_service = ApiTokenService(db)
+    
+    # Get client IP from X-Forwarded-For header if present (for proxies), otherwise use websocket.client.host
+    # This matches the logic in get_client_ip() but adapted for WebSocket connections
+    client_ip = "unknown"
+    
+    # Check X-Forwarded-For header (used by reverse proxies like nginx)
+    # Format: "client, proxy1, proxy2" - we want the first (original client)
+    forwarded_for = websocket.headers.get("x-forwarded-for", "").strip()
+    if forwarded_for:
+        # Take the first IP if multiple are present
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        # Check X-Real-IP header (alternative proxy header)
+        real_ip = websocket.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            client_ip = real_ip
+        elif websocket.client:
+            # Fall back to direct connection IP
+            client_ip = websocket.client.host
+    
+    try:
+        # Extract token from Bearer format if present
+        token_string = token  # Keep original for Redis tracking
+        if token_string.startswith("Bearer "):
+            token_string = token_string[7:]
+        
+        # Validate token
+        token_info = await token_service.validate_token(token_string, client_ip)
+        if not token_info:
+            logger.warning(f"WebSocket connection rejected: invalid token from {client_ip}")
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+        
+        token_id = token_info['token_id']
+        user_id = token_info['user_id']
+        
+        # Get client version and platform from query params (already extracted above)
+        client_version = version
+        client_platform = platform
+        
+        logger.info(f"WebSocket connection authenticated: token_id={token_id}, user_id={user_id}, IP={client_ip}, version={client_version}, platform={client_platform}")
+        
+        # Register connection with WebSocket manager (pass token_string and platform for Redis tracking)
+        ws_manager = get_websocket_manager()
+        accepted, reason = await ws_manager.add_connection(token_id, websocket, ip=client_ip, client_version=client_version, token_string=token_string, platform=client_platform)
+        
+        if not accepted:
+            logger.warning(f"Connection rejected for token_id {token_id} from {client_ip}: {reason}")
+            await websocket.close(code=4002, reason=reason)
+            return
+        
+        logger.debug(f"Connection registered in WebSocket manager for token_id {token_id}")
+        
+        # Check for available downloads and notify client
+        download_service = get_download_service(db)
+        available_downloads = download_service.check_available_downloads(token_id=token_id)
+        logger.debug(f"Checked available downloads for token_id {token_id}: {available_downloads}")
+        
+        # Send welcome message with download status
+        try:
+            await websocket.send_json({
+                "type": "connected",
+                "token_id": token_id,
+                "message": "WebSocket connection established",
+                "has_downloads": available_downloads.get('has_any', False),
+                "has_user_queue": available_downloads.get('has_user_queue', False),
+                "has_resumable": available_downloads.get('has_resumable', False)
+            })
+            logger.debug(f"Sent 'connected' message to token_id {token_id}")
+        except Exception as e:
+            logger.error(f"Error sending 'connected' message to token_id {token_id}: {e}", exc_info=True)
+            raise  # Re-raise to close connection
+        
+        # If there are downloads available, send notification(s)
+        if available_downloads.get('has_any', False):
+            try:
+                # Check which queue types have downloads in user_queue
+                from app.database import DownloadQueue
+                user_queue_items = db.query(DownloadQueue).filter(
+                    DownloadQueue.status == 'user_queue',
+                    DownloadQueue.token_id == token_id
+                ).all()
+                
+                # Send notification for each unique queue_type
+                queue_types_notified = set()
+                for item in user_queue_items:
+                    if item.queue_type not in queue_types_notified:
+                        await ws_manager.send_notification(token_id, {
+                            "type": "download_available",
+                            "queue_type": item.queue_type
+                        })
+                        queue_types_notified.add(item.queue_type)
+                        logger.info(f"Sent initial download notification for token_id {token_id}, queue_type={item.queue_type}")
+                
+                # If there are resumable downloads, also send a notification
+                if available_downloads.get('has_resumable', False):
+                    # Check what queue_type the resumable downloads are
+                    resumable_items = db.query(DownloadQueue).filter(
+                        DownloadQueue.status == 'downloading',
+                        DownloadQueue.active_download == True,
+                        DownloadQueue.token_id == token_id,
+                        DownloadQueue.status != 'paused'
+                    ).all()
+                    
+                    for item in resumable_items:
+                        if item.queue_type not in queue_types_notified:
+                            await ws_manager.send_notification(token_id, {
+                                "type": "download_available",
+                                "queue_type": item.queue_type
+                            })
+                            queue_types_notified.add(item.queue_type)
+                            logger.info(f"Sent resumable download notification for token_id {token_id}, queue_type={item.queue_type}")
+            except Exception as e:
+                logger.error(f"Error sending initial download notifications: {e}", exc_info=True)
+                # Don't fail the connection if notification sending fails
+        
+        # Keep connection alive with periodic ping and handle messages
+        logger.debug(f"Entering message loop for token_id {token_id}")
+        try:
+            while True:
+                # Wait for messages (client can send pings or close messages)
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                    # Handle client messages if needed (e.g., ping/pong)
+                    try:
+                        message = json.loads(data)
+                        if message.get("type") == "ping":
+                            await websocket.send_json({"type": "pong"})
+                        elif message.get("type") == "pong":
+                            # Client responded to our ping
+                            logger.debug(f"Received pong from token_id {token_id}")
+                    except json.JSONDecodeError:
+                        # Non-JSON message, ignore
+                        pass
+                except asyncio.TimeoutError:
+                    # Send ping to keep connection alive
+                    try:
+                        await websocket.send_json({"type": "ping"})
+                    except RuntimeError as e:
+                        # Connection is closed
+                        logger.debug(f"Connection closed while sending ping to token_id {token_id}: {e}")
+                        break
+                    except Exception as e:
+                        logger.debug(f"Error sending ping to token_id {token_id}: {e}")
+                        break
+                        
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket disconnected: token_id={token_id}")
+        except RuntimeError as e:
+            # Connection closed
+            logger.info(f"WebSocket connection closed for token_id {token_id}: {e}")
+        except Exception as e:
+            logger.error(f"WebSocket error for token_id={token_id}: {e}", exc_info=True)
+        finally:
+            # Remove connection on disconnect (only if it's still this connection)
+            # This prevents removing a new connection if this is the old one being replaced
+            try:
+                await ws_manager.remove_connection(token_id, websocket)
+            except Exception as e:
+                logger.debug(f"Error removing connection (may already be replaced): {e}")
+            
+    except Exception as e:
+        logger.error(f"Error in WebSocket connection: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason="Internal server error")
+        except:
+            pass
 
 @router.post("/request")
 async def request_download(
@@ -239,7 +439,7 @@ async def request_download(
     """Request next available download (for download_service.py).
     
     Only returns downloads associated with the authenticated token.
-    Also returns current polling_interval so the service can update its configuration.
+    Also returns current bandwidth_update_interval so the service can update its configuration.
     
     If queue_type is not specified, searches all queues (fast and slow) for downloads
     associated with the token_id and returns the first available download.
@@ -265,13 +465,11 @@ async def request_download(
     if not download_info:
         return {
             "download": None,
-            "polling_interval": settings.POLLING_INTERVAL,
             "bandwidth_update_interval": settings.BANDWIDTH_UPDATE_INTERVAL
         }
     
     return {
         "download": download_info,
-        "polling_interval": settings.POLLING_INTERVAL,
         "bandwidth_update_interval": settings.BANDWIDTH_UPDATE_INTERVAL
     }
 
@@ -344,7 +542,38 @@ async def mark_completed(
     if log_content:
         download_service.store_download_log(download_id, log_content)
     
-    success = download_service.complete_download(download_id)
+    success = await download_service.complete_download(download_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Download not found"
+        )
+    
+    return {"success": True}
+
+@router.post("/error")
+async def mark_error(
+    request: MarkErrorRequest,
+    current_user: dict = Depends(require_auth_user),
+    download_service: DownloadService = Depends(get_download_service)
+):
+    """Mark a download as error (used by download service)."""
+    download_id = request.download_id
+    error_message = request.error_message
+    log_content = request.log_content
+    
+    if download_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid download ID"
+        )
+    
+    # Store log if provided
+    if log_content:
+        download_service.store_download_log(download_id, log_content)
+    
+    success = await download_service.mark_download_error(download_id, error_message)
     
     if not success:
         raise HTTPException(
@@ -425,7 +654,8 @@ async def remove_download(
 async def pause_download(
     download_id: int,
     current_user: dict = Depends(require_download_role),
-    download_service: DownloadService = Depends(get_download_service)
+    download_service: DownloadService = Depends(get_download_service),
+    db: Session = Depends(get_db)
 ):
     """Pause a download in the queue."""
     user_id = current_user['id']
@@ -436,6 +666,16 @@ async def pause_download(
             detail="Invalid download ID"
         )
     
+    # Get download to check token_id before pausing
+    from app.database import DownloadQueue
+    download = db.query(DownloadQueue).filter(DownloadQueue.id == download_id).first()
+    
+    if not download:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Download not found or cannot be paused"
+        )
+    
     success = download_service.pause_download(user_id, download_id)
     
     if not success:
@@ -444,13 +684,24 @@ async def pause_download(
             detail="Download not found or cannot be paused"
         )
     
+    # Send WebSocket notification
+    if download.token_id:
+        ws_manager = get_websocket_manager()
+        await ws_manager.send_notification(download.token_id, {
+            "type": "download_paused",
+            "download_id": download_id,
+            "queue_type": download.queue_type
+        })
+        logger.info(f"Sent pause notification for download {download_id} to token_id {download.token_id}")
+    
     return {"success": True}
 
 @router.post("/queue/{download_id}/resume")
 async def resume_download(
     download_id: int,
     current_user: dict = Depends(require_download_role),
-    download_service: DownloadService = Depends(get_download_service)
+    download_service: DownloadService = Depends(get_download_service),
+    db: Session = Depends(get_db)
 ):
     """Resume a paused download."""
     user_id = current_user['id']
@@ -461,6 +712,16 @@ async def resume_download(
             detail="Invalid download ID"
         )
     
+    # Get download to check token_id before resuming
+    from app.database import DownloadQueue
+    download = db.query(DownloadQueue).filter(DownloadQueue.id == download_id).first()
+    
+    if not download:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Download not found or cannot be resumed"
+        )
+    
     success = download_service.resume_download(user_id, download_id)
     
     if not success:
@@ -468,6 +729,32 @@ async def resume_download(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Download not found or cannot be resumed"
         )
+    
+    # Check if there's already an active download for this token_id
+    # If so, don't send notification - the resumed download will be picked up when current download finishes
+    from app.database import DownloadQueue
+    has_active = db.query(DownloadQueue).filter(
+        and_(
+            DownloadQueue.token_id == download.token_id,
+            DownloadQueue.active_download == True,
+            DownloadQueue.status == 'downloading',
+            DownloadQueue.id != download_id  # Exclude the download we just resumed
+        )
+    ).first()
+    
+    if not has_active:
+        # No active downloads - send notification so client can request it immediately
+        if download.token_id:
+            ws_manager = get_websocket_manager()
+            await ws_manager.send_notification(download.token_id, {
+                "type": "download_available",
+                "queue_type": download.queue_type
+            })
+            logger.info(f"Sent resume notification for download {download_id} to token_id {download.token_id} (no active downloads)")
+    else:
+        # Active download in progress - don't send notification
+        # The resumed download will be picked up automatically when current download finishes
+        logger.info(f"Resumed download {download_id} but not sending notification - active download {has_active.id} is in progress")
     
     return {"success": True}
 
@@ -585,7 +872,7 @@ async def download_file(
                 DownloadQueue.token_id == token_id,
                 DownloadQueue.game_id == game_id,
                 or_(
-                    DownloadQueue.status.in_(['user_queue', 'pending', 'downloading', 'paused']),
+                    DownloadQueue.status.in_(['user_queue', 'downloading', 'paused']),
                     and_(
                         DownloadQueue.status == 'completed',
                         DownloadQueue.created_at >= recent_threshold
@@ -607,9 +894,11 @@ async def download_file(
             ).first()
         
         if not queue_item:
+            # Download was removed from queue - return 410 Gone to signal the download service to stop
+            logger.info(f"File download requested for removed download: game_id={game_id}, system={system}, relative_path={relative_path}")
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="File not found in your download queue or access denied"
+                status_code=status.HTTP_410_GONE,
+                detail="Download was removed from queue"
             )
         
         # Refresh the queue item to ensure we have the latest status
@@ -861,7 +1150,7 @@ async def download_file(
             allocated_bandwidth = 0
             logger.info(f"Queue item status: {queue_item.status}, queue_type: {queue_item.queue_type}")
             
-            if queue_item.status in ['downloading', 'pending'] and queue_item.queue_type:
+            if queue_item.status in ['downloading'] and queue_item.queue_type:
                 # Get allocated bandwidth from the bandwidth manager
                 from app.services.bandwidth import BandwidthManager
                 bandwidth_manager = BandwidthManager(db)
@@ -1101,4 +1390,38 @@ async def get_all_queues(
     """Get all active downloads from all queues (admin only)."""
     queues = download_service.get_all_active_downloads()
     return queues
+
+@router.get("/clients/connected")
+async def get_connected_clients(
+    current_user: dict = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+):
+    """Get all connected WebSocket clients (admin only)."""
+    ws_manager = get_websocket_manager()
+    connections = await ws_manager.get_all_connections()
+    
+    # Enrich with token and user info
+    from app.database import ApiToken, User
+    
+    enriched_connections = []
+    for conn in connections:
+        token_id = conn.get("token_id")
+        if token_id:
+            # Get token info
+            token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
+            if token:
+                user = db.query(User).filter(User.user_id == token.user_id).first()
+                enriched_connections.append({
+                    "token_id": token_id,
+                    "token_string": conn.get("token_string", "unknown"),
+                    "token_name": token.name,
+                    "username": user.username if user else token.user_id,
+                    "user_id": token.user_id,
+                    "ip": conn.get("ip", "unknown"),
+                    "client_version": conn.get("client_version", "unknown"),
+                    "platform": conn.get("platform", "unknown"),
+                    "connected_at": conn.get("connected_at")
+                })
+    
+    return {"connections": enriched_connections, "count": len(enriched_connections)}
 

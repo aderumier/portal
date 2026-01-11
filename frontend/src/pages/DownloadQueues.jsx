@@ -96,10 +96,6 @@ const DownloadQueues = () => {
           <div className="stat-label">Active Downloads</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value">{queues?.total_pending || 0}</div>
-          <div className="stat-label">Pending Downloads</div>
-        </div>
-        <div className="stat-card">
           <div className="stat-value">{queues?.total_user_queue || 0}</div>
           <div className="stat-label">User Queue (Waiting)</div>
         </div>
@@ -184,106 +180,6 @@ const DownloadQueues = () => {
                         <div className="download-item-header">
                           <h3>{download.game_name}</h3>
                           <span className="status-badge status-user_queue">User Queue</span>
-                        </div>
-                        <div className="download-item-details">
-                          <div className="detail-row">
-                            <span className="detail-label">System:</span>
-                            <span className="detail-value">{download.system_name || download.system}</span>
-                          </div>
-                          <div className="detail-row">
-                            <span className="detail-label">Version:</span>
-                            <span className="detail-value">{download.catalog_version || 'WIP'}</span>
-                          </div>
-                          {download.client_version && (
-                            <div className="detail-row">
-                              <span className="detail-label">Client:</span>
-                              <span className="detail-value">{download.client_version}</span>
-                            </div>
-                          )}
-                          <div className="detail-row">
-                            <span className="detail-label">User:</span>
-                            <span className="detail-value">{download.username || download.user_id}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Pending Downloads Section */}
-        {(queues?.pending_fast?.length > 0 || queues?.pending_slow?.length > 0) && (
-          <div className="queue-section pending-section">
-            <h2 className="queue-title pending-queue">
-              Pending Downloads ({queues?.total_pending || 0})
-            </h2>
-            <p className="queue-description">Games ready to be downloaded, waiting for download service</p>
-            
-            {queues?.pending_fast?.length > 0 && (
-              <div className="pending-subsection">
-                <h3 className="sub-queue-title">Fast Queue ({queues.pending_fast.length})</h3>
-                <div className="downloads-list">
-                  {queues.pending_fast.map((download) => (
-                    <div key={download.id} className="download-item">
-                      <div className="download-item-image">
-                        {download.image ? (
-                          <img src={getMediaUrl(download.image)} alt={download.game_name} />
-                        ) : (
-                          <div className="no-image">No Image</div>
-                        )}
-                      </div>
-                      <div className="download-item-info">
-                        <div className="download-item-header">
-                          <h3>{download.game_name}</h3>
-                          <span className="status-badge status-pending">Pending</span>
-                        </div>
-                        <div className="download-item-details">
-                          <div className="detail-row">
-                            <span className="detail-label">System:</span>
-                            <span className="detail-value">{download.system_name || download.system}</span>
-                          </div>
-                          <div className="detail-row">
-                            <span className="detail-label">Version:</span>
-                            <span className="detail-value">{download.catalog_version || 'WIP'}</span>
-                          </div>
-                          {download.client_version && (
-                            <div className="detail-row">
-                              <span className="detail-label">Client:</span>
-                              <span className="detail-value">{download.client_version}</span>
-                            </div>
-                          )}
-                          <div className="detail-row">
-                            <span className="detail-label">User:</span>
-                            <span className="detail-value">{download.username || download.user_id}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-            {queues?.pending_slow?.length > 0 && (
-              <div className="pending-subsection">
-                <h3 className="sub-queue-title">Slow Queue ({queues.pending_slow.length})</h3>
-                <div className="downloads-list">
-                  {queues.pending_slow.map((download) => (
-                    <div key={download.id} className="download-item">
-                      <div className="download-item-image">
-                        {download.image ? (
-                          <img src={getMediaUrl(download.image)} alt={download.game_name} />
-                        ) : (
-                          <div className="no-image">No Image</div>
-                        )}
-                      </div>
-                      <div className="download-item-info">
-                        <div className="download-item-header">
-                          <h3>{download.game_name}</h3>
-                          <span className="status-badge status-pending">Pending</span>
                         </div>
                         <div className="download-item-details">
                           <div className="detail-row">

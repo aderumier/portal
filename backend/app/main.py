@@ -66,6 +66,9 @@ async def preload_game_data():
     # Start background task for cleaning up stuck downloads
     asyncio.create_task(cleanup_stuck_downloads())
     
+    # Start background task for promoting user_queue items to pending
+    asyncio.create_task(promote_user_queue_items())
+    
     # Initialize GeoIP instance on startup
     try:
         from app.services.geoip import get_geoip_instance
@@ -269,6 +272,93 @@ async def root():
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+async def promote_user_queue_items():
+    """Background task to periodically check and promote user_queue items to pending.
+    
+    Runs every 5 seconds and:
+    - Checks for items in user_queue
+    - Promotes items to pending if user has no active downloads
+    - Sends WebSocket notifications to connected clients
+    """
+    from app.database import get_db, DownloadQueue
+    from app.services.download import DownloadService
+    from app.services.websocket_manager import get_websocket_manager
+    
+    while True:
+        try:
+            await asyncio.sleep(5)  # Run every 5 seconds
+            
+            # Get database session
+            db = next(get_db())
+            try:
+                from app.api.routes.catalog import get_game_service
+                game_service = get_game_service()
+                download_service = DownloadService(db, game_service)
+                ws_manager = get_websocket_manager()
+                
+                # Get all items in user_queue grouped by token_id
+                user_queue_items = db.query(DownloadQueue).filter(
+                    DownloadQueue.status == 'user_queue'
+                ).order_by(DownloadQueue.created_at.asc()).all()
+                
+                if not user_queue_items:
+                    continue
+                
+                # Group by token_id
+                items_by_token = {}
+                for item in user_queue_items:
+                    if item.token_id:
+                        if item.token_id not in items_by_token:
+                            items_by_token[item.token_id] = []
+                        items_by_token[item.token_id].append(item)
+                
+                # Process each token_id
+                for token_id, items in items_by_token.items():
+                    try:
+                        # Check if this token_id has any active downloads (downloading status)
+                        # This includes downloads that are actively being downloaded
+                        has_active = db.query(DownloadQueue).filter(
+                            and_(
+                                DownloadQueue.token_id == token_id,
+                                DownloadQueue.active_download == True,
+                                DownloadQueue.status == 'downloading'
+                            )
+                        ).first()
+                        
+                        if not has_active:
+                            # No active downloads for this token - items stay in user_queue
+                            # get_next_download now looks for user_queue items directly, so no status change needed
+                            # Just send notification so client requests next download
+                            queue_types_processed = set()
+                            
+                            for item in items:
+                                if item.queue_type not in queue_types_processed:
+                                    # Item stays in user_queue - get_next_download will pick it up
+                                    # Send WebSocket notification if client is connected
+                                    notification_sent = await ws_manager.send_notification(token_id, {
+                                        "type": "download_available",
+                                        "queue_type": item.queue_type
+                                    })
+                                    if notification_sent:
+                                        logger.info(f"Sent download notification to token_id {token_id} for queue_type {item.queue_type} (item {item.id} in user_queue)")
+                                    
+                                    queue_types_processed.add(item.queue_type)
+                                    
+                                    # Only notify for one per queue_type per cycle
+                                    break
+                    except Exception as e:
+                        logger.error(f"Error processing user_queue items for token_id {token_id}: {e}", exc_info=True)
+                        db.rollback()
+                        
+            except Exception as e:
+                logger.error(f"Error in promote_user_queue_items background task: {e}", exc_info=True)
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error(f"Critical error in promote_user_queue_items background task: {e}", exc_info=True)
+            await asyncio.sleep(5)  # Wait before retrying
 
 async def cleanup_stuck_downloads():
     """Background task to detect and clean up stuck downloads.

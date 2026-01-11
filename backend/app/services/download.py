@@ -419,7 +419,7 @@ class DownloadService:
         
         return enriched_game
     
-    def add_to_queue(self, user_id: str, game_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None, catalog_version: Optional[str] = None) -> bool:
+    async def add_to_queue(self, user_id: str, game_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None, catalog_version: Optional[str] = None) -> bool:
         """Add a game to the user's FIFO queue."""
         try:
             logger.info(f"Adding to user queue - Game ID: {game_id}, User ID: {user_id}, catalog_version: {catalog_version}")
@@ -471,7 +471,7 @@ class DownloadService:
                     DownloadQueue.user_id == user_id,
                     DownloadQueue.game_id == game_id,
                     DownloadQueue.catalog_version == catalog_version,
-                    DownloadQueue.status.in_(['user_queue', 'pending', 'downloading'])
+                    DownloadQueue.status.in_(['user_queue', 'downloading'])
                 )
             ).first()
             
@@ -570,6 +570,22 @@ class DownloadService:
             self.db.commit()
             
             logger.info(f"Successfully added game to user queue: {game_id}")
+            
+            # Notify connected WebSocket clients if any
+            if token_id is not None:
+                try:
+                    from app.services.websocket_manager import get_websocket_manager
+                    ws_manager = get_websocket_manager()
+                    if ws_manager.has_connection(token_id):
+                        await ws_manager.send_notification(token_id, {
+                            "type": "download_available",
+                            "queue_type": queue_type
+                        })
+                        logger.info(f"Sent WebSocket notification to token_id {token_id} for queue_type {queue_type}")
+                except Exception as e:
+                    # Don't fail the queue addition if notification fails
+                    logger.warning(f"Failed to send WebSocket notification: {e}")
+            
             return True
         except Exception as e:
             logger.error(f"Error adding to download queue: {e}")
@@ -659,9 +675,9 @@ class DownloadService:
         try:
             from app.database import User
             
-            # Get all downloads with status 'user_queue', 'pending', or 'downloading'
+            # Get all downloads with status 'user_queue' or 'downloading'
             all_downloads = self.db.query(DownloadQueue).filter(
-                DownloadQueue.status.in_(['user_queue', 'pending', 'downloading'])
+                DownloadQueue.status.in_(['user_queue', 'downloading'])
             ).order_by(DownloadQueue.created_at.asc()).all()
             
             # Collect unique user IDs and fetch usernames from User table
@@ -740,11 +756,9 @@ class DownloadService:
                 else:
                     slow_queue.append(download_item)
             
-            # Separate user_queue items from pending/downloading
+            # Separate user_queue items from downloading
             user_queue_fast = [d for d in fast_queue if d['status'] == 'user_queue']
             user_queue_slow = [d for d in slow_queue if d['status'] == 'user_queue']
-            pending_fast = [d for d in fast_queue if d['status'] == 'pending']
-            pending_slow = [d for d in slow_queue if d['status'] == 'pending']
             downloading_fast = [d for d in fast_queue if d['status'] == 'downloading']
             downloading_slow = [d for d in slow_queue if d['status'] == 'downloading']
             
@@ -753,12 +767,9 @@ class DownloadService:
                 'slow_queue': slow_queue,
                 'user_queue_fast': user_queue_fast,
                 'user_queue_slow': user_queue_slow,
-                'pending_fast': pending_fast,
-                'pending_slow': pending_slow,
                 'downloading_fast': downloading_fast,
                 'downloading_slow': downloading_slow,
                 'total_active': len([d for d in all_downloads if d.active_download]),
-                'total_pending': len([d for d in all_downloads if d.status == 'pending']),
                 'total_user_queue': len([d for d in all_downloads if d.status == 'user_queue'])
             }
         except Exception as e:
@@ -770,12 +781,9 @@ class DownloadService:
                 'slow_queue': [],
                 'user_queue_fast': [],
                 'user_queue_slow': [],
-                'pending_fast': [],
-                'pending_slow': [],
                 'downloading_fast': [],
                 'downloading_slow': [],
                 'total_active': 0,
-                'total_pending': 0,
                 'total_user_queue': 0
             }
     
@@ -842,8 +850,8 @@ class DownloadService:
                 logger.warning(f"Download {download_id} not found for user {user_id}")
                 return False
             
-            # Only allow pausing if status is pending or downloading
-            if download.status not in ['pending', 'downloading']:
+            # Only allow pausing if status is downloading
+            if download.status != 'downloading':
                 logger.warning(f"Cannot pause download {download_id} with status {download.status}")
                 return False
             
@@ -859,6 +867,18 @@ class DownloadService:
             
             self.db.commit()
             logger.info(f"Paused download {download_id} for user {user_id}")
+            
+            # Send WebSocket notification to client (if token_id exists)
+            if download.token_id:
+                try:
+                    from app.services.websocket_manager import get_websocket_manager
+                    ws_manager = get_websocket_manager()
+                    # Note: We can't await here since this is a sync method
+                    # The endpoint will handle the async notification
+                    pass
+                except Exception as e:
+                    logger.debug(f"Could not get websocket manager in pause_download: {e}")
+            
             return True
         except Exception as e:
             logger.error(f"Error pausing download: {e}")
@@ -866,7 +886,7 @@ class DownloadService:
             return False
     
     def resume_download(self, user_id: str, download_id: int) -> bool:
-        """Resume a paused download (change status back to pending)."""
+        """Resume a paused download (change status back to user_queue)."""
         try:
             download = self.db.query(DownloadQueue).filter(
                 and_(
@@ -884,8 +904,8 @@ class DownloadService:
                 logger.warning(f"Cannot resume download {download_id} with status {download.status}")
                 return False
             
-            # Change status back to pending (will be picked up by download service)
-            download.status = 'pending'
+            # Change status back to user_queue (will be picked up by download service)
+            download.status = 'user_queue'
             download.active_download = False
             
             self.db.commit()
@@ -925,67 +945,63 @@ class DownloadService:
         return enriched
     
     def _promote_user_queue_to_global(self, queue_type: Optional[str] = None, token_id: Optional[int] = None) -> bool:
-        """Promote items from user queues to global queue (fast or slow) when users have no active downloads.
+        """This method is no longer needed - downloads go directly from user_queue to downloading.
         
-        This is called when the download service connects and requests a download.
-        Games are moved from user_queue status to pending status, keeping their queue_type (fast/slow).
-        Only promotes games associated with the specified token_id.
+        Kept for backward compatibility but does nothing now. get_next_download now looks for user_queue items directly.
         """
+        # No longer needed - get_next_download now looks for user_queue items directly
+        # No status change needed - items stay in user_queue until picked up
+        return False
+    
+    def check_available_downloads(self, token_id: Optional[int] = None) -> Dict[str, bool]:
+        """Check if there are any downloads available for a token_id.
+        
+        Checks for:
+        - Downloads in user_queue
+        - Resumable downloads (downloading status that can be resumed)
+        
+        Args:
+            token_id: The API token ID to check
+            
+        Returns:
+            Dict with keys 'has_user_queue', 'has_resumable', 'has_any'
+        """
+        if token_id is None:
+            return {'has_user_queue': False, 'has_resumable': False, 'has_any': False}
+        
         try:
-            # Find items in user_queue for the specific token
-            # Get all user_queue items ordered by created_at (FIFO)
-            user_queue_query = self.db.query(DownloadQueue).filter(
-                DownloadQueue.status == 'user_queue'
-            )
+            # Check for items in user_queue
+            user_queue_count = self.db.query(DownloadQueue).filter(
+                DownloadQueue.status == 'user_queue',
+                DownloadQueue.token_id == token_id
+            ).count()
+            has_user_queue = user_queue_count > 0
             
-            # Filter by token_id if provided (required for token-based downloads)
-            if token_id is not None:
-                user_queue_query = user_queue_query.filter(DownloadQueue.token_id == token_id)
+            # Check for resumable downloads
+            # Since only one connection per token_id is allowed, any download in "downloading" 
+            # status for this token_id is potentially resumable (the service may have restarted).
+            # Note: Paused downloads are not considered "resumable" here - they need to be manually
+            # resumed by the user, at which point they become 'user_queue' and will be picked up.
+            resumable_count = self.db.query(DownloadQueue).filter(
+                DownloadQueue.status == 'downloading',
+                DownloadQueue.active_download == True,
+                DownloadQueue.token_id == token_id,
+                DownloadQueue.status != 'paused'
+            ).count()
+            has_resumable = resumable_count > 0
             
-            if queue_type:
-                user_queue_query = user_queue_query.filter(DownloadQueue.queue_type == queue_type)
+            has_any = has_user_queue or has_resumable
             
-            user_queue_items = user_queue_query.order_by(DownloadQueue.created_at.asc()).all()
-            
-            if not user_queue_items:
-                logger.debug(f"No items in user queue to promote (token_id: {token_id}, queue_type: {queue_type})")
-                return False
-            
-            logger.info(f"Found {len(user_queue_items)} items in user queue for token {token_id}, checking for promotion...")
-            
-            promoted = False
-            for item in user_queue_items:
-                # Check if this user has any active downloads for this token
-                has_active = self.db.query(DownloadQueue).filter(
-                    and_(
-                        DownloadQueue.user_id == item.user_id,
-                        DownloadQueue.token_id == item.token_id,  # Same token
-                        DownloadQueue.active_download == True,
-                        DownloadQueue.status == 'downloading'
-                    )
-                ).first()
-                
-                if not has_active:
-                    # Promote this item to global queue (pending status)
-                    # The queue_type (fast/slow) is already set when added to user_queue
-                    item.status = 'pending'
-                    logger.info(f"Promoted user queue item {item.id} (user: {item.user_id}, token: {item.token_id}, game: {item.game_id}) from user_queue to global {item.queue_type} queue (pending)")
-                    promoted = True
-                    break  # Only promote one at a time
-            
-            if promoted:
-                self.db.commit()
-                logger.info("User queue promotion completed")
-            else:
-                logger.debug("No items could be promoted (all users have active downloads for this token)")
-            
-            return promoted
+            return {
+                'has_user_queue': has_user_queue,
+                'has_resumable': has_resumable,
+                'has_any': has_any,
+                'user_queue_count': user_queue_count,
+                'resumable_count': resumable_count
+            }
         except Exception as e:
-            logger.error(f"Error promoting user queue items: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            self.db.rollback()
-            return False
+            logger.error(f"Error checking available downloads: {e}")
+            return {'has_user_queue': False, 'has_resumable': False, 'has_any': False}
     
     def get_next_download(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None, platform: Optional[str] = None, client_version: Optional[str] = None) -> Optional[Dict]:
         """Get next available download from queue, including resumable interrupted downloads.
@@ -1010,20 +1026,30 @@ class DownloadService:
             timeout_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
             
             # Check for resumable downloads (downloading status, same service or timed out)
+            # Since only one connection per token_id is allowed, if token_id is specified,
+            # we should include all downloads for this token_id that are in downloading status.
             # Only for the authenticated token (exclude paused)
-            resumable_query = self.db.query(DownloadQueue).filter(
-                DownloadQueue.status == 'downloading',
-                DownloadQueue.active_download == True,
-                or_(
-                    DownloadQueue.assigned_to_service == service_id,
-                    DownloadQueue.started_at < timeout_threshold
-                )
-            ).filter(
-                DownloadQueue.status != 'paused'  # Exclude paused downloads
-            )
-            
             if token_id is not None:
-                resumable_query = resumable_query.filter(DownloadQueue.token_id == token_id)
+                # For token_id-based filtering, include all downloads for this token_id
+                # that are in downloading status (since only one connection per token is allowed)
+                resumable_query = self.db.query(DownloadQueue).filter(
+                    DownloadQueue.status == 'downloading',
+                    DownloadQueue.active_download == True,
+                    DownloadQueue.token_id == token_id,
+                    DownloadQueue.status != 'paused'  # Exclude paused downloads
+                )
+            else:
+                # No token_id filter - use service_id and timeout criteria
+                resumable_query = self.db.query(DownloadQueue).filter(
+                    DownloadQueue.status == 'downloading',
+                    DownloadQueue.active_download == True,
+                    or_(
+                        DownloadQueue.assigned_to_service == service_id,
+                        DownloadQueue.started_at < timeout_threshold
+                    )
+                ).filter(
+                    DownloadQueue.status != 'paused'  # Exclude paused downloads
+                )
             
             # Filter by queue_type if specified, otherwise search all queues
             if queue_type:
@@ -1166,13 +1192,11 @@ class DownloadService:
                 logger.info(f"Resuming download {resumable_download.id} from {resumable_download.bytes_transferred} bytes")
                 return download_info
             
-            # Build query for pending downloads (exclude paused)
+            # Build query for user_queue downloads (exclude paused)
             # Only for the authenticated token
+            # Look for user_queue items directly - no pending status anymore
             query = self.db.query(DownloadQueue).filter(
-                DownloadQueue.status.in_(['pending', 'downloading']),  # Include downloading that can be resumed
-                DownloadQueue.active_download == False
-            ).filter(
-                DownloadQueue.status != 'paused'  # Exclude paused downloads
+                DownloadQueue.status == 'user_queue'
             )
             
             # Filter by token_id if specified (required for token-based downloads)
@@ -1187,7 +1211,7 @@ class DownloadService:
             pending_download = query.order_by(DownloadQueue.created_at.asc()).first()
             
             if not pending_download:
-                logger.debug("No pending downloads available")
+                logger.debug("No user_queue downloads available")
                 return None
             
             # Check if we can allocate bandwidth for this queue
@@ -1205,7 +1229,22 @@ class DownloadService:
                 logger.debug(f"No bandwidth available for {pending_download.queue_type} queue")
                 return None
             
-            # Check if user already has active download (double-check)
+            # Check if there's already an active download for this token_id
+            # Since only one client per token_id is allowed, check per token_id
+            if token_id is not None:
+                has_active = self.db.query(DownloadQueue).filter(
+                    and_(
+                        DownloadQueue.token_id == token_id,
+                        DownloadQueue.active_download == True,
+                        DownloadQueue.status == 'downloading'
+                    )
+                ).first()
+                
+                if has_active:
+                    logger.debug(f"Token_id {token_id} already has active download (id: {has_active.id}), skipping user_queue item {pending_download.id}")
+                    return None
+            
+            # Also check if user already has active download (bandwidth manager check)
             if not self.bandwidth_manager.can_start_download(pending_download.queue_type, pending_download.user_id):
                 logger.warning(f"User {pending_download.user_id} already has active download, skipping")
                 return None
@@ -1649,10 +1688,15 @@ class DownloadService:
             logger.error(f"Error reading download log for {download_id}: {e}")
             return None
     
-    def complete_download(self, download_id: int) -> bool:
-        """Remove download from queue and update user download statistics."""
+    async def complete_download(self, download_id: int) -> bool:
+        """Remove download from queue and update user download statistics.
+        
+        After completion, checks if there are more items in user_queue for the same token_id
+        and promotes one if no active downloads remain, then sends WebSocket notification.
+        """
         try:
             from app.database import User
+            from app.services.websocket_manager import get_websocket_manager
             
             download = self.db.query(DownloadQueue).filter(
                 DownloadQueue.id == download_id
@@ -1662,9 +1706,10 @@ class DownloadService:
                 logger.warning(f"Download {download_id} not found")
                 return False
             
-            # Store user_id and game_id before deletion
+            # Store info before deletion
             user_id = download.user_id
             game_id = download.game_id
+            token_id = download.token_id
             
             # Calculate downloaded MB (convert bytes to MB: 1 MB = 1024 * 1024 bytes)
             downloaded_bytes = download.bytes_transferred or 0
@@ -1701,9 +1746,129 @@ class DownloadService:
             self.db.commit()
             
             logger.info(f"Download {download_id} completed and removed from queue. User {user_id} total: {user.total_download_mb:.2f} MB, {user.total_download_number} games")
+            
+            # Check if there are more items in user_queue for this token_id
+            # and promote one if no active downloads remain
+            if token_id:
+                try:
+                    # Check if there are any active downloads for this token_id
+                    has_active = self.db.query(DownloadQueue).filter(
+                        and_(
+                            DownloadQueue.token_id == token_id,
+                            DownloadQueue.active_download == True,
+                            DownloadQueue.status == 'downloading'
+                        )
+                    ).first()
+                    
+                    if not has_active:
+                        # No active downloads - check for items in user_queue
+                        user_queue_items = self.db.query(DownloadQueue).filter(
+                            and_(
+                                DownloadQueue.status == 'user_queue',
+                                DownloadQueue.token_id == token_id
+                            )
+                        ).order_by(DownloadQueue.created_at.asc()).all()
+                        
+                        if user_queue_items:
+                            # Item stays in user_queue - will be picked up by get_next_download
+                            # No need to change status - get_next_download now looks for user_queue items directly
+                            item_to_promote = user_queue_items[0]
+                            self.db.commit()  # Ensure any pending changes are committed
+                            logger.info(f"Download completed, next user_queue item {item_to_promote.id} (token_id: {token_id}, queue_type: {item_to_promote.queue_type}) will be picked up by get_next_download")
+                            
+                            # Send WebSocket notification
+                            ws_manager = get_websocket_manager()
+                            await ws_manager.send_notification(token_id, {
+                                "type": "download_available",
+                                "queue_type": item_to_promote.queue_type
+                            })
+                            logger.info(f"Sent download_available notification to token_id {token_id} for queue_type {item_to_promote.queue_type} after download completion")
+                except Exception as e:
+                    logger.error(f"Error promoting user_queue item after download completion: {e}", exc_info=True)
+                    # Don't fail the completion if promotion fails
+                    pass
+            
             return True
         except Exception as e:
             logger.error(f"Error completing download: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            self.db.rollback()
+            return False
+    
+    async def mark_download_error(self, download_id: int, error_message: str) -> bool:
+        """Mark a download as error and remove it from the queue."""
+        try:
+            from app.services.websocket_manager import get_websocket_manager
+            
+            download = self.db.query(DownloadQueue).filter(
+                DownloadQueue.id == download_id
+            ).first()
+            
+            if not download:
+                logger.warning(f"Download {download_id} not found")
+                return False
+            
+            # Store info before deletion
+            token_id = download.token_id
+            game_id = download.game_id
+            user_id = download.user_id
+            
+            logger.error(f"Download {download_id} (game: {game_id}) failed with error: {error_message}")
+            
+            # Archive the download with error status before deletion
+            self.archive_download(download_id, 'error')
+            
+            # Delete the download from queue
+            self.db.delete(download)
+            self.db.commit()
+            
+            logger.info(f"Download {download_id} marked as error and removed from queue")
+            
+            # Check if there are more items in user_queue for this token_id
+            # and promote one if no active downloads remain
+            if token_id:
+                try:
+                    # Check if there are any active downloads for this token_id
+                    has_active = self.db.query(DownloadQueue).filter(
+                        and_(
+                            DownloadQueue.token_id == token_id,
+                            DownloadQueue.active_download == True,
+                            DownloadQueue.status == 'downloading'
+                        )
+                    ).first()
+                    
+                    if not has_active:
+                        # No active downloads - check for items in user_queue
+                        user_queue_items = self.db.query(DownloadQueue).filter(
+                            and_(
+                                DownloadQueue.status == 'user_queue',
+                                DownloadQueue.token_id == token_id
+                            )
+                        ).order_by(DownloadQueue.created_at.asc()).all()
+                        
+                        if user_queue_items:
+                            # Item stays in user_queue - will be picked up by get_next_download
+                            # No need to change status - get_next_download now looks for user_queue items directly
+                            item_to_promote = user_queue_items[0]
+                            self.db.commit()  # Ensure any pending changes are committed
+                            logger.info(f"Download error, next user_queue item {item_to_promote.id} (token_id: {token_id}, queue_type: {item_to_promote.queue_type}) will be picked up by get_next_download")
+                            
+                            # Send WebSocket notification
+                            ws_manager = get_websocket_manager()
+                            await ws_manager.send_notification(token_id, {
+                                "type": "download_available",
+                                "queue_type": item_to_promote.queue_type
+                            })
+                            logger.info(f"Sent download_available notification to token_id {token_id} for queue_type {item_to_promote.queue_type} after download error")
+                except Exception as e:
+                    logger.error(f"Error promoting user_queue item after download error: {e}", exc_info=True)
+                    # Don't fail the error marking if promotion fails
+                    pass
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error marking download as error: {e}")
             import traceback
             logger.error(traceback.format_exc())
             self.db.rollback()

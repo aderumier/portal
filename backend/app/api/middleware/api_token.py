@@ -44,9 +44,9 @@ async def get_current_user(
                 )
                 return request.state.user
             else:
-                # Token validation failed (could be invalid token, revoked, or multiple IPs detected)
+                # Token validation failed (could be invalid token or revoked)
                 logger.warning(
-                    f"API token authentication failed. Token may be invalid, revoked, or used from multiple IPs. "
+                    f"API token authentication failed. Token may be invalid or revoked. "
                     f"Request IP: {client_ip}"
                 )
     
