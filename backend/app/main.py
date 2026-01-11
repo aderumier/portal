@@ -52,8 +52,12 @@ async def preload_game_data():
         
         # Then, build search index (this will use the in-memory gamelists)
         logger.info("Building search index...")
-        game_service.build_search_index()
-        logger.info("Search index preloaded on startup")
+        game_service.build_search_index('wip')
+        if settings.ENABLE_RELEASES_CATALOG:
+            game_service.build_search_index('releases')
+            logger.info("Search index preloaded on startup (WIP and Releases)")
+        else:
+            logger.info("Search index preloaded on startup (WIP only, Releases catalog disabled)")
     except Exception as e:
         logger.warning(f"Failed to preload game data: {e}")
         import traceback

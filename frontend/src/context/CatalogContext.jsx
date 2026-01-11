@@ -13,6 +13,7 @@ export const useCatalog = () => {
 
 export const CatalogProvider = ({ children }) => {
   const [catalogType, setCatalogTypeState] = useState('releases')
+  const [releasesEnabled, setReleasesEnabled] = useState(true)
   const [loading, setLoading] = useState(true)
 
   // Load preference from API on mount
@@ -20,11 +21,17 @@ export const CatalogProvider = ({ children }) => {
     const loadPreference = async () => {
       try {
         const response = await client.get('/api/catalog/preference')
-        setCatalogTypeState(response.data.catalog_type || 'releases')
+        const enabled = response.data.releases_enabled !== false // Default to true if not present
+        setReleasesEnabled(enabled)
+        const preference = response.data.catalog_type || 'releases'
+        // If Releases is disabled and preference is 'releases', default to 'wip'
+        const defaultType = (enabled ? preference : (preference === 'releases' ? 'wip' : preference))
+        setCatalogTypeState(defaultType)
       } catch (error) {
         console.error('Error loading catalog preference:', error)
-        // Default to 'releases' on error
+        // Default to 'releases' on error (assuming it's enabled)
         setCatalogTypeState('releases')
+        setReleasesEnabled(true)
       } finally {
         setLoading(false)
       }
@@ -54,6 +61,7 @@ export const CatalogProvider = ({ children }) => {
   const value = {
     catalogType,
     setCatalogType,
+    releasesEnabled,
     loading
   }
 

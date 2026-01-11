@@ -50,6 +50,9 @@ class Settings:
     # Download service settings
     POLLING_INTERVAL: int = int(os.getenv('POLLING_INTERVAL', '10'))  # Seconds between queue checks
     
+    # Catalog settings
+    ENABLE_RELEASES_CATALOG: bool = os.getenv('ENABLE_RELEASES_CATALOG', 'true').lower() in ('true', '1', 'yes', 'on')  # Enable Releases catalog (scan .zfs snapshots)
+    
     # Per-user bandwidth limits for testing (optional, in Mbits/s)
     # If not set, no per-user limit is applied (users share available bandwidth equally)
     # If set, each user is limited to this bandwidth regardless of available bandwidth

@@ -58,6 +58,7 @@ def migrate_database():
         ("assigned_to_service", "TEXT"),
         ("token_id", "INTEGER NOT NULL DEFAULT 0"),  # Will be updated to actual token IDs
         ("catalog_version", "TEXT"),  # Version string (e.g., "v2-RGS_bbc") for Releases catalog, NULL for WIP
+        ("client_version", "TEXT"),  # Download client version (e.g., "0.1")
     ]
     
     # Add missing columns
@@ -171,7 +172,7 @@ def migrate_database():
     """)
     print("  ✓ Created/verified download_archive table")
     
-    # Check existing columns and add catalog_version if missing
+    # Check existing columns and add catalog_version and client_version if missing
     cursor.execute("PRAGMA table_info(download_archive)")
     existing_archive_columns = [col[1] for col in cursor.fetchall()]
     
@@ -183,6 +184,15 @@ def migrate_database():
             print(f"  ✗ Error adding column catalog_version: {e}")
     else:
         print("  - Column catalog_version already exists in download_archive table")
+    
+    if 'client_version' not in existing_archive_columns:
+        try:
+            cursor.execute("ALTER TABLE download_archive ADD COLUMN client_version TEXT")
+            print("  ✓ Added column client_version to download_archive table")
+        except sqlite3.OperationalError as e:
+            print(f"  ✗ Error adding column client_version: {e}")
+    else:
+        print("  - Column client_version already exists in download_archive table")
     
     # Create indexes for download_archive
     indexes_to_create = [

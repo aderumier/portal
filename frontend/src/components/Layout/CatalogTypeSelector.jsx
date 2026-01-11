@@ -3,7 +3,7 @@ import { useCatalog } from '../../context/CatalogContext'
 import './CatalogTypeSelector.css'
 
 const CatalogTypeSelector = () => {
-  const { catalogType, setCatalogType, loading } = useCatalog()
+  const { catalogType, setCatalogType, releasesEnabled, loading } = useCatalog()
 
   const handleChange = (e) => {
     const newType = e.target.value
@@ -12,6 +12,11 @@ const CatalogTypeSelector = () => {
 
   if (loading) {
     return null // Don't render until preference is loaded
+  }
+
+  // If Releases catalog is disabled, don't show the selector (only WIP available)
+  if (!releasesEnabled) {
+    return null
   }
 
   return (

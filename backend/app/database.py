@@ -80,6 +80,7 @@ class DownloadQueue(Base):
     assigned_to_service = Column(String, nullable=True)  # Service instance ID handling this download
     token_id = Column(Integer, nullable=False, index=True)  # Associated API token ID (required)
     catalog_version = Column(String, nullable=True, index=True)  # Version string (e.g., "v2-RGS_bbc") for Releases catalog, None for WIP
+    client_version = Column(String, nullable=True)  # Download client version (e.g., "0.1")
     
     __table_args__ = (
         {'sqlite_autoincrement': True},
@@ -102,6 +103,7 @@ class DownloadArchive(Base):
     bytes_transferred = Column(BigInteger, default=0)  # Bytes transferred before removal
     file_size = Column(BigInteger, nullable=True)  # Total file size if known
     catalog_version = Column(String, nullable=True)  # Version string (e.g., "v2-RGS_bbc") for Releases catalog, None for WIP
+    client_version = Column(String, nullable=True)  # Download client version (e.g., "0.1")
     
     __table_args__ = (
         {'sqlite_autoincrement': True},

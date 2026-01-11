@@ -239,6 +239,59 @@ class DownloadService:
         
         return path
     
+    def _get_media_download_url(self, media_path: str, system_id: str, catalog_version: Optional[str], base_url: str) -> str:
+        """Construct download URL for a media file.
+        
+        For WIP catalog: {base_url}/media/{system_id}/{media_path}
+        For Releases catalog: {base_url}/media/{system_id}/.zfs/snapshot/{catalog_version}/{media_path}
+        
+        Args:
+            media_path: Media path from gamelist.xml (may include ./ prefix, may include system prefix)
+            system_id: System ID (e.g., "atari2600")
+            catalog_version: Catalog version for Releases (e.g., "v2-RGS_bbc") or None for WIP
+            base_url: Base URL for API (e.g., "https://rgs-retro.ddns.net")
+        
+        Returns:
+            Complete download URL for the media file
+        """
+        if not media_path:
+            return ''
+        
+        import urllib.parse
+        
+        # Remove './' prefix if present
+        clean_path = media_path.lstrip('./')
+        
+        # For Releases catalog, construct URL with snapshot path
+        if catalog_version:
+            # Remove system prefix if present (media_path might be "system/media/..." or just "media/...")
+            if clean_path.startswith(f"{system_id}/"):
+                # Already has system prefix, check if snapshot path is already included
+                if f".zfs/snapshot/{catalog_version}" in clean_path:
+                    # Path already includes snapshot, use as-is
+                    full_path = clean_path
+                else:
+                    # Need to insert snapshot path: system/media/... -> system/.zfs/snapshot/vX/media/...
+                    # Extract the part after system_id/
+                    path_after_system = clean_path[len(system_id) + 1:]
+                    full_path = f"{system_id}/.zfs/snapshot/{catalog_version}/{path_after_system}"
+            else:
+                # No system prefix, add both system and snapshot
+                full_path = f"{system_id}/.zfs/snapshot/{catalog_version}/{clean_path}"
+        else:
+            # WIP catalog - no snapshot path
+            if clean_path.startswith(f"{system_id}/"):
+                # Already has system prefix
+                full_path = clean_path
+            else:
+                # Add system prefix
+                full_path = f"{system_id}/{clean_path}"
+        
+        # URL encode the path components
+        encoded_path = '/'.join(urllib.parse.quote(part, safe='') for part in full_path.split('/'))
+        
+        return f"{base_url}/media/{encoded_path}"
+    
     def _remove_snapshot_path_from_media_path(self, path_value: str, system_id: str, catalog_version: Optional[str]) -> str:
         """Remove snapshot path from media path for download client destination paths.
         
@@ -315,39 +368,56 @@ class DownloadService:
         return game_id
     
     def _normalize_game_details_for_client(self, game: Dict, catalog_version: Optional[str]) -> Dict:
-        """Normalize game_details by removing snapshot paths from media paths for download client.
+        """Add download URLs for media fields while keeping original paths unchanged.
         
-        The download client needs destination paths without snapshot prefixes, even for Releases catalog.
+        The download client will use download URLs for downloading media files.
+        All original paths from gamelist.xml are preserved as-is.
         
         Args:
-            game: Game dictionary with media paths
+            game: Game dictionary with original paths from gamelist.xml (format: "./media/...")
             catalog_version: Catalog version (if None, it's WIP catalog)
         
         Returns:
-            Game dictionary with media paths normalized for client destination paths
+            Game dictionary with download URLs added for each media field, original paths preserved
         """
-        if not game or not catalog_version:
-            # WIP catalog - return as-is
+        if not game:
             return game
         
         # Create a copy to avoid modifying original
-        normalized_game = game.copy()
+        enriched_game = game.copy()
+        
         system_id = game.get('system', '')
         
-        # Media fields that may contain paths with snapshot prefix
-        media_fields = ['thumbnail', 'boxart', 'image', 'video', 'marquee', 'wheel', 
-                       'extra1', 'extra2', 'extra3', 'extra4', 'mix', 'catalog_image',
-                       'boxback', 'cartridge', 'titleshot', 'fanart', 'screenshot']
+        # Get base URL for media downloads
+        base_url = settings.DOWNLOAD_FILE_URL if settings.DOWNLOAD_FILE_URL else settings.API_URL
         
-        for field in media_fields:
-            if field in normalized_game and normalized_game[field]:
-                normalized_game[field] = self._remove_snapshot_path_from_media_path(
-                    normalized_game[field], 
-                    system_id, 
-                    catalog_version
-                )
+        # Helper function to check if a field value looks like a media path
+        def is_media_path(value: str) -> bool:
+            """Check if value looks like a media path."""
+            if not value or not isinstance(value, str):
+                return False
+            value = value.lstrip('./')
+            return 'media/' in value
         
-        return normalized_game
+        # Add download_url for each field that contains a media path
+        # Keep original paths in fields as-is
+        # Iterate over a copy of items to avoid "dictionary changed size during iteration" error
+        for field_name, field_value in list(enriched_game.items()):
+            # Skip already processed fields and internal metadata
+            if field_name.endswith('_download_url') or field_name in {'id', 'system', 'systemName', 'catalog_image'}:
+                continue
+            
+            # Check if this field contains a media path
+            if field_value and is_media_path(str(field_value)):
+                # Get original path (may have ./ prefix)
+                original_path = str(field_value)
+                # Construct download URL from original path
+                # _get_media_download_url expects original format, so we need to normalize for URL construction
+                download_url = self._get_media_download_url(original_path, system_id, catalog_version, base_url)
+                # Add download URL with field name suffix
+                enriched_game[f"{field_name}_download_url"] = download_url
+        
+        return enriched_game
     
     def add_to_queue(self, user_id: str, game_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None, catalog_version: Optional[str] = None) -> bool:
         """Add a game to the user's FIFO queue."""
@@ -572,7 +642,8 @@ class DownloadService:
                         'bandwidth_used': item.bandwidth_used,
                         'token_name': token_name,
                         'download_id': item.id,  # Include download_id for pause/resume actions
-                        'catalog_version': catalog_version  # Include catalog version (e.g., "v2-RGS_bbc")
+                        'catalog_version': catalog_version,  # Include catalog version (e.g., "v2-RGS_bbc")
+                        'client_version': item.client_version  # Include client version (e.g., "0.1")
                     }
                     enriched_items.append(enriched_item)
             
@@ -660,7 +731,8 @@ class DownloadService:
                     'started_at': item.started_at.isoformat() if item.started_at else None,
                     'created_at': item.created_at.isoformat() if item.created_at else None,
                     'assigned_to_service': item.assigned_to_service,
-                    'catalog_version': catalog_version  # Include catalog version (e.g., "v2-RGS_bbc")
+                    'catalog_version': catalog_version,  # Include catalog version (e.g., "v2-RGS_bbc")
+                    'client_version': item.client_version  # Include client version (e.g., "0.1")
                 }
                 
                 if item.queue_type == 'fast':
@@ -915,7 +987,7 @@ class DownloadService:
             self.db.rollback()
             return False
     
-    def get_next_download(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None, platform: Optional[str] = None) -> Optional[Dict]:
+    def get_next_download(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None, platform: Optional[str] = None, client_version: Optional[str] = None) -> Optional[Dict]:
         """Get next available download from queue, including resumable interrupted downloads.
         
         Only returns downloads associated with the specified token_id.
@@ -965,6 +1037,9 @@ class DownloadService:
                 resumable_download.assigned_to_service = service_id
                 # Update last_progress_at to current time (download is being resumed)
                 resumable_download.last_progress_at = datetime.now(timezone.utc)
+                # Update client_version if provided
+                if client_version:
+                    resumable_download.client_version = client_version
                 self.db.commit()
                 
                 # Get game info
@@ -1194,6 +1269,9 @@ class DownloadService:
             pending_download.started_at = datetime.now(timezone.utc)
             pending_download.last_progress_at = datetime.now(timezone.utc)  # Initialize progress tracking
             pending_download.assigned_to_service = service_id
+            # Store client_version if provided
+            if client_version:
+                pending_download.client_version = client_version
             self.db.commit()
             
             # Get system info from System table - use retrobat_system for Windows, batocera_system for Linux
@@ -1264,7 +1342,7 @@ class DownloadService:
             self.db.rollback()
             return None
     
-    def update_progress(self, download_id: int, bytes_transferred: int, bytes_per_second: int) -> bool:
+    def update_progress(self, download_id: int, bytes_transferred: int, bytes_per_second: int, client_version: Optional[str] = None) -> bool:
         """Update download progress."""
         try:
             # Query the download
@@ -1285,6 +1363,10 @@ class DownloadService:
             download.bytes_transferred = bytes_transferred
             download.bandwidth_used = bytes_per_second
             download.last_progress_at = datetime.now(timezone.utc)
+            
+            # Update client_version if provided (may not have been set initially)
+            if client_version:
+                download.client_version = client_version
             
             # If status is "stuck", change it back to "downloading" (client reconnected)
             if download.status == 'stuck':
@@ -1376,7 +1458,8 @@ class DownloadService:
                 download_status=status,
                 bytes_transferred=download.bytes_transferred or 0,
                 file_size=download.file_size,
-                catalog_version=download.catalog_version  # Store catalog version (e.g., "v2-RGS_bbc") for Releases, None for WIP
+                catalog_version=download.catalog_version,  # Store catalog version (e.g., "v2-RGS_bbc") for Releases, None for WIP
+                client_version=download.client_version  # Store client version (e.g., "0.1")
             )
             
             self.db.add(archive_entry)
@@ -1431,7 +1514,8 @@ class DownloadService:
                     'file_size': item.file_size,
                     'timestamp': item.timestamp.isoformat() if item.timestamp else None,
                     'image': '',
-                    'catalog_version': catalog_version  # Include catalog version (e.g., "v2-RGS_bbc")
+                    'catalog_version': catalog_version,  # Include catalog version (e.g., "v2-RGS_bbc")
+                    'client_version': item.client_version  # Include client version (e.g., "0.1")
                 }
                 
                 # Add game image if available
@@ -1474,6 +1558,96 @@ class DownloadService:
             logger.error(f"Error removing download: {e}")
             self.db.rollback()
             return False
+    
+    def store_download_log(self, download_id: int, log_content: str) -> bool:
+        """Store download log to a file.
+        
+        Args:
+            download_id: Download ID
+            log_content: Log content as string
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Create download_logs directory in data folder
+            from app.config import settings
+            from pathlib import Path
+            
+            # Determine data directory path
+            if hasattr(settings, 'DATABASE_URL') and settings.DATABASE_URL:
+                # Extract data directory from database URL if possible
+                db_path = settings.DATABASE_URL.replace('sqlite:///', '')
+                if db_path.startswith('./'):
+                    project_root = Path(__file__).parent.parent.parent
+                    data_dir = project_root / db_path[2:].split('/')[0]
+                elif not os.path.isabs(db_path):
+                    project_root = Path(__file__).parent.parent.parent
+                    data_dir = project_root / db_path.split('/')[0]
+                else:
+                    data_dir = Path(db_path).parent
+            else:
+                # Fallback to backend/data
+                data_dir = Path(__file__).parent.parent / 'data'
+            
+            # Create download_logs subdirectory
+            log_dir = data_dir / 'download_logs'
+            log_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Write log to file
+            log_file = log_dir / f'queue_{download_id}.log'
+            with open(log_file, 'w', encoding='utf-8') as f:
+                f.write(log_content)
+            
+            logger.info(f"Stored download log for download {download_id} to {log_file}")
+            return True
+        except Exception as e:
+            logger.error(f"Error storing download log for {download_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
+    def get_download_log(self, download_id: int) -> Optional[str]:
+        """Retrieve download log from file.
+        
+        Args:
+            download_id: Download ID
+            
+        Returns:
+            str: Log content if found, None otherwise
+        """
+        try:
+            from app.config import settings
+            from pathlib import Path
+            
+            # Determine data directory path (same logic as store_download_log)
+            if hasattr(settings, 'DATABASE_URL') and settings.DATABASE_URL:
+                db_path = settings.DATABASE_URL.replace('sqlite:///', '')
+                if db_path.startswith('./'):
+                    project_root = Path(__file__).parent.parent.parent
+                    data_dir = project_root / db_path[2:].split('/')[0]
+                elif not os.path.isabs(db_path):
+                    project_root = Path(__file__).parent.parent.parent
+                    data_dir = project_root / db_path.split('/')[0]
+                else:
+                    data_dir = Path(db_path).parent
+            else:
+                data_dir = Path(__file__).parent.parent / 'data'
+            
+            # Read log file
+            log_file = data_dir / 'download_logs' / f'queue_{download_id}.log'
+            
+            if not log_file.exists():
+                logger.debug(f"Log file not found for download {download_id}")
+                return None
+            
+            with open(log_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            return content
+        except Exception as e:
+            logger.error(f"Error reading download log for {download_id}: {e}")
+            return None
     
     def complete_download(self, download_id: int) -> bool:
         """Remove download from queue and update user download statistics."""

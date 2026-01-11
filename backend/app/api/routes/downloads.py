@@ -26,18 +26,22 @@ class AddToQueueRequest(BaseModel):
     token_name: Optional[str] = None  # Token name to associate with the download
     catalog_type: Optional[str] = 'releases'  # 'wip' or 'releases' - determines which catalog to use and whether to include snapshot path
 
-class MarkCompletedRequest(BaseModel):
-    download_id: int
-
 class RequestDownloadRequest(BaseModel):
     queue_type: Optional[str] = None  # 'fast', 'slow', or None for both
     service_id: Optional[str] = 'default'
     platform: Optional[str] = None  # 'windows' or 'linux'
+    client_version: Optional[str] = None  # Download client version
 
 class ProgressRequest(BaseModel):
     download_id: int
     bytes_transferred: int
     bytes_per_second: int
+    client_version: Optional[str] = None  # Download client version
+
+class MarkCompletedRequest(BaseModel):
+    download_id: int
+    client_version: Optional[str] = None  # Download client version
+    log_content: Optional[str] = None  # Download task log content
 
 def get_download_service(db: Session = Depends(get_db)) -> DownloadService:
     """Get download service instance."""
@@ -255,7 +259,8 @@ async def request_download(
     
     # If queue_type is not specified, search all queues for downloads with this token_id
     # The backend will search both fast and slow queues and return the first available download
-    download_info = download_service.get_next_download(queue_type, service_id, token_id=token_id, platform=platform)
+    client_version = request.client_version
+    download_info = download_service.get_next_download(queue_type, service_id, token_id=token_id, platform=platform, client_version=client_version)
     
     if not download_info:
         return {
@@ -309,7 +314,8 @@ async def report_progress(
             detail="Download was removed from queue"
         )
     
-    success = download_service.update_progress(download_id, bytes_transferred, bytes_per_second)
+    client_version = request.client_version
+    success = download_service.update_progress(download_id, bytes_transferred, bytes_per_second, client_version=client_version)
     
     if not success:
         # This shouldn't happen if download exists, but handle it gracefully
@@ -326,12 +332,17 @@ async def mark_completed(
 ):
     """Mark a download as completed (used by download service)."""
     download_id = request.download_id
+    log_content = request.log_content
     
     if download_id <= 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid download ID"
         )
+    
+    # Store log if provided
+    if log_content:
+        download_service.store_download_log(download_id, log_content)
     
     success = download_service.complete_download(download_id)
     
@@ -342,6 +353,48 @@ async def mark_completed(
         )
     
     return {"success": True}
+
+@router.get("/log/{download_id}")
+async def get_download_log(
+    download_id: int,
+    current_user: dict = Depends(require_download_role),
+    download_service: DownloadService = Depends(get_download_service),
+    db: Session = Depends(get_db)
+):
+    """Get download log for a specific download."""
+    from app.database import DownloadArchive
+    
+    # Verify download belongs to current user or user is admin
+    archive_item = db.query(DownloadArchive).filter(
+        DownloadArchive.download_id == download_id
+    ).first()
+    
+    if not archive_item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Download not found"
+        )
+    
+    # Check if user owns this download or is admin
+    user_id = current_user['id']
+    is_admin = current_user.get('is_admin', False)
+    
+    if not is_admin and archive_item.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    # Get log content
+    log_content = download_service.get_download_log(download_id)
+    
+    if log_content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Log file not found"
+        )
+    
+    return {"log_content": log_content}
 
 @router.post("/remove")
 async def remove_download(
@@ -464,8 +517,9 @@ async def get_download_game_details(
             else:
                 lookup_game_id = after_snapshot
     
-    # Get game details
-    game = download_service.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+    # Get game details with original paths from gamelist.xml (not normalized for frontend)
+    # normalize_paths=False ensures we get original paths as stored in catalog
+    game = download_service.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type, normalize_paths=False)
     
     if not game:
         raise HTTPException(
@@ -473,17 +527,9 @@ async def get_download_game_details(
             detail="Game not found"
         )
     
-    # Ensure media paths match browsing format (same as frontend)
-    # Apply same normalization as frontend browsing for URL construction
-    system_id = game.get('system', '')
-    if system_id:
-        # Normalize media paths for URL construction (same format as browsing)
-        media_fields = ['thumbnail', 'boxart', 'image', 'video', 'marquee', 'wheel', 
-                       'extra1', 'extra2', 'extra3', 'extra4', 'mix', 'catalog_image',
-                       'boxback', 'cartridge', 'titleshot', 'fanart', 'screenshot']
-        for field in media_fields:
-            if field in game and game[field]:
-                game[field] = download_service._normalize_media_path_for_frontend(game[field], system_id)
+    # Add download URLs for media fields while keeping original paths unchanged
+    # This method handles adding download URLs based on catalog_version
+    game = download_service._normalize_game_details_for_client(game, catalog_version)
     
     return game
 

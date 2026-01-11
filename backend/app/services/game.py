@@ -452,28 +452,30 @@ class GameService:
                 continue
             
             # Build game data dictionary with all fields from XML
+            # Store ALL fields exactly as they appear in XML without any normalization
             game_data = {}
             for child in game:
                 tag = child.tag
                 text = child.text or ''
                 game_data[tag] = text
             
-            # Ensure 'path' field exists (use rompath)
-            game_data['path'] = rompath
-            
-            # Normalize all media paths in game_data (thumbnail, boxart, image, video, etc.)
-            media_fields = ['thumbnail', 'boxart', 'image', 'video', 'marquee', 'wheel', 'extra1', 'extra2', 'extra3', 'extra4', 'mix']
-            for media_field in media_fields:
-                if media_field in game_data and game_data[media_field]:
-                    game_data[media_field] = normalize_media_path(game_data[media_field])
+            # Ensure 'path' field exists (use rompath - already stripped of './' prefix for lookup)
+            # Store original path from XML if available, otherwise use rompath
+            if 'path' in game_data and game_data['path']:
+                # Keep the original path from XML as-is
+                pass  # Already set from XML
+            else:
+                # Fallback to rompath if path field wasn't in XML (shouldn't happen)
+                game_data['path'] = rompath
             
             # Pre-compute catalog_image with priority: thumbnail > boxart > extra1 > image
+            # Use original field values (as stored from XML)
             thumbnail = game_data.get('thumbnail', '')
             boxart = game_data.get('boxart', '')
             extra1 = game_data.get('extra1', '')
             image = game_data.get('image', '')
             
-            # Select best image using priority (already normalized)
+            # Select best image using priority (using original values from XML)
             if thumbnail:
                 catalog_image = thumbnail
             elif boxart:
@@ -552,12 +554,38 @@ class GameService:
         # Pre-compute response structures for all games (ready to return, no dict building needed)
         catalog_responses[system_id] = {}
         for rompath, game_data in games_list:
+            # Normalize media paths for frontend display
+            # For Releases catalog, add snapshot path prefix
+            catalog_image = game_data.get('catalog_image', '')
+            if catalog_image:
+                # Remove ./ prefix if present
+                clean_path = catalog_image.lstrip('./')
+                if catalog_type == 'releases' and snapshot_dir_path:
+                    # For Releases: prefix with system_id and snapshot path
+                    # Ensure snapshot path ends with /
+                    snapshot_prefix = snapshot_dir_path.rstrip('/') + '/'
+                    if not clean_path.startswith(f"{system_id}/"):
+                        catalog_image = f"{system_id}/{snapshot_prefix}{clean_path}"
+                    else:
+                        # Path already has system prefix, insert snapshot path
+                        parts = clean_path.split('/', 1)
+                        if len(parts) > 1:
+                            catalog_image = f"{parts[0]}/{snapshot_prefix}{parts[1]}"
+                        else:
+                            catalog_image = f"{system_id}/{snapshot_prefix}{clean_path}"
+                else:
+                    # For WIP: just ensure system prefix is present
+                    if not clean_path.startswith(f"{system_id}/"):
+                        catalog_image = f"{system_id}/{clean_path}"
+                    else:
+                        catalog_image = clean_path
+            
             # Create response-ready dictionary once during catalog build
             catalog_responses[system_id][rompath] = {
                 'id': rompath,
                 'name': game_data.get('name', ''),
                 'description': game_data.get('desc', ''),
-                'image': game_data.get('catalog_image', ''),
+                'image': catalog_image,
                 'system': system_id,
                 'systemName': system_name_temp
             }
@@ -641,20 +669,23 @@ class GameService:
                 game_count_wip = self._load_catalog_from_gamelist(dir_name, gamelist_path, 'wip')
                 logger.debug(f"Loaded WIP catalog for {dir_name}: {game_count_wip} games")
                 
-                # Try to find and load Releases catalog (versioned gamelist.xml)
-                version_result = self._find_latest_versioned_gamelist(dir_path)
-                if version_result:
-                    version_str, snapshot_dir_path, versioned_gamelist_path = version_result
-                    try:
-                        game_count_releases = self._load_catalog_from_gamelist(dir_name, versioned_gamelist_path, 'releases', snapshot_dir_path)
-                        self.system_versions[dir_name] = version_str
-                        self.system_snapshot_paths[dir_name] = snapshot_dir_path
-                        logger.info(f"Loaded Releases catalog for {dir_name} (version {version_str}, snapshot: {snapshot_dir_path}): {game_count_releases} games")
-                    except Exception as e:
-                        logger.error(f"Error loading Releases catalog for {dir_name} (version {version_str}): {e}")
-                        # Continue with WIP catalog only
+                # Try to find and load Releases catalog (versioned gamelist.xml) if enabled
+                if settings.ENABLE_RELEASES_CATALOG:
+                    version_result = self._find_latest_versioned_gamelist(dir_path)
+                    if version_result:
+                        version_str, snapshot_dir_path, versioned_gamelist_path = version_result
+                        try:
+                            game_count_releases = self._load_catalog_from_gamelist(dir_name, versioned_gamelist_path, 'releases', snapshot_dir_path)
+                            self.system_versions[dir_name] = version_str
+                            self.system_snapshot_paths[dir_name] = snapshot_dir_path
+                            logger.info(f"Loaded Releases catalog for {dir_name} (version {version_str}, snapshot: {snapshot_dir_path}): {game_count_releases} games")
+                        except Exception as e:
+                            logger.error(f"Error loading Releases catalog for {dir_name} (version {version_str}): {e}")
+                            # Continue with WIP catalog only
+                    else:
+                        logger.debug(f"No versioned gamelist found for {dir_name}")
                 else:
-                    logger.debug(f"No versioned gamelist found for {dir_name}")
+                    logger.debug(f"Releases catalog is disabled, skipping versioned gamelist.xml scan for {dir_name}")
                 
                 # Use WIP game count for system list display
                 game_count = game_count_wip
@@ -991,7 +1022,7 @@ class GameService:
         """Get display name for a system ID."""
         return self.system_names.get(system_id.lower(), system_id.capitalize())
     
-    def get_game_by_id(self, game_id: str, catalog_type: str = 'wip') -> Optional[Dict]:
+    def get_game_by_id(self, game_id: str, catalog_type: str = 'wip', normalize_paths: bool = True) -> Optional[Dict]:
         """Get a specific game by its ID (path from gamelist.xml).
         
         The game_id is the path as stored in gamelist.xml, which is relative to the system directory.
@@ -1000,6 +1031,7 @@ class GameService:
         Args:
             game_id: Game path from gamelist.xml
             catalog_type: 'wip' or 'releases' (default: 'wip')
+            normalize_paths: If True, normalize media paths for frontend display. If False, preserve original paths from gamelist.xml (default: True)
         """
         logger.info(f"Getting game by ID: {game_id}, catalog_type: {catalog_type}")
         
@@ -1065,15 +1097,54 @@ class GameService:
             if 'description' not in game_data:
                 game_data['description'] = ''
             
-            # Set default display image (prefer thumbnail, then image)
-            if 'thumbnail' in game_data and game_data['thumbnail']:
-                if 'image' not in game_data or not game_data['image']:
-                    game_data['image'] = game_data['thumbnail']
-            elif 'image' not in game_data:
-                game_data['image'] = ''
+            # Get snapshot path for Releases catalog
+            snapshot_dir_path = None
+            if catalog_type == 'releases':
+                snapshot_dir_path = self.system_snapshot_paths.get(system_id)
             
-            # Media paths are already normalized during catalog loading (including snapshot prefix for Releases)
-            # No additional normalization needed here - paths are ready to use as-is
+            # Helper function to normalize media path for frontend
+            def normalize_media_path_for_frontend(media_path: str) -> str:
+                """Normalize media path for frontend display with system and snapshot prefix."""
+                if not media_path:
+                    return ''
+                # Remove ./ prefix if present
+                clean_path = media_path.lstrip('./')
+                if catalog_type == 'releases' and snapshot_dir_path:
+                    # For Releases: prefix with system_id and snapshot path
+                    snapshot_prefix = snapshot_dir_path.rstrip('/') + '/'
+                    if not clean_path.startswith(f"{system_id}/"):
+                        return f"{system_id}/{snapshot_prefix}{clean_path}"
+                    else:
+                        # Path already has system prefix, insert snapshot path
+                        parts = clean_path.split('/', 1)
+                        if len(parts) > 1:
+                            return f"{parts[0]}/{snapshot_prefix}{parts[1]}"
+                        else:
+                            return f"{system_id}/{snapshot_prefix}{clean_path}"
+                else:
+                    # For WIP: just ensure system prefix is present
+                    if not clean_path.startswith(f"{system_id}/"):
+                        return f"{system_id}/{clean_path}"
+                    else:
+                        return clean_path
+            
+            # Only normalize paths if requested (for frontend display)
+            # For download service, preserve original paths from gamelist.xml
+            if normalize_paths:
+                # Normalize all media fields for frontend display
+                media_fields = ['thumbnail', 'boxart', 'image', 'video', 'marquee', 'wheel', 
+                               'extra1', 'extra2', 'extra3', 'extra4', 'mix', 'catalog_image',
+                               'boxback', 'cartridge', 'titleshot', 'fanart', 'screenshot']
+                for field in media_fields:
+                    if field in game_data and game_data[field]:
+                        game_data[field] = normalize_media_path_for_frontend(game_data[field])
+                
+                # Set default display image (prefer thumbnail, then image)
+                if 'thumbnail' in game_data and game_data['thumbnail']:
+                    if 'image' not in game_data or not game_data['image']:
+                        game_data['image'] = game_data['thumbnail']
+                elif 'image' not in game_data:
+                    game_data['image'] = ''
             
             logger.info(f"Game data retrieved: {game_data.get('name', 'Unknown')} ({len(game_data)} fields)")
             return game_data
@@ -1468,7 +1539,8 @@ class GameService:
         # Reload everything
         self.preload_all_gamelists()
         self.build_search_index('wip')
-        self.build_search_index('releases')
+        if settings.ENABLE_RELEASES_CATALOG:
+            self.build_search_index('releases')
         
         logger.info("Catalog cache and search index refreshed successfully")
         

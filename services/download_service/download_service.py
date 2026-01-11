@@ -13,6 +13,9 @@ import configparser
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
+# Client version
+CLIENT_VERSION = "0.1"
+
 def read_config_ini(config_path):
     """Read config.ini file and return a dictionary of settings.
     
@@ -117,6 +120,38 @@ logger = logging.getLogger(__name__)
 logger.info(f"Logging initialized. Log file: {log_file_path}")
 if config_ini_path.exists():
     logger.info(f"Configuration loaded from: {config_ini_path}")
+
+# Custom handler for capturing download task logs
+class DownloadLogHandler(logging.Handler):
+    """Custom logging handler that captures logs for a specific download."""
+    def __init__(self, download_id):
+        super().__init__()
+        self.download_id = download_id
+        self.logs = []
+        self.setLevel(logging.DEBUG)
+        self.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        ))
+    
+    def emit(self, record):
+        """Capture log record."""
+        try:
+            msg = self.format(record)
+            self.logs.append(msg)
+        except Exception:
+            self.handleError(record)
+    
+    def get_logs(self):
+        """Get all captured logs as a string."""
+        return '\n'.join(self.logs)
+    
+    def clear(self):
+        """Clear captured logs."""
+        self.logs = []
+
+# Global dictionary to store download log handlers
+_download_log_handlers = {}
 
 # Configuration - read from config.ini first, then environment variables, then defaults
 # Priority: config.ini > environment variable > default
@@ -244,6 +279,7 @@ def request_download(queue_type=None):
         SystemExit: If API token is invalid (401 Unauthorized)
     """
     try:
+        logger.info(f"Requesting download from {API_URL}/api/download/request")
         headers = {
             'Content-Type': 'application/json'
         }
@@ -251,35 +287,64 @@ def request_download(queue_type=None):
         client_platform = 'windows' if platform.system() == 'Windows' else 'linux'
         data = {
             'service_id': SERVICE_ID,
-            'platform': client_platform
+            'platform': client_platform,
+            'client_version': CLIENT_VERSION
         }
         if queue_type:
             data['queue_type'] = queue_type
         
+        logger.info(f"Sending request with data: service_id={SERVICE_ID}, platform={client_platform}, client_version={CLIENT_VERSION}, queue_type={queue_type}")
+        logger.info(f"Using API_TOKEN (length: {len(API_TOKEN) if API_TOKEN else 0} chars, first 8: {API_TOKEN[:8] if API_TOKEN and len(API_TOKEN) >= 8 else 'N/A'}...)")
+        logger.info(f"Making HTTP POST request (timeout=30s)...")
+        # Use explicit timeout tuple: (connect_timeout, read_timeout)
         response = http_session.post(
             f"{API_URL}/api/download/request",
             json=data,
             headers=headers,
-            timeout=30
+            timeout=(10, 30)  # 10s connect, 30s read
         )
-        response.raise_for_status()
-        result = response.json()
+        logger.info(f"Received response: status_code={response.status_code}")
         
-        # Always update polling interval from backend response (required, no fallback)
-        polling_interval = result.get('polling_interval')
-        if polling_interval is not None:
-            update_polling_interval(int(polling_interval))
-        else:
-            logger.error("Backend did not return polling_interval in response!")
-        
-        # Always update bandwidth update interval from backend response (required, no fallback)
-        bandwidth_update_interval = result.get('bandwidth_update_interval')
-        if bandwidth_update_interval is not None:
-            update_bandwidth_update_interval(int(bandwidth_update_interval))
-        else:
-            logger.error("Backend did not return bandwidth_update_interval in response!")
-        
-        return result.get('download')
+        try:
+            response.raise_for_status()
+            
+            # Parse JSON response
+            try:
+                result = response.json()
+            except (ValueError, json.JSONDecodeError) as json_err:
+                logger.error(f"Failed to parse JSON response: {json_err}")
+                logger.error(f"Response text (first 500 chars): {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
+                response.close()
+                return None
+            
+            # Log the full response for debugging (but truncate large responses)
+            result_str = json.dumps(result, indent=2)
+            if len(result_str) > 1000:
+                logger.info(f"Response JSON (truncated): {result_str[:1000]}...")
+            else:
+                logger.info(f"Response JSON: {result_str}")
+            
+            # Always update polling interval from backend response (required, no fallback)
+            polling_interval = result.get('polling_interval')
+            if polling_interval is not None:
+                update_polling_interval(int(polling_interval))
+            else:
+                logger.error("Backend did not return polling_interval in response!")
+            
+            # Always update bandwidth update interval from backend response (required, no fallback)
+            bandwidth_update_interval = result.get('bandwidth_update_interval')
+            if bandwidth_update_interval is not None:
+                update_bandwidth_update_interval(int(bandwidth_update_interval))
+            else:
+                logger.error("Backend did not return bandwidth_update_interval in response!")
+            
+            download_info = result.get('download')
+            logger.info(f"Extracted download_info from response: {'Found' if download_info else 'None (no downloads available)'}")
+            
+            return download_info
+        finally:
+            # Explicitly close response to free connection
+            response.close()
     except requests.exceptions.HTTPError as e:
         # Check for 401 Unauthorized - invalid API token
         if hasattr(e, 'response') and e.response is not None:
@@ -305,8 +370,9 @@ def request_download(queue_type=None):
         logger.error(f"  Error: {e}")
         logger.error(f"  Please verify the backend is running and API_URL is correct")
         return None
-    except requests.exceptions.Timeout:
-        logger.error(f"Request to API at {API_URL} timed out")
+    except requests.exceptions.Timeout as e:
+        logger.error(f"Request to API at {API_URL} timed out after 30 seconds")
+        logger.error(f"Timeout details: {e}")
         return None
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to request download: {e}")
@@ -315,6 +381,9 @@ def request_download(queue_type=None):
             # Don't log response body for server errors (5xx) to avoid noise
             if e.response.status_code < 500:
                 logger.error(f"  Response body: {e.response.text[:200]}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error in request_download: {e}", exc_info=True)
         return None
 
 def check_download_status(download_id):
@@ -351,7 +420,8 @@ def report_progress(download_id, bytes_transferred, bytes_per_second):
         data = {
             'download_id': download_id,
             'bytes_transferred': bytes_transferred,
-            'bytes_per_second': bytes_per_second
+            'bytes_per_second': bytes_per_second,
+            'client_version': CLIENT_VERSION
         }
         response = http_session.post(
             f"{API_URL}/api/download/progress",
@@ -978,57 +1048,76 @@ def download_game_media(system, game_id, download_id, batocera_system):
         
         # Download each media type
         for media_type in media_types:
+            # Get original media path from game_data (already in original format from gamelist.xml)
             media_path = game_data.get(media_type, '')
             if not media_path:
                 continue  # Skip missing media
             
-            # Use media path as-is from backend (same as frontend browsing)
-            # Backend should return paths in the format used by the frontend:
-            # - WIP: "system/media/thumbnails/game.png"
-            # - Releases: "system/.zfs/snapshot/v1/media/thumbnails/game.png"
-            # However, some paths might be missing the system prefix (e.g., "media/thumbnails/...")
-            # We need to ensure system prefix is present for URL construction
-            if not media_path:
+            # Get download URL if provided by backend (preferred)
+            download_url_key = f"{media_type}_download_url"
+            media_url = game_data.get(download_url_key, '')
+            
+            # If download URL not provided, construct it from media_path
+            # This is a fallback for backwards compatibility
+            if not media_url:
+                # Remove leading ./ if present
+                clean_media_path = media_path.lstrip('./')
+                
+                # Ensure system prefix is present for URL construction
+                if not clean_media_path.startswith(f"{system}/"):
+                    clean_media_path = f"{system}/{clean_media_path}"
+                
+                # Construct URL: /media/{mediaPath}
+                media_url = f"{API_URL}/media/{clean_media_path}"
+            
+            # For destination path, use original path from game_data
+            # Remove ./ prefix if present, then construct: ROMS_PATH/batocera_system/original_path
+            original_path = media_path.lstrip('./')
+            
+            # Remove system prefix if present (since we'll add batocera_system later)
+            if original_path.startswith(f"{system}/"):
+                original_path = original_path[len(system) + 1:]
+            
+            # Also remove snapshot path if present (for Releases catalog)
+            # Original path might be: ".zfs/snapshot/vX/media/..." -> "media/..."
+            if '/.zfs/snapshot/' in original_path:
+                parts = original_path.split('/.zfs/snapshot/', 1)
+                if len(parts) > 1:
+                    after_snapshot = parts[1]
+                    # Extract part after snapshot version
+                    if '/' in after_snapshot:
+                        original_path = '/'.join(after_snapshot.split('/')[1:])
+                    else:
+                        original_path = after_snapshot
+            
+            # For destination path, construct from original path
+            # Destination: ROMS_PATH/batocera_system/original_path (without ./ and without system prefix)
+            # Remove ./ prefix if present
+            dest_path_relative = original_path.lstrip('./')
+            
+            # Remove system prefix if present (we'll use batocera_system instead)
+            if dest_path_relative.startswith(f"{system}/"):
+                dest_path_relative = dest_path_relative[len(system) + 1:]
+            
+            # Remove snapshot path if present (for Releases catalog)
+            # Original path might be: ".zfs/snapshot/vX/media/..." -> "media/..."
+            if '/.zfs/snapshot/' in dest_path_relative:
+                parts = dest_path_relative.split('/.zfs/snapshot/', 1)
+                if len(parts) > 1:
+                    after_snapshot = parts[1]
+                    # Extract part after snapshot version
+                    if '/' in after_snapshot:
+                        dest_path_relative = '/'.join(after_snapshot.split('/')[1:])
+                    else:
+                        dest_path_relative = after_snapshot
+            
+            if not dest_path_relative:
                 continue
             
-            # Remove leading ./ if present
-            clean_media_path = media_path.lstrip('./')
-            
-            # Ensure system prefix is present for URL construction (same as frontend browsing)
-            # If path doesn't start with system prefix, add it
-            if not clean_media_path.startswith(f"{system}/"):
-                # Path is missing system prefix (e.g., "media/thumbnails/...")
-                # Add system prefix for correct URL
-                clean_media_path = f"{system}/{clean_media_path}"
-            
-            # Construct URL same way as frontend: /media/{mediaPath}
-            media_url = f"{API_URL}/media/{clean_media_path}"
-            
-            # Normalize the media path for local storage (remove snapshot paths and ./)
-            # normalize_media_path removes snapshot paths but keeps system prefix if present
-            # Use original media_path for normalization
-            normalized_path = normalize_media_path(media_path)
-            if not normalized_path:
-                continue
-            
-            # Extract just the media part (remove system prefix if present)
-            # After normalization, path can be: "system/media/thumbnails/..." or "media/thumbnails/..."
-            # We want: "media/thumbnails/..." (we'll use target_system instead of the system prefix)
-            if '/' in normalized_path:
-                parts = normalized_path.split('/', 1)
-                if parts[1].startswith('media/'):
-                    # Has system prefix: "system/media/..." -> "media/..."
-                    normalized_path = parts[1]
-                elif normalized_path.startswith('media/'):
-                    # Already just "media/...", keep as-is
-                    pass
-                # else: path doesn't start with media/, which shouldn't happen for media files
-                # but we'll use it as-is
-            
-            # Destination path: ROMS_PATH/target_system/media/...
-            # Media files always go to {ROM_PATH}/{system}/media/... (never .zfs directories)
+            # Destination path: ROMS_PATH/batocera_system/original_path
+            # Media files always go to {ROM_PATH}/{batocera_system}/media/... (never .zfs directories)
             # This ensures consistent paths for both WIP and Releases catalog
-            dest_path = os.path.join(ROMS_PATH, target_system, normalized_path)
+            dest_path = os.path.join(ROMS_PATH, target_system, dest_path_relative)
             
             # Ensure destination directory exists
             dest_dir = os.path.dirname(dest_path)
@@ -1041,7 +1130,7 @@ def download_game_media(system, game_id, download_id, batocera_system):
             # Skip if file already exists
             if os.path.exists(dest_path):
                 logger.debug(f"Media file already exists: {dest_path}")
-                downloaded_media.append(normalized_path)
+                downloaded_media.append(dest_path_relative)
                 continue
             
             # Download media file
@@ -1059,8 +1148,8 @@ def download_game_media(system, game_id, download_id, batocera_system):
                 )
                 
                 if success:
-                    logger.info(f"Successfully downloaded {media_type}: {normalized_path}")
-                    downloaded_media.append(normalized_path)
+                    logger.info(f"Successfully downloaded {media_type}: {dest_path_relative}")
+                    downloaded_media.append(dest_path_relative)
                 else:
                     logger.warning(f"Failed to download {media_type} from {media_url}")
             except Exception as e:
@@ -1093,31 +1182,27 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
         # Include ALL fields from game_data (except system-specific metadata)
         batocera_game = {}
         
-        # Fields to exclude from the API call (system-specific metadata)
-        exclude_fields = {'id', 'system', 'systemName'}
-        
-        # Restore original media paths if available (for Batocera API)
-        # The API returns normalized paths for downloading, but we need original paths for Batocera
-        original_media_paths = game_data.get('_original_media_paths', {})
+        # Fields to exclude from the API call (system-specific metadata and website-only fields)
+        exclude_fields = {'id', 'system', 'systemName', 'catalog_image'}
         
         # Add ALL fields from game_data to batocera_game
-        # Use original gamelist.xml field names and values as-is (100% original)
+        # Paths should already be in original gamelist.xml format from backend (no restoration needed)
         for field_name, value in game_data.items():
             # Skip excluded fields and internal metadata
-            if field_name in exclude_fields or field_name == '_original_media_paths':
+            if field_name in exclude_fields or field_name.endswith('_download_url'):
                 continue
             
             # Skip empty values
             if not value:
                 continue
             
-            # Use original media path if available, otherwise use the value as-is
-            if field_name in original_media_paths:
-                # Use original path from gamelist.xml for Batocera API
-                batocera_game[field_name] = str(original_media_paths[field_name])
-            else:
-                # Use value as-is (for non-media fields or if original not available)
-                batocera_game[field_name] = str(value)
+            # Use value as-is from game_data (already in original gamelist.xml format)
+            batocera_game[field_name] = str(value)
+        
+        # All fields including path and media paths are already in original gamelist.xml format from backend
+        # No path manipulation needed - use as-is
+        # Log the path field value for debugging
+        logger.info(f"Using original path from gamelist.xml: '{batocera_game.get('path', 'NOT SET')}'")
         
         # Create XML structure
         root = ET.Element("gameList")
@@ -1137,6 +1222,22 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
             return reparsed.toprettyxml(indent="  ")
         
         xml_content = prettify_xml(root)
+        
+        # Log all parameters being sent
+        logger.info(f"=== Batocera API Request Parameters ===")
+        logger.info(f"URL: http://127.0.0.1:1234/addgames/{batocera_system}")
+        logger.info(f"Game ID: {game_id}")
+        logger.info(f"Batocera System: {batocera_system}")
+        logger.info(f"Game Name: {game_data.get('name', 'N/A')}")
+        logger.info(f"Path field: {batocera_game.get('path', 'NOT SET')}")
+        logger.info(f"All fields being sent:")
+        for key, value in batocera_game.items():
+            if key == 'path':
+                logger.info(f"  {key}: {value} [PATH FIELD - CHECK THIS]")
+            else:
+                logger.info(f"  {key}: {value}")
+        logger.info(f"XML Content:\n{xml_content}")
+        logger.info(f"=== End Batocera API Request Parameters ===")
         
         # Send POST request to Batocera API
         batocera_api_url = "http://127.0.0.1:1234"
@@ -1180,12 +1281,23 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
 
 def download_game(download_info):
     """Download a game file or directory via HTTP with progress reporting and resume support."""
+    download_id = download_info.get('download_id')
+    
+    # Create and attach log handler for this download
+    # Use root logger to capture all log messages during download
+    log_handler = DownloadLogHandler(download_id)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(log_handler)
+    _download_log_handlers[download_id] = log_handler
+    
+    # Log start of download
+    logger.info(f"=== Starting download task for download_id: {download_id} ===")
+    
     try:
-        download_id = download_info['download_id']
         game_id = download_info['game_id']  # Original game_id (may include snapshot path) - used for URL construction
-        rom_path = download_info.get('rom_path')  # Normalized game_id (without snapshot path) - used for destination paths
         system = download_info.get('system', '')  # System ID (e.g., "atari2600") - used for API calls
         batocera_system = download_info.get('batocera_system', '')  # Batocera system directory name - used for local paths
+        game_details = download_info.get('game_details', {})  # Full game data with original paths
         expected_file_size = download_info.get('file_size')
         bytes_already_transferred = download_info.get('bytes_transferred', 0)
         http_url = download_info.get('file_url')  # HTTP URL provided by backend
@@ -1203,29 +1315,42 @@ def download_game(download_info):
             logger.error(f"Missing batocera_system in download_info for system: {system}")
             return False
         
-        # Use rom_path for destination paths (normalized by backend, without snapshot path)
-        if not rom_path:
-            logger.error(f"Missing rom_path in download_info for game_id: {game_id}")
-            return False
+        # Get original path from game_details (from gamelist.xml)
+        # Fallback to game_id if path not in game_details
+        original_path = game_details.get('path', game_id)
         
-        normalized_game_id = rom_path
+        # Remove ./ prefix if present
+        clean_original_path = original_path.lstrip('./')
+        
+        # Remove system prefix if present (since we'll add batocera_system)
+        if clean_original_path.startswith(f"{system}/"):
+            clean_original_path = clean_original_path[len(system) + 1:]
+        
+        # Remove snapshot path if present (for Releases catalog)
+        # Original path might be: ".zfs/snapshot/vX/game.rom" -> "game.rom"
+        if clean_original_path.startswith('.zfs/snapshot/'):
+            parts = clean_original_path.split('/', 3)  # Split into ['.zfs', 'snapshot', 'version', 'path']
+            if len(parts) > 3:
+                clean_original_path = parts[3]
+        
         target_system = batocera_system
         
         logger.info(f"Downloading via HTTP")
         logger.info(f"  HTTP URL: {http_url}")
         logger.info(f"  Download ID: {download_id}")
         logger.info(f"  Game ID: {game_id}")
-        logger.info(f"  ROM Path: {normalized_game_id}")
+        logger.info(f"  Original Path: {original_path}")
+        logger.info(f"  Clean Path: {clean_original_path}")
         logger.info(f"  System: {system}")
         logger.info(f"  Batocera System: {target_system}")
         
-        # Determine destination base path: ROMS_PATH/batocera_system/rompath (without snapshot path)
+        # Determine destination base path: ROMS_PATH/batocera_system/original_path
         if target_system:
-            dest_base_path = os.path.join(ROMS_PATH, target_system, normalized_game_id)
+            dest_base_path = os.path.join(ROMS_PATH, target_system, clean_original_path)
             logger.info(f"Destination base path: {dest_base_path}")
         else:
             logger.warning(f"Target system not provided in download_info, using game_id only: {game_id}")
-            dest_base_path = os.path.join(ROMS_PATH, game_id)
+            dest_base_path = os.path.join(ROMS_PATH, clean_original_path)
             logger.info(f"Destination base path: {dest_base_path}")
         
         # First, check if it's a directory by checking Content-Type header
@@ -1310,7 +1435,8 @@ def download_game(download_info):
                                 # Use game_data returned from download_game_media (avoids duplicate API call)
                                 if game_data:
                                     # Update gamelist.xml with game entry
-                                    gamelist_success = add_game_to_batocera_api(target_system, game_id, game_data, downloaded_media)
+                                    # Use clean_original_path (derived from original path in game_data)
+                                    gamelist_success = add_game_to_batocera_api(target_system, clean_original_path, game_data, downloaded_media)
                                     if gamelist_success:
                                         media_and_gamelist_success = True
                                         logger.info(f"Media download and gamelist.xml update completed successfully for {game_id}")
@@ -1363,7 +1489,8 @@ def download_game(download_info):
                     # Use game_data returned from download_game_media (avoids duplicate API call)
                     if game_data:
                         # Update gamelist.xml with game entry
-                        gamelist_success = add_game_to_batocera_api(target_system, game_id, game_data, downloaded_media)
+                        # Use clean_original_path (derived from original path in game_data)
+                        gamelist_success = add_game_to_batocera_api(target_system, clean_original_path, game_data, downloaded_media)
                         if gamelist_success:
                             media_and_gamelist_success = True
                             logger.info(f"Media download and gamelist.xml update completed successfully for {game_id}")
@@ -1519,7 +1646,8 @@ def download_game(download_info):
                 # Use game_data returned from download_game_media (avoids duplicate API call)
                 if game_data:
                     # Update gamelist.xml with game entry
-                    gamelist_success = add_game_to_batocera_api(target_system, game_id, game_data, downloaded_media)
+                    # Use clean_original_path (derived from original path in game_data)
+                    gamelist_success = add_game_to_batocera_api(target_system, clean_original_path, game_data, downloaded_media)
                     if gamelist_success:
                         media_and_gamelist_success = True
                         logger.info(f"Media download and gamelist.xml update completed successfully for {game_id}")
@@ -1541,14 +1669,33 @@ def download_game(download_info):
         return False
 
 def mark_completed(download_id):
-    """Mark a download as completed in the queue."""
+    """Mark a download as completed in the queue and send logs."""
     try:
         headers = {
             'Content-Type': 'application/json'
         }
+        
+        # Collect logs for this download if available
+        log_content = None
+        if download_id in _download_log_handlers:
+            log_handler = _download_log_handlers[download_id]
+            log_content = log_handler.get_logs()
+            # Clean up handler
+            log_handler.clear()
+            # Remove handler from global dict after collecting logs
+            del _download_log_handlers[download_id]
+        
+        data = {
+            'download_id': download_id,
+            'client_version': CLIENT_VERSION
+        }
+        
+        if log_content:
+            data['log_content'] = log_content
+        
         response = http_session.post(
             f"{API_URL}/api/download/complete",
-            json={'download_id': download_id},
+            json=data,
             headers=headers
         )
         response.raise_for_status()
@@ -1556,23 +1703,31 @@ def mark_completed(download_id):
         return True
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to mark download as completed: {e}")
+        # Clean up handler even if request failed
+        if download_id in _download_log_handlers:
+            del _download_log_handlers[download_id]
         return False
 
 def process_queue():
     """Process downloads from the queue."""
-    # Request download - backend will determine queue type from user's role
-    download_info = request_download(queue_type=None)
-    
-    if not download_info:
-        logger.debug("No downloads available")
-        return
+    try:
+        logger.info("Processing queue - requesting download from backend")
+        # Request download - backend will determine queue type from user's role
+        download_info = request_download(queue_type=None)
+        logger.info(f"Request completed, download_info: {'received' if download_info else 'None (no downloads available)'}")
+        
+        if not download_info:
+            logger.info("No downloads available, will poll again after interval")
+            return
 
-    logger.info(f"Got download: {download_info.get('game_name', 'Unknown')} (ID: {download_info['download_id']})")
-    
-    if download_game(download_info):
-        mark_completed(download_info['download_id'])
-    else:
-        logger.error(f"Failed to download {download_info.get('game_id', 'Unknown')}")
+        logger.info(f"Got download: {download_info.get('game_name', 'Unknown')} (ID: {download_info['download_id']})")
+        
+        if download_game(download_info):
+            mark_completed(download_info['download_id'])
+        else:
+            logger.error(f"Failed to download {download_info.get('game_id', 'Unknown')}")
+    except Exception as e:
+        logger.error(f"Error in process_queue: {e}", exc_info=True)
 
 def main():
     """Main function to run the download service."""
@@ -1594,9 +1749,13 @@ def main():
             # Wait for POLLING_INTERVAL to be set from backend before sleeping
             if POLLING_INTERVAL is None:
                 logger.warning("POLLING_INTERVAL not yet set by backend, using temporary 60s interval")
-                time.sleep(60)
+                sleep_time = 60
             else:
-                time.sleep(POLLING_INTERVAL)
+                sleep_time = POLLING_INTERVAL
+            
+            logger.info(f"Waiting {sleep_time} seconds before next poll...")
+            time.sleep(sleep_time)
+            logger.info("Wake up, starting next polling cycle...")
         except KeyboardInterrupt:
             logger.info("Shutting down download service...")
             break

@@ -149,6 +149,12 @@ const DownloadQueues = () => {
                             <span className="detail-label">Version:</span>
                             <span className="detail-value">{download.catalog_version || 'WIP'}</span>
                           </div>
+                          {download.client_version && (
+                            <div className="detail-row">
+                              <span className="detail-label">Client:</span>
+                              <span className="detail-value">{download.client_version}</span>
+                            </div>
+                          )}
                           <div className="detail-row">
                             <span className="detail-label">User:</span>
                             <span className="detail-value">{download.username || download.user_id}</span>
@@ -188,6 +194,12 @@ const DownloadQueues = () => {
                             <span className="detail-label">Version:</span>
                             <span className="detail-value">{download.catalog_version || 'WIP'}</span>
                           </div>
+                          {download.client_version && (
+                            <div className="detail-row">
+                              <span className="detail-label">Client:</span>
+                              <span className="detail-value">{download.client_version}</span>
+                            </div>
+                          )}
                           <div className="detail-row">
                             <span className="detail-label">User:</span>
                             <span className="detail-value">{download.username || download.user_id}</span>
@@ -237,6 +249,12 @@ const DownloadQueues = () => {
                             <span className="detail-label">Version:</span>
                             <span className="detail-value">{download.catalog_version || 'WIP'}</span>
                           </div>
+                          {download.client_version && (
+                            <div className="detail-row">
+                              <span className="detail-label">Client:</span>
+                              <span className="detail-value">{download.client_version}</span>
+                            </div>
+                          )}
                           <div className="detail-row">
                             <span className="detail-label">User:</span>
                             <span className="detail-value">{download.username || download.user_id}</span>
@@ -276,6 +294,12 @@ const DownloadQueues = () => {
                             <span className="detail-label">Version:</span>
                             <span className="detail-value">{download.catalog_version || 'WIP'}</span>
                           </div>
+                          {download.client_version && (
+                            <div className="detail-row">
+                              <span className="detail-label">Client:</span>
+                              <span className="detail-value">{download.client_version}</span>
+                            </div>
+                          )}
                           <div className="detail-row">
                             <span className="detail-label">User:</span>
                             <span className="detail-value">{download.username || download.user_id}</span>
@@ -324,6 +348,12 @@ const DownloadQueues = () => {
                         <span className="detail-label">Version:</span>
                         <span className="detail-value">{download.catalog_version || 'WIP'}</span>
                       </div>
+                      {download.client_version && (
+                        <div className="detail-row">
+                          <span className="detail-label">Client:</span>
+                          <span className="detail-value">{download.client_version}</span>
+                        </div>
+                      )}
                       <div className="detail-row">
                         <span className="detail-label">User:</span>
                         <span className="detail-value">{download.username || download.user_id}</span>
@@ -397,6 +427,12 @@ const DownloadQueues = () => {
                         <span className="detail-label">Version:</span>
                         <span className="detail-value">{download.catalog_version || 'WIP'}</span>
                       </div>
+                      {download.client_version && (
+                        <div className="detail-row">
+                          <span className="detail-label">Client:</span>
+                          <span className="detail-value">{download.client_version}</span>
+                        </div>
+                      )}
                       <div className="detail-row">
                         <span className="detail-label">User:</span>
                         <span className="detail-value">{download.username || download.user_id}</span>
