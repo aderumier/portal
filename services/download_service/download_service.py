@@ -662,7 +662,8 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                                     elapsed_total = current_time - download_start_time
                                     current_rate = bytes_downloaded_this_session / elapsed_total if elapsed_total > 0 else 0
                                 
-                                logger.info(f"Downloaded {total_bytes_downloaded} bytes ({total_bytes_downloaded / (1024*1024):.2f} MB), {chunk_count} chunks this session, rate: {current_rate / 125000:.2f} Mbits/s")
+                                bytes_downloaded_this_chunk_session = total_bytes_downloaded - current_resume_from
+                                logger.info(f"Downloaded {bytes_downloaded_this_chunk_session} bytes this session ({total_bytes_downloaded / (1024*1024):.2f} MB total, resumed from {current_resume_from / (1024*1024):.2f} MB), {chunk_count} chunks, rate: {current_rate / 125000:.2f} Mbits/s")
                                 last_log_time = current_time
                         elif chunk is None:
                             # Empty chunk might indicate end of stream, but continue
@@ -732,12 +733,27 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                     logger.warning(f"Stream ended unexpectedly but download is not paused - max retries exceeded")
                     return False
             
-            logger.info(f"Download completed: {chunk_count} chunks, {total_bytes_downloaded} bytes")
+            bytes_downloaded_this_session = total_bytes_downloaded - current_resume_from
+            logger.info(f"Download completed: {chunk_count} chunks, {bytes_downloaded_this_session} bytes downloaded this session (total: {total_bytes_downloaded} bytes including {current_resume_from} bytes from resume)")
             
-            # Verify file size
-            final_size = os.path.getsize(dest_path)
+            # Verify file size - check if file exists first (it might have been deleted by another process/thread)
+            if not os.path.exists(dest_path):
+                logger.error(f"File not found after download completion (may have been deleted): {dest_path}")
+                return None  # File was deleted, treat as error
+            
+            try:
+                final_size = os.path.getsize(dest_path)
+            except FileNotFoundError:
+                logger.error(f"File was deleted during size verification: {dest_path}")
+                return None  # File was deleted, treat as error
+            except Exception as e:
+                logger.error(f"Error getting file size: {e}")
+                return None
+            
+            # When resuming, total_bytes_downloaded includes resume_from, so compare final_size with expected_size
+            # expected_size should be the TOTAL file size, not just the remaining bytes
             if expected_size and final_size != expected_size:
-                logger.error(f"File size mismatch: {final_size} != {expected_size}")
+                logger.error(f"File size mismatch: final_size={final_size} != expected_size={expected_size} (resumed from {current_resume_from}, downloaded {bytes_downloaded_this_session} bytes this session, total_bytes_downloaded={total_bytes_downloaded})")
                 # Don't delete file here - let caller handle deletion and error reporting
                 # This allows caller to distinguish between 404 and size mismatch
                 return None  # None indicates size mismatch (caller should handle deletion and error reporting)
@@ -925,25 +941,24 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
             resume_from = 0
             if os.path.exists(dest_file_path):
                 existing_size = os.path.getsize(dest_file_path)
-                if existing_size < file_size:
+                if existing_size > file_size:
+                    # File is larger than expected - corrupted, delete it
+                    logger.error(f"Existing file size mismatch for {relative_path}: {existing_size} bytes, expected {file_size} bytes (file is too large, deleting)")
+                    try:
+                        os.remove(dest_file_path)
+                        logger.info(f"Deleted corrupted existing file: {dest_file_path}")
+                        resume_from = 0  # Start fresh
+                    except Exception as e:
+                        logger.error(f"Failed to delete corrupted existing file {dest_file_path}: {e}")
+                        files_with_errors.append((relative_path, f"Existing file size mismatch: {existing_size} > {file_size}"))
+                        continue
+                elif existing_size < file_size:
                     resume_from = existing_size
                     logger.info(f"Resuming file {relative_path} from byte {resume_from}")
                 elif existing_size == file_size:
                     logger.info(f"File already complete: {relative_path}")
                     total_bytes_downloaded += file_size
-                    # Verify size of existing file
-                    if existing_size != file_size:
-                        logger.error(f"Existing file size mismatch for {relative_path}: {existing_size} bytes, expected {file_size} bytes")
-                        try:
-                            os.remove(dest_file_path)
-                            logger.info(f"Deleted corrupted existing file: {dest_file_path}")
-                            # Need to download it
-                        except Exception as e:
-                            logger.error(f"Failed to delete corrupted existing file {dest_file_path}: {e}")
-                            files_with_errors.append((relative_path, f"Existing file size mismatch: {existing_size} != {file_size}"))
-                            continue
-                    else:
-                        continue
+                    continue
             
             logger.info(f"Downloading file: {relative_path} ({file_size} bytes)")
             
