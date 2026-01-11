@@ -83,7 +83,6 @@ async def preload_game_data():
     # Clear Discord roles cache on startup to ensure fresh data
     try:
         from app.services.discord import get_redis_cache_client, DiscordService
-        from app.config import settings
         redis_client = get_redis_cache_client()
         if redis_client:
             guild_id = settings.DISCORD_GUILD_ID

@@ -17,7 +17,7 @@ import websockets
 from urllib.parse import urlparse
 
 # Client version
-CLIENT_VERSION = "0.1"
+CLIENT_VERSION = "0.2"
 
 def read_config_ini(config_path):
     """Read config.ini file and return a dictionary of settings.
@@ -168,10 +168,13 @@ API_URL = config.get('API_URL') or os.getenv('API_URL', 'https://rgs-retro.ddns.
 # Set ROMS_PATH based on platform
 if platform.system() == 'Windows':
     DEFAULT_ROMS_PATH = os.path.join(os.getenv('PROGRAMDATA', 'C:\\ProgramData'), 'RGS', 'roms')
+    DEFAULT_SAVEDIR = os.path.join(os.getenv('PROGRAMDATA', 'C:\\ProgramData'), 'RGS', 'saves')
 else:
     DEFAULT_ROMS_PATH = '/userdata/roms'
+    DEFAULT_SAVEDIR = '/userdata/saves'
 
 ROMS_PATH = config.get('ROMS_PATH') or os.getenv('ROMS_PATH', DEFAULT_ROMS_PATH)
+SAVEDIR = config.get('SAVEDIR') or os.getenv('SAVEDIR', DEFAULT_SAVEDIR)
 
 # BANDWIDTH_UPDATE_INTERVAL will be fetched from backend on first request_download call
 # No fallback - must be set by backend
@@ -203,6 +206,7 @@ if not API_TOKEN:
 logger.info(f"Download service configuration:")
 logger.info(f"  API_URL: {API_URL}")
 logger.info(f"  ROMS_PATH: {ROMS_PATH}")
+logger.info(f"  SAVEDIR: {SAVEDIR}")
 logger.info(f"  SERVICE_ID: {SERVICE_ID}")
 logger.info(f"  BANDWIDTH_UPDATE_INTERVAL: Will be set from backend on first connection")
 
@@ -235,6 +239,8 @@ def ensure_directories():
     """Ensure all required directories exist."""
     Path(ROMS_PATH).mkdir(parents=True, exist_ok=True)
     logger.info(f"ROMs directory ensured: {ROMS_PATH}")
+    Path(SAVEDIR).mkdir(parents=True, exist_ok=True)
+    logger.info(f"Saves directory ensured: {SAVEDIR}")
 
 def update_bandwidth_update_interval(new_interval):
     """Update the global BANDWIDTH_UPDATE_INTERVAL value.
@@ -858,8 +864,12 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
     logger.error(f"Max retries ({max_retries}) exceeded for download")
     return False
 
-def download_directory_recursive(download_id, system, game_id, base_url, dest_base_path, files_list, bytes_already_transferred, paused_ref):
-    """Download all files in a directory recursively."""
+def download_directory_recursive(download_id, system, game_id, base_url, dest_base_path, files_list, bytes_already_transferred, paused_ref, download_info=None):
+    """Download all files in a directory recursively.
+    
+    Args:
+        download_info: Optional download_info dict containing download_id for URL construction
+    """
     import urllib.parse
     
     # Reset paused_ref to False at the start (in case this is a resumed download)
@@ -1006,7 +1016,11 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
             encoded_game_id = urllib.parse.quote(clean_game_id, safe='/')
             encoded_system = urllib.parse.quote(system, safe='')
             encoded_rel_path = urllib.parse.quote(relative_path, safe='/')
-            file_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}&relative_path={encoded_rel_path}"
+            # Prefer download_id from download_info if available (simpler and more reliable)
+            if download_info and 'download_id' in download_info:
+                file_url = f"{base_url}/api/download/file?download_id={download_info['download_id']}&relative_path={encoded_rel_path}"
+            else:
+                file_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}&relative_path={encoded_rel_path}"
             
             # Destination path preserving directory structure
             dest_file_path = os.path.join(dest_base_path, relative_path)
@@ -1484,7 +1498,7 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
         batocera_game = {}
         
         # Fields to exclude from the API call (system-specific metadata and website-only fields)
-        exclude_fields = {'id', 'system', 'systemName', 'catalog_image'}
+        exclude_fields = {'id', 'system', 'systemName', 'catalog_image', '_original_batocera_path', '_original_retrobat_path'}
         
         # Add ALL fields from game_data to batocera_game
         # Paths should already be in original gamelist.xml format from backend (no restoration needed)
@@ -1599,13 +1613,14 @@ def download_game(download_info):
     logger.info(f"=== Starting download task for download_id: {download_id} ===")
     
     try:
-        game_id = download_info['game_id']  # Original game_id (may include snapshot path or unified key) - used for URL construction
+        download_id = download_info['download_id']  # Download ID for URL construction
+        game_id = download_info['game_id']  # Resolved game_id - used for destination paths
         system = download_info.get('system', '')  # System ID (e.g., "atari2600") - used for API calls
         batocera_system = download_info.get('batocera_system', '')  # Batocera system directory name - used for local paths
         game_details = download_info.get('game_details', {})  # Full game data with original paths
         expected_file_size = download_info.get('file_size')
         bytes_already_transferred = download_info.get('bytes_transferred', 0)
-        http_url = download_info.get('file_url')  # HTTP URL provided by backend
+        http_url = download_info.get('file_url')  # HTTP URL provided by backend (uses download_id)
         
         # Validate required fields
         if not http_url:
@@ -1652,14 +1667,21 @@ def download_game(download_info):
         logger.info(f"  System: {system}")
         logger.info(f"  Batocera System: {target_system}")
         
-        # Determine destination base path: ROMS_PATH/batocera_system/original_path
-        if target_system:
-            dest_base_path = os.path.join(ROMS_PATH, target_system, clean_original_path)
-            logger.info(f"Destination base path: {dest_base_path}")
+        # Check if save_location is provided (for .psvita files)
+        save_location = download_info.get('save_location')
+        if save_location:
+            # Use SAVEDIR with save_location for special save files
+            dest_base_path = os.path.join(SAVEDIR, save_location)
+            logger.info(f"Using save_location, destination base path: {dest_base_path}")
         else:
-            logger.warning(f"Target system not provided in download_info, using game_id only: {game_id}")
-            dest_base_path = os.path.join(ROMS_PATH, clean_original_path)
-            logger.info(f"Destination base path: {dest_base_path}")
+            # Determine destination base path: ROMS_PATH/batocera_system/original_path
+            if target_system:
+                dest_base_path = os.path.join(ROMS_PATH, target_system, clean_original_path)
+                logger.info(f"Destination base path: {dest_base_path}")
+            else:
+                logger.warning(f"Target system not provided in download_info, using game_id only: {game_id}")
+                dest_base_path = os.path.join(ROMS_PATH, clean_original_path)
+                logger.info(f"Destination base path: {dest_base_path}")
         
         # First, check if it's a directory by checking Content-Type header
         # Use stream=True from the start to avoid downloading the entire file just to check headers
@@ -1719,7 +1741,7 @@ def download_game(download_info):
                             # Pass 0 as bytes_already_transferred - download_directory_recursive will calculate from local files
                             success = download_directory_recursive(
                                 download_id, system, game_id, base_url, dest_base_path,
-                                files_list, 0, paused
+                                files_list, 0, paused, download_info  # Pass download_info for download_id in URLs
                             )
                         finally:
                             # Clear paused_ref before cleanup to prevent false pause logs from old threads

@@ -833,8 +833,9 @@ async def get_download_game_details(
 @router.get("/file")
 async def download_file(
     request: Request,
-    system: str = Query(...),
-    game_id: str = Query(...),
+    download_id: Optional[int] = Query(None),  # Download ID from download_info (preferred)
+    system: Optional[str] = Query(None),  # Optional, can be derived from download_id
+    game_id: Optional[str] = Query(None),  # Optional, can be derived from download_id
     relative_path: Optional[str] = Query(None),  # For directory downloads: relative path to file within directory
     current_user: dict = Depends(require_auth_user),
     db: Session = Depends(get_db)
@@ -868,12 +869,90 @@ async def download_file(
         
         user_id = current_user['id']
         
-        # Verify the file is in the user's download queue (or was recently completed)
-        # Check for active downloads or recently completed (within last hour)
-        from datetime import datetime, timezone, timedelta
-        from sqlalchemy import and_, or_
+        # Get download service for resolution
+        download_service = DownloadService(db, get_game_service())
         
-        recent_threshold = datetime.now(timezone.utc) - timedelta(hours=1)
+        # Get queue item - prefer download_id if provided (simpler and more reliable)
+        queue_item = None
+        if download_id:
+            queue_item = db.query(DownloadQueue).filter(
+                DownloadQueue.id == download_id,
+                DownloadQueue.user_id == user_id,
+                DownloadQueue.token_id == token_id
+            ).first()
+            
+            if queue_item:
+                # Derive system and game_id from queue_item if not provided
+                if not system or not game_id:
+                    catalog_version = queue_item.catalog_version
+                    catalog_type = 'releases' if catalog_version else 'wip'
+                    lookup_game_id = queue_item.game_id
+                    if catalog_type == 'releases' and '.zfs/snapshot' in queue_item.game_id:
+                        parts = queue_item.game_id.split('.zfs/snapshot/', 1)
+                        if len(parts) > 1:
+                            after_snapshot = parts[1]
+                            if '/' in after_snapshot:
+                                lookup_game_id = '/'.join(after_snapshot.split('/')[1:])
+                            else:
+                                lookup_game_id = after_snapshot
+                    
+                    game = download_service.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+                    if game:
+                        if not system:
+                            system = game.get('system', '')
+                        if not game_id:
+                            # Get platform from Redis for resolution
+                            platform = None
+                            try:
+                                ws_manager = get_websocket_manager()
+                                redis_client = await ws_manager._get_redis_client()
+                                if redis_client and token_id:
+                                    redis_key = f"ws_client:{token_id}"
+                                    conn_data = await redis_client.get(redis_key)
+                                    if conn_data:
+                                        import json
+                                        conn_info = json.loads(conn_data)
+                                        platform = conn_info.get('platform', 'linux')
+                            except Exception as e:
+                                logger.debug(f"Could not get platform from Redis: {e}")
+                            
+                            if not platform:
+                                platform = 'linux'
+                            
+                            # Resolve unified key if needed
+                            resolved_game_id = download_service._resolve_unified_rom_key(
+                                queue_item.game_id, system, platform, catalog_type
+                            )
+                            game_id = resolved_game_id
+        
+        # Fallback to game_id/system lookup if download_id not provided (legacy support)
+        if not queue_item and game_id and system:
+            from datetime import datetime, timezone, timedelta
+            from sqlalchemy import and_, or_
+            
+            recent_threshold = datetime.now(timezone.utc) - timedelta(hours=1)
+            
+            queue_item = db.query(DownloadQueue).filter(
+                and_(
+                    DownloadQueue.user_id == user_id,
+                    DownloadQueue.token_id == token_id,
+                    DownloadQueue.game_id == game_id,
+                    or_(
+                        DownloadQueue.status.in_(['user_queue', 'downloading', 'paused']),
+                        and_(
+                            DownloadQueue.status == 'completed',
+                            DownloadQueue.created_at >= recent_threshold
+                        )
+                    )
+                )
+            ).first()
+        
+        if not queue_item:
+            logger.info(f"File download requested but queue item not found: download_id={download_id}, game_id={game_id}, system={system}")
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="Download was removed from queue"
+            )
         
         # Get platform from Redis connection info (if available) - needed for unified key resolution
         platform = None
@@ -895,37 +974,23 @@ async def download_file(
         if not platform:
             platform = 'linux'
         
-        # Get download service for resolution
-        download_service = DownloadService(db, get_game_service())
-        
-        # Refresh the queue item from database - check by requested game_id first
-        # The queue_item.game_id might be unified key or already resolved
-        queue_item = db.query(DownloadQueue).filter(
-            and_(
-                DownloadQueue.user_id == user_id,
-                DownloadQueue.token_id == token_id,
-                DownloadQueue.game_id == game_id,  # Match requested game_id first
-                or_(
-                    DownloadQueue.status.in_(['user_queue', 'downloading', 'paused']),
-                    and_(
-                        DownloadQueue.status == 'completed',
-                        DownloadQueue.created_at >= recent_threshold
-                    )
-                )
-            )
-        ).first()
-        
-        if not queue_item:
-            # Also check if there's a download for this game (even if completed longer ago)
-            # This allows download service to access files it's currently downloading
-            queue_item = db.query(DownloadQueue).filter(
-                and_(
-                    DownloadQueue.user_id == user_id,
-                    DownloadQueue.token_id == token_id,
-                    DownloadQueue.game_id == game_id,
-                    DownloadQueue.status == 'downloading'
-                )
-            ).first()
+        # Derive system from queue_item if not provided
+        if not system:
+            catalog_version = queue_item.catalog_version
+            catalog_type = 'releases' if catalog_version else 'wip'
+            lookup_game_id = queue_item.game_id
+            if catalog_type == 'releases' and '.zfs/snapshot' in queue_item.game_id:
+                parts = queue_item.game_id.split('.zfs/snapshot/', 1)
+                if len(parts) > 1:
+                    after_snapshot = parts[1]
+                    if '/' in after_snapshot:
+                        lookup_game_id = '/'.join(after_snapshot.split('/')[1:])
+                    else:
+                        lookup_game_id = after_snapshot
+            
+            game = download_service.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+            if game:
+                system = game.get('system', '')
         
         if not queue_item:
             # Download was removed from queue - return 410 Gone to signal the download service to stop
@@ -1038,6 +1103,51 @@ async def download_file(
                                     logger.warning(f"Directory {dir_full_path} path validation failed, skipping")
                             else:
                                 logger.warning(f"Directory listed in {source_file} does not exist: {dir_full_path}")
+                    elif source_file.lower().endswith('.psvita'):
+                        # For .psvita files: parsed_files contains the directory name
+                        # Source directory is at {GAMES_PATH}/_saves_/psvita/vita3k/ux0/app/{directory_name}
+                        if parsed_files:
+                            directory_name = parsed_files[0]
+                            # Build path to save directory (different from .xbox360 which uses relative paths)
+                            save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'psvita', 'vita3k', 'ux0', 'app', directory_name)
+                            dir_full_path = os.path.normpath(save_dir_path)
+                            
+                            # Verify the directory exists and is within the games directory
+                            if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                                # Ensure the directory is within the games directory (security check)
+                                try:
+                                    if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                        # Walk the directory and add all files
+                                        # For .psvita files, relative paths should maintain the directory structure
+                                        # Files will be placed relative to the base path, maintaining subdirectory structure
+                                        for root, dirs, files in os.walk(dir_full_path):
+                                            for filename in files:
+                                                file_full_path = os.path.join(root, filename)
+                                                # Get relative path from the save directory root
+                                                rel_path_from_dir = os.path.relpath(file_full_path, dir_full_path)
+                                                file_size = os.path.getsize(file_full_path)
+                                                files_list.append({
+                                                    'relative_path': rel_path_from_dir.replace('\\', '/'),  # Normalize path separators
+                                                    'size': file_size
+                                                })
+                                        
+                                        # Include the .psvita file itself in the download
+                                        # The .psvita file's relative path should be relative to where it will be saved
+                                        # Since the client will save to SAVEDIR/psvita/vita3k/ux0/app/{directory_name},
+                                        # we need the .psvita file to be saved alongside it
+                                        # For now, we'll include it with a relative path that matches its original location
+                                        psvita_rel_path = os.path.relpath(base_path, source_dir)
+                                        psvita_file_size = os.path.getsize(base_path)
+                                        files_list.append({
+                                            'relative_path': psvita_rel_path.replace('\\', '/'),
+                                            'size': psvita_file_size
+                                        })
+                                    else:
+                                        logger.warning(f"Directory {dir_full_path} is outside games directory, skipping")
+                                except ValueError:
+                                    logger.warning(f"Directory {dir_full_path} path validation failed, skipping")
+                            else:
+                                logger.warning(f"PS Vita save directory listed in {source_file} does not exist: {dir_full_path}")
                     else:
                         # For .m3u and .cue files: files are relative to the source file's directory
                         for rel_file in parsed_files:

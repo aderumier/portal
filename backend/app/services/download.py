@@ -154,6 +154,41 @@ def parse_xbox360_file(xbox360_file_path: str) -> str:
         return None
 
 
+def parse_psvita_file(psvita_file_path: str) -> str:
+    """Parse a .psvita file and return the directory name to download.
+    
+    Args:
+        psvita_file_path: Full path to the .psvita file
+        
+    Returns:
+        Directory name (e.g., "PCSE00349")
+    """
+    try:
+        # Read and parse the .psvita file
+        if not os.path.exists(psvita_file_path):
+            logger.warning(f".psvita file not found: {psvita_file_path}")
+            return None
+        
+        with open(psvita_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines
+                if not line:
+                    continue
+                
+                # The file contains just the directory name (e.g., "PCSE00349")
+                directory_name = line
+                logger.info(f"Parsed .psvita file {psvita_file_path}: found directory '{directory_name}'")
+                return directory_name
+        
+        logger.warning(f"No valid directory found in .psvita file: {psvita_file_path}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error parsing .psvita file {psvita_file_path}: {e}", exc_info=True)
+        return None
+
+
 def detect_and_parse_special_file(file_path: str) -> Optional[Dict]:
     """Detect and parse special file types that require additional files to be downloaded.
     
@@ -200,6 +235,18 @@ def detect_and_parse_special_file(file_path: str) -> Optional[Dict]:
             # The actual directory walk will happen in the API endpoint
             # Use base_path_type='file' so client adjusts dest_base_path to the .xbox360 file's directory
             # The relative paths returned will include the directory name, so files are placed correctly
+            return {
+                'files': [directory_name],  # This will be treated as a directory path
+                'base_path_type': 'file',
+                'source_file': source_filename
+            }
+    
+    # Check for .psvita files
+    if file_lower.endswith('.psvita'):
+        directory_name = parse_psvita_file(file_path)
+        if directory_name:
+            # For .psvita files, we return the directory name as a single-item list
+            # Similar to .xbox360, but the source directory path is different
             return {
                 'files': [directory_name],  # This will be treated as a directory path
                 'base_path_type': 'file',
@@ -423,85 +470,69 @@ class DownloadService:
         """Resolve unified ROM key to actual ROM path based on platform.
         
         If game_id is a unified key (e.g., "path/to/game.(z64|n64)"), resolves it
-        to the actual ROM path based on platform:
-        - Linux: uses batocera_extension
-        - Windows: uses retrobat_extension
+        to the actual ROM path based on platform using stored _original_batocera_path
+        and _original_retrobat_path from the catalog.
         
         Args:
-            game_id: Unified ROM key or regular ROM path
+            game_id: Unified ROM key or regular ROM path (may include snapshot path for releases)
             system_id: System ID
             platform: 'linux' or 'windows' (None defaults to linux)
             catalog_type: 'wip' or 'releases'
             
         Returns:
-            str: Resolved ROM path, or original game_id if not a unified key
+            str: Resolved ROM path, or original game_id if not a unified key or stored paths not available
         """
         import re
         
-        # Check if game_id matches unified key pattern: path.(ext1|ext2)
+        # Strip snapshot path prefix if present (for releases catalog)
+        # Catalog stores unified keys without snapshot paths, so we need to remove it for lookup
+        lookup_game_id = game_id
+        snapshot_prefix = None
+        if catalog_type == 'releases' and '.zfs/snapshot' in game_id:
+            # Extract snapshot prefix and game_id without snapshot
+            parts = game_id.split('.zfs/snapshot/', 1)
+            if len(parts) > 1:
+                after_snapshot = parts[1]
+                if '/' in after_snapshot:
+                    snapshot_version = after_snapshot.split('/')[0]
+                    lookup_game_id = '/'.join(after_snapshot.split('/')[1:])
+                    snapshot_prefix = f".zfs/snapshot/{snapshot_version}/"
+                else:
+                    lookup_game_id = after_snapshot
+                    snapshot_prefix = f".zfs/snapshot/{after_snapshot}/"
+        
+        # Check if lookup_game_id matches unified key pattern: path.(ext1|ext2)
         unified_pattern = r'^(.+)\.\(([^|]+)\|([^|]+)\)$'
-        match = re.match(unified_pattern, game_id)
+        match = re.match(unified_pattern, lookup_game_id)
         
         if not match:
             # Not a unified key, return as-is
             return game_id
         
-        # Extract components from unified key
-        base_path = match.group(1)
-        ext1 = match.group(2)
-        ext2 = match.group(3)
-        
-        # Get system extensions from database
-        from app.database import System
-        db_system = self.db.query(System).filter(System.id == system_id).first()
-        
-        if not db_system:
-            logger.warning(f"System {system_id} not found for ROM key resolution, using original game_id")
+        # Get the game from catalog to use stored original paths (use lookup_game_id without snapshot)
+        game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+        if not game:
+            logger.warning(f"Game not found in catalog for unified key '{lookup_game_id}' (catalog_type: {catalog_type}), cannot resolve")
             return game_id
         
-        batocera_ext = (db_system.batocera_extension or '').strip().lstrip('.')
-        retrobat_ext = (db_system.retrobat_extension or '').strip().lstrip('.')
-        
-        if not batocera_ext or not retrobat_ext:
-            logger.debug(f"System {system_id} does not have both extensions configured, using original game_id")
-            return game_id
-        
-        # Determine which extension to use based on platform
         platform_lower = (platform or 'linux').lower()
         if platform_lower == 'windows':
-            target_ext = retrobat_ext
+            original_path = game.get('_original_retrobat_path')
         else:
-            target_ext = batocera_ext
+            original_path = game.get('_original_batocera_path')
         
-        # Verify which extension matches (ext1 or ext2)
-        if ext1 == target_ext:
-            resolved_path = f"{base_path}.{target_ext}"
-        elif ext2 == target_ext:
-            resolved_path = f"{base_path}.{target_ext}"
-        else:
-            # Extensions in unified key don't match system extensions
-            # Try to construct path anyway using target_ext
-            resolved_path = f"{base_path}.{target_ext}"
-            logger.warning(f"Unified key extensions ({ext1}|{ext2}) don't match system extensions ({batocera_ext}|{retrobat_ext}), using target_ext: {target_ext}")
-        
-        # Verify resolved ROM exists in catalog
-        resolved_lookup_id = resolved_path
-        if catalog_type == 'releases' and '.zfs/snapshot' in resolved_path:
-            # Extract path after snapshot for lookup
-            parts = resolved_path.split('.zfs/snapshot/', 1)
-            if len(parts) > 1:
-                after_snapshot = parts[1]
-                if '/' in after_snapshot:
-                    resolved_lookup_id = '/'.join(after_snapshot.split('/')[1:])
-                else:
-                    resolved_lookup_id = after_snapshot
-        
-        if self.game_service.get_game_by_id(resolved_lookup_id, catalog_type=catalog_type):
-            logger.debug(f"Resolved unified ROM key '{game_id}' to '{resolved_path}' (platform: {platform_lower})")
-            return resolved_path
-        else:
-            logger.warning(f"Resolved ROM path not found in catalog: {resolved_path}, using original game_id")
+        if not original_path:
+            logger.warning(f"Stored original path not found for unified key '{lookup_game_id}' (platform: {platform_lower}), cannot resolve")
             return game_id
+        
+        # Reconstruct with snapshot path prefix if it was present in the original game_id
+        if snapshot_prefix:
+            resolved_path = f"{snapshot_prefix}{original_path}"
+        else:
+            resolved_path = original_path
+        
+        logger.debug(f"Resolved unified ROM key '{game_id}' using stored path '{resolved_path}' (platform: {platform_lower})")
+        return resolved_path
     
     async def add_to_queue(self, user_id: str, game_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None, catalog_version: Optional[str] = None) -> bool:
         """Add a game to the user's FIFO queue."""
@@ -565,14 +596,71 @@ class DownloadService:
             
             # Get file size if possible (game_id is rompath, need to prepend system)
             # Handle both files and directories, including special file types (.m3u, .cue, .xbox360)
+            # For unified keys (e.g., game.(ext1|ext2)), we need to resolve to actual path or check both
             file_size = None
             if settings.GAMES_PATH:
                 system = game.get('system', '')
-                if system:
-                    game_path = os.path.join(settings.GAMES_PATH, system, game_id)
+                
+                # Check if game_id is a unified key: ends with .(ext1|ext2) pattern
+                import re
+                unified_pattern = r'\.\([^|]+\|[^)]+\)$'
+                is_unified_key = bool(re.search(unified_pattern, game_id))
+                
+                if is_unified_key:
+                    # For unified keys, we can't check file existence without knowing the platform
+                    # But we can check if at least one of the possible files exists
+                    # Extract the base path and extensions
+                    # Handle snapshot paths: .zfs/snapshot/v2-RGS_singe/Tittie_Tussle.(daphne|hypseus)
+                    # Match pattern: (optional snapshot path) + base_path.(ext1|ext2)
+                    # For snapshot: .zfs/snapshot/version/base_path.(ext1|ext2)
+                    # For non-snapshot: base_path.(ext1|ext2)
+                    match = re.match(r'^(.*?)([^/]+)\.\(([^|]+)\|([^)]+)\)$', game_id)
+                    if match:
+                        prefix = match.group(1)  # Could be empty or snapshot path like ".zfs/snapshot/v2-RGS_singe/"
+                        base_path = match.group(2)  # Base filename without extension
+                        ext1 = match.group(3)
+                        ext2 = match.group(4)
+                        
+                        # Reconstruct full paths with both extensions
+                        path_with_ext1 = f"{prefix}{base_path}.{ext1}" if prefix else f"{base_path}.{ext1}"
+                        path_with_ext2 = f"{prefix}{base_path}.{ext2}" if prefix else f"{base_path}.{ext2}"
+                        
+                        # Build full file system paths for both possible extensions
+                        if system:
+                            path1 = os.path.join(settings.GAMES_PATH, system, path_with_ext1)
+                            path2 = os.path.join(settings.GAMES_PATH, system, path_with_ext2)
+                        else:
+                            path1 = os.path.join(settings.GAMES_PATH, path_with_ext1)
+                            path2 = os.path.join(settings.GAMES_PATH, path_with_ext2)
+                        
+                        # Check if at least one exists, use the first one that exists for size calculation
+                        if os.path.exists(path1):
+                            game_path = path1
+                            logger.info(f"Unified key resolved to existing file: {path1}")
+                        elif os.path.exists(path2):
+                            game_path = path2
+                            logger.info(f"Unified key resolved to existing file: {path2}")
+                        else:
+                            # Neither file exists, log warning but allow adding to queue
+                            # (file will be resolved later based on client platform)
+                            logger.warning(f"Unified key game_id has no existing files: {game_id} (checked {path1} and {path2})")
+                            logger.info("Allowing unified key to be added to queue - will resolve based on client platform later")
+                            game_path = None
+                    else:
+                        # Pattern didn't match, treat as regular path
+                        logger.warning(f"Could not parse unified key pattern: {game_id}")
+                        if system:
+                            game_path = os.path.join(settings.GAMES_PATH, system, game_id)
+                        else:
+                            game_path = os.path.join(settings.GAMES_PATH, game_id)
                 else:
-                    game_path = os.path.join(settings.GAMES_PATH, game_id)
-                if os.path.exists(game_path):
+                    # Regular game_id (not unified key)
+                    if system:
+                        game_path = os.path.join(settings.GAMES_PATH, system, game_id)
+                    else:
+                        game_path = os.path.join(settings.GAMES_PATH, game_id)
+                
+                if game_path and os.path.exists(game_path):
                     # Check if it's a special file type that needs parsing
                     parsed_info = detect_and_parse_special_file(game_path)
                     
@@ -609,6 +697,33 @@ class DownloadService:
                                     # Include the .xbox360 file itself in the total size
                                     if os.path.exists(game_path) and os.path.isfile(game_path):
                                         total_size += os.path.getsize(game_path)
+                            elif source_file.lower().endswith('.psvita'):
+                                # For .psvita files: parsed_files contains the directory name
+                                # Source directory is at {GAMES_PATH}/_saves_/psvita/vita3k/ux0/app/{directory_name}
+                                if parsed_files:
+                                    directory_name = parsed_files[0]
+                                    # Build path to save directory (different from .xbox360 which uses relative paths)
+                                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'psvita', 'vita3k', 'ux0', 'app', directory_name)
+                                    dir_full_path = os.path.normpath(save_dir_path)
+                                    
+                                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                                        # Security check: ensure directory is within games directory
+                                        try:
+                                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                                # Walk the directory and sum all file sizes
+                                                for root, dirs, files in os.walk(dir_full_path):
+                                                    for filename in files:
+                                                        file_full_path = os.path.join(root, filename)
+                                                        if os.path.isfile(file_full_path):
+                                                            total_size += os.path.getsize(file_full_path)
+                                        except ValueError:
+                                            logger.warning(f"Directory {dir_full_path} path validation failed, skipping from size calculation")
+                                    else:
+                                        logger.warning(f"PS Vita save directory not found: {dir_full_path}")
+                                    
+                                    # Include the .psvita file itself in the total size
+                                    if os.path.exists(game_path) and os.path.isfile(game_path):
+                                        total_size += os.path.getsize(game_path)
                             else:
                                 # For .m3u and .cue files: files are relative to the source file's directory
                                 for rel_file in parsed_files:
@@ -624,11 +739,11 @@ class DownloadService:
                         file_size = total_size
                         logger.info(f"Special file ({source_file}) total size: {file_size} bytes ({len(parsed_files)} items parsed)")
                     
-                    elif os.path.isfile(game_path):
+                    elif game_path and os.path.isfile(game_path):
                         # Regular file
                         file_size = os.path.getsize(game_path)
                         logger.info(f"File size: {file_size} bytes")
-                    elif os.path.isdir(game_path):
+                    elif game_path and os.path.isdir(game_path):
                         # Regular directory
                         total_size = 0
                         for dirpath, dirnames, filenames in os.walk(game_path):
@@ -638,6 +753,11 @@ class DownloadService:
                                     total_size += os.path.getsize(filepath)
                         file_size = total_size
                         logger.info(f"Directory size: {file_size} bytes ({len([f for r, d, files in os.walk(game_path) for f in files])} files)")
+                elif game_path is None:
+                    # Unified key with no existing files found - set file_size to None
+                    # Will be resolved later based on client platform
+                    file_size = None
+                    logger.info("Unified key game - file size will be determined when download starts")
             
             # Add to user's FIFO queue (status: 'user_queue')
             queue_item = DownloadQueue(
@@ -1176,42 +1296,7 @@ class DownloadService:
                     self.db.commit()
                     return None
                 
-                # Build file path (game_id is rompath, need to prepend system)
-                file_path = None
-                if settings.GAMES_PATH:
-                    system = game.get('system', '')
-                    logger.info(f"Building file path for game_id={resumable_download.game_id}, system={system}")
-                    if system:
-                        file_path = os.path.join(settings.GAMES_PATH, system, resumable_download.game_id)
-                        logger.info(f"File path with system: {file_path}")
-                    else:
-                        logger.error(f"System is empty for game_id={resumable_download.game_id}, cannot build file path")
-                        # Archive and remove from queue since system is missing
-                        self.archive_download(resumable_download.id, 'error')
-                        self.db.delete(resumable_download)
-                        self.db.commit()
-                        return None
-                
-                # Verify file or directory exists before resuming download
-                if not os.path.exists(file_path):
-                    logger.error(f"File or directory does not exist: {file_path} for game_id={resumable_download.game_id}")
-                    # Archive and remove from queue since file doesn't exist
-                    self.archive_download(resumable_download.id, 'error')
-                    self.db.delete(resumable_download)
-                    self.db.commit()
-                    logger.info(f"Removed download {resumable_download.id} from queue - file not found")
-                    return None
-                
-                # Calculate available bandwidth
-                allocated_bandwidth = self.bandwidth_manager.allocate_bandwidth(resumable_download.queue_type)
-                
-                # Get user's custom bandwidth limit if set (capped at role-based limit)
-                from app.database import User
-                db_user = self.db.query(User).filter(User.user_id == resumable_download.user_id).first()
-                if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
-                    # Cap user's bandwidth_limit at the role-based limit
-                    allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
-                    logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
+                system = game.get('system', '')
                 
                 # Get system info from System table - use retrobat_system for Windows, batocera_system for Linux
                 db_system = self.db.query(System).filter(System.id == system).first()
@@ -1240,56 +1325,95 @@ class DownloadService:
                 
                 logger.info(f"Using {system_type}='{target_system}' for client platform (service_id={service_id}, is_windows={is_windows})")
                 
-                # Resolve unified ROM key if needed (before using game_id for file path/URL)
+                # Resolve unified ROM key if needed (BEFORE checking file existence)
+                import re
                 original_game_id = resumable_download.game_id
+                # Check if game_id is a unified key: ends with .(ext1|ext2) pattern
+                unified_pattern = r'\.\([^|]+\|[^)]+\)$'
+                is_unified_key = bool(re.search(unified_pattern, original_game_id))
+                
+                if is_unified_key and not platform:
+                    logger.error(f"Cannot resolve unified key '{original_game_id}' - platform not provided. Platform is required for unified keys.")
+                    # Archive and remove from queue - cannot proceed without platform info
+                    self.archive_download(resumable_download.id, 'error')
+                    self.db.delete(resumable_download)
+                    self.db.commit()
+                    logger.info(f"Removed download {resumable_download.id} from queue - platform required for unified key")
+                    return None
+                
                 resolved_game_id = self._resolve_unified_rom_key(original_game_id, system, platform, catalog_type)
+                is_still_unified = bool(re.search(unified_pattern, resolved_game_id))
+                
                 if resolved_game_id != original_game_id:
                     logger.info(f"Resolved unified ROM key for resumable download: '{original_game_id}' -> '{resolved_game_id}' (platform: {platform})")
-                    # Update game_id in database for consistency
-                    resumable_download.game_id = resolved_game_id
-                    # Update file_path to use resolved game_id
-                    file_path = os.path.join(settings.GAMES_PATH, system, resolved_game_id)
-                    # Verify resolved file exists
-                    if not os.path.exists(file_path):
-                        logger.error(f"Resolved ROM path does not exist: {file_path}")
-                        self.archive_download(resumable_download.id, 'error')
-                        self.db.delete(resumable_download)
-                        self.db.commit()
-                        return None
+                    # Don't update game_id in database - keep original unified key for history
+                    # Use resolved_game_id only for file paths and URLs
+                elif is_still_unified:
+                    # Resolution failed - log detailed error
+                    logger.error(f"Failed to resolve unified key '{original_game_id}' - still unified after resolution. Platform: {platform}, System: {system}")
+                    # Archive and remove from queue - resolution failed
+                    self.archive_download(resumable_download.id, 'error')
+                    self.db.delete(resumable_download)
                     self.db.commit()
-                    # Re-fetch game with resolved game_id for lookup
-                    resolved_lookup_id = resolved_game_id
-                    if catalog_type == 'releases' and '.zfs/snapshot' in resolved_game_id:
-                        parts = resolved_game_id.split('.zfs/snapshot/', 1)
-                        if len(parts) > 1:
-                            after_snapshot = parts[1]
-                            if '/' in after_snapshot:
-                                resolved_lookup_id = '/'.join(after_snapshot.split('/')[1:])
-                            else:
-                                resolved_lookup_id = after_snapshot
-                    game = self.game_service.get_game_by_id(resolved_lookup_id, catalog_type=catalog_type)
-                    if not game:
-                        logger.error(f"Game not found after resolution: {resolved_lookup_id}")
+                    logger.info(f"Removed download {resumable_download.id} from queue - unified key resolution failed")
+                    return None
+                
+                # Build file path using resolved game_id
+                file_path = None
+                if settings.GAMES_PATH:
+                    logger.info(f"Building file path for game_id={resolved_game_id}, system={system}")
+                    if system:
+                        file_path = os.path.join(settings.GAMES_PATH, system, resolved_game_id)
+                        logger.info(f"File path with system: {file_path}")
+                    else:
+                        logger.error(f"System is empty for game_id={resolved_game_id}, cannot build file path")
+                        # Archive and remove from queue since system is missing
                         self.archive_download(resumable_download.id, 'error')
                         self.db.delete(resumable_download)
                         self.db.commit()
                         return None
                 
-                # Construct HTTP URL for the file
-                import urllib.parse
-                # Only remove './' prefix if present, preserve paths starting with '.zfs'
-                clean_game_id = resolved_game_id
-                if clean_game_id.startswith('./'):
-                    clean_game_id = clean_game_id[2:]
-                encoded_game_id = urllib.parse.quote(clean_game_id, safe='/')
-                encoded_system = urllib.parse.quote(system, safe='')
+                # Verify file or directory exists before resuming download
+                # (Resolution should have succeeded at this point, so resolved_game_id should not be a unified key)
+                if not os.path.exists(file_path):
+                    logger.error(f"File or directory does not exist: {file_path} for game_id={resolved_game_id}")
+                    # Archive and remove from queue since file doesn't exist
+                    self.archive_download(resumable_download.id, 'error')
+                    self.db.delete(resumable_download)
+                    self.db.commit()
+                    logger.info(f"Removed download {resumable_download.id} from queue - file not found")
+                    return None
+                
+                # Calculate available bandwidth
+                allocated_bandwidth = self.bandwidth_manager.allocate_bandwidth(resumable_download.queue_type)
+                
+                # Get user's custom bandwidth limit if set (capped at role-based limit)
+                from app.database import User
+                db_user = self.db.query(User).filter(User.user_id == resumable_download.user_id).first()
+                if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
+                    # Cap user's bandwidth_limit at the role-based limit
+                    allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
+                    logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
+                
+                # Construct HTTP URL for the file using download_id (simpler and more reliable)
                 # Use DOWNLOAD_FILE_URL if set, otherwise fall back to API_URL
                 base_url = settings.DOWNLOAD_FILE_URL if settings.DOWNLOAD_FILE_URL else settings.API_URL
-                http_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}"
+                http_url = f"{base_url}/api/download/file?download_id={resumable_download.id}"
+                logger.debug(f"Constructed file URL with download_id: {http_url}")
                 
                 # For client: we need both original game_id (for URL construction) and normalized game_id (for destination paths)
                 # Keep resolved game_id and add normalized rom_path for destination
                 normalized_game_id = self._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
+                
+                # Check if this is a .psvita file and calculate save_location
+                save_location = None
+                if resolved_game_id.lower().endswith('.psvita'):
+                    # Parse the .psvita file to get directory name
+                    directory_name = parse_psvita_file(file_path)
+                    if directory_name:
+                        # Build save_location path: psvita/vita3k/ux0/app/{directory_name} (without leading / or _)
+                        save_location = f"psvita/vita3k/ux0/app/{directory_name}"
+                        logger.info(f"Detected .psvita file, save_location: {save_location}")
                 
                 download_info = {
                     'download_id': resumable_download.id,
@@ -1307,6 +1431,10 @@ class DownloadService:
                     'batocera_system': target_system,  # Include system prefix for destination path (batocera_system for Linux, retrobat_system for Windows)
                     'game_details': self._normalize_game_details_for_client(game, catalog_version)  # Include full game details for media download (snapshot paths removed)
                 }
+                
+                # Add save_location if this is a .psvita file
+                if save_location:
+                    download_info['save_location'] = save_location
                 
                 logger.info(f"Resuming download {resumable_download.id} from {resumable_download.bytes_transferred} bytes")
                 return download_info
@@ -1392,45 +1520,7 @@ class DownloadService:
                 self.db.commit()
                 return None
             
-            # Build file path (game_id is rompath, need to prepend system)
-            file_path = None
-            if settings.GAMES_PATH:
-                system = game.get('system', '')
-                logger.info(f"Building file path for game_id={pending_download.game_id}, system={system}")
-                if system:
-                    file_path = os.path.join(settings.GAMES_PATH, system, pending_download.game_id)
-                    logger.info(f"File path with system: {file_path}")
-                else:
-                    logger.error(f"System is empty for game_id={pending_download.game_id}, cannot build file path")
-                    # Archive and remove from queue since system is missing
-                    self.archive_download(pending_download.id, 'error')
-                    self.db.delete(pending_download)
-                    self.db.commit()
-                    return None
-            
-            # Verify file or directory exists before assigning download
-            if not os.path.exists(file_path):
-                logger.error(f"File or directory does not exist: {file_path} for game_id={pending_download.game_id}")
-                # Archive and remove from queue since file doesn't exist
-                self.archive_download(pending_download.id, 'error')
-                self.db.delete(pending_download)
-                self.db.commit()
-                logger.info(f"Removed download {pending_download.id} from queue - file not found")
-                return None
-            
-            # Special file parsing is now handled by the API endpoint when the file is requested
-            # No need to parse here
-            
-            # Mark as active
-            pending_download.active_download = True
-            pending_download.status = 'downloading'
-            pending_download.started_at = datetime.now(timezone.utc)
-            pending_download.last_progress_at = datetime.now(timezone.utc)  # Initialize progress tracking
-            pending_download.assigned_to_service = service_id
-            # Store client_version if provided
-            if client_version:
-                pending_download.client_version = client_version
-            self.db.commit()
+            system = game.get('system', '')
             
             # Get system info from System table - use retrobat_system for Windows, batocera_system for Linux
             db_system = self.db.query(System).filter(System.id == system).first()
@@ -1459,56 +1549,98 @@ class DownloadService:
             
             logger.info(f"Using {system_type}='{target_system}' for client platform (service_id={service_id}, is_windows={is_windows})")
             
-            # Resolve unified ROM key if needed (before using game_id for file path/URL)
+            # Resolve unified ROM key if needed (BEFORE checking file existence)
+            import re
             original_game_id = pending_download.game_id
+            # Check if game_id is a unified key: ends with .(ext1|ext2) pattern
+            unified_pattern = r'\.\([^|]+\|[^)]+\)$'
+            is_unified_key = bool(re.search(unified_pattern, original_game_id))
+            
+            if is_unified_key and not platform:
+                logger.error(f"Cannot resolve unified key '{original_game_id}' - platform not provided. Platform is required for unified keys.")
+                # Archive and remove from queue - cannot proceed without platform info
+                self.archive_download(pending_download.id, 'error')
+                self.db.delete(pending_download)
+                self.db.commit()
+                logger.info(f"Removed download {pending_download.id} from queue - platform required for unified key")
+                return None
+            
             resolved_game_id = self._resolve_unified_rom_key(original_game_id, system, platform, catalog_type)
+            is_still_unified = bool(re.search(unified_pattern, resolved_game_id))
+            
             if resolved_game_id != original_game_id:
                 logger.info(f"Resolved unified ROM key: '{original_game_id}' -> '{resolved_game_id}' (platform: {platform})")
-                # Update game_id in database for consistency
-                pending_download.game_id = resolved_game_id
-                # Update file_path to use resolved game_id
-                file_path = os.path.join(settings.GAMES_PATH, system, resolved_game_id)
-                # Verify resolved file exists
-                if not os.path.exists(file_path):
-                    logger.error(f"Resolved ROM path does not exist: {file_path}")
-                    self.archive_download(pending_download.id, 'error')
-                    self.db.delete(pending_download)
-                    self.db.commit()
-                    return None
+                # Don't update game_id in database - keep original unified key for history
+                # Use resolved_game_id only for file paths and URLs
+            elif is_still_unified:
+                # Resolution failed - log detailed error
+                logger.error(f"Failed to resolve unified key '{original_game_id}' - still unified after resolution. Platform: {platform}, System: {system}")
+                # Archive and remove from queue - resolution failed
+                self.archive_download(pending_download.id, 'error')
+                self.db.delete(pending_download)
                 self.db.commit()
-                # Re-fetch game with resolved game_id for lookup
-                resolved_lookup_id = resolved_game_id
-                if catalog_type == 'releases' and '.zfs/snapshot' in resolved_game_id:
-                    parts = resolved_game_id.split('.zfs/snapshot/', 1)
-                    if len(parts) > 1:
-                        after_snapshot = parts[1]
-                        if '/' in after_snapshot:
-                            resolved_lookup_id = '/'.join(after_snapshot.split('/')[1:])
-                        else:
-                            resolved_lookup_id = after_snapshot
-                game = self.game_service.get_game_by_id(resolved_lookup_id, catalog_type=catalog_type)
-                if not game:
-                    logger.error(f"Game not found after resolution: {resolved_lookup_id}")
+                logger.info(f"Removed download {pending_download.id} from queue - unified key resolution failed")
+                return None
+            
+            # Build file path using resolved game_id
+            file_path = None
+            if settings.GAMES_PATH:
+                logger.info(f"Building file path for game_id={resolved_game_id}, system={system}")
+                if system:
+                    file_path = os.path.join(settings.GAMES_PATH, system, resolved_game_id)
+                    logger.info(f"File path with system: {file_path}")
+                else:
+                    logger.error(f"System is empty for game_id={resolved_game_id}, cannot build file path")
+                    # Archive and remove from queue since system is missing
                     self.archive_download(pending_download.id, 'error')
                     self.db.delete(pending_download)
                     self.db.commit()
                     return None
             
-            # Construct HTTP URL for the file
-            import urllib.parse
-            # Only remove './' prefix if present, preserve paths starting with '.zfs'
-            clean_game_id = resolved_game_id
-            if clean_game_id.startswith('./'):
-                clean_game_id = clean_game_id[2:]
-            encoded_game_id = urllib.parse.quote(clean_game_id, safe='/')
-            encoded_system = urllib.parse.quote(system, safe='')
+            # Verify file or directory exists before assigning download
+            # (Resolution should have succeeded at this point, so resolved_game_id should not be a unified key)
+            if not os.path.exists(file_path):
+                logger.error(f"File or directory does not exist: {file_path} for game_id={resolved_game_id}")
+                # Archive and remove from queue since file doesn't exist
+                self.archive_download(pending_download.id, 'error')
+                self.db.delete(pending_download)
+                self.db.commit()
+                logger.info(f"Removed download {pending_download.id} from queue - file not found")
+                return None
+            
+            # Special file parsing is now handled by the API endpoint when the file is requested
+            # No need to parse here
+            
+            # Mark as active
+            pending_download.active_download = True
+            pending_download.status = 'downloading'
+            pending_download.started_at = datetime.now(timezone.utc)
+            pending_download.last_progress_at = datetime.now(timezone.utc)  # Initialize progress tracking
+            pending_download.assigned_to_service = service_id
+            # Store client_version if provided
+            if client_version:
+                pending_download.client_version = client_version
+            self.db.commit()
+            
+            # Construct HTTP URL for the file using download_id (simpler and more reliable)
             # Use DOWNLOAD_FILE_URL if set, otherwise fall back to API_URL
             base_url = settings.DOWNLOAD_FILE_URL if settings.DOWNLOAD_FILE_URL else settings.API_URL
-            http_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}"
+            http_url = f"{base_url}/api/download/file?download_id={pending_download.id}"
+            logger.debug(f"Constructed file URL with download_id: {http_url}")
             
             # For client: we need both original game_id (for URL construction) and normalized game_id (for destination paths)
             # Keep resolved game_id and add normalized rom_path for destination
             normalized_game_id = self._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
+            
+            # Check if this is a .psvita file and calculate save_location
+            save_location = None
+            if resolved_game_id.lower().endswith('.psvita'):
+                # Parse the .psvita file to get directory name
+                directory_name = parse_psvita_file(file_path)
+                if directory_name:
+                    # Build save_location path: psvita/vita3k/ux0/app/{directory_name} (without leading / or _)
+                    save_location = f"psvita/vita3k/ux0/app/{directory_name}"
+                    logger.info(f"Detected .psvita file, save_location: {save_location}")
             
             download_info = {
                 'download_id': pending_download.id,
@@ -1526,6 +1658,10 @@ class DownloadService:
                 'batocera_system': target_system,  # Include system prefix for destination path (batocera_system for Linux, retrobat_system for Windows)
                 'game_details': self._normalize_game_details_for_client(game, catalog_version)  # Include full game details for media download (snapshot paths removed)
             }
+            
+            # Add save_location if this is a .psvita file
+            if save_location:
+                download_info['save_location'] = save_location
             
             logger.info(f"Assigned download {pending_download.id} to service {service_id} with {allocated_bandwidth} bytes/s")
             return download_info
@@ -1613,6 +1749,11 @@ class DownloadService:
             # Get catalog_version from download queue item and derive catalog_type
             catalog_version = download.catalog_version
             catalog_type = 'releases' if catalog_version else 'wip'
+            
+            # Use the original game_id from database (should be unified key if it was one)
+            # This preserves the original unified key format in history
+            archive_game_id = download.game_id
+            
             # Remove snapshot path prefix if needed to get original game_id for lookup
             lookup_game_id = download.game_id
             if catalog_type == 'releases' and '.zfs/snapshot' in download.game_id:
@@ -1625,6 +1766,96 @@ class DownloadService:
                         lookup_game_id = after_snapshot
             
             game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+            logger.debug(f"Initial game lookup for '{lookup_game_id}' (catalog_type: {catalog_type}): {'found' if game else 'not found'}")
+            
+            # If the game_id is already a unified key, we're done - use it as-is
+            # Otherwise, try to find the unified key version
+            import re
+            unified_pattern = r'\.\([^|]+\|[^)]+\)$'
+            is_unified_in_db = bool(re.search(unified_pattern, lookup_game_id))
+            
+            if is_unified_in_db:
+                logger.debug(f"Game ID in database is already a unified key: '{download.game_id}', using it for archive")
+            
+            # If game lookup failed, try to find the unified key version
+            # (resolved path like Tittie_Tussle.daphne won't exist in catalog, only Tittie_Tussle.(daphne|hypseus))
+            if not game:
+                # Try to reverse-engineer the unified key from the resolved path
+                import re
+                import os
+                
+                # Extract base path and extension from resolved game_id
+                # e.g., "Tittie_Tussle.daphne" -> base="Tittie_Tussle", ext="daphne"
+                base_name = os.path.splitext(lookup_game_id)[0]
+                resolved_ext = os.path.splitext(lookup_game_id)[1].lstrip('.')
+                logger.debug(f"Trying to find unified key for base_name: '{base_name}', resolved_ext: '{resolved_ext}'")
+                
+                # Get the catalog dictionary
+                if catalog_type == 'releases':
+                    catalog_dict = self.game_service.catalog_releases
+                else:
+                    catalog_dict = self.game_service.catalog_wip
+                
+                # Search all systems for a unified key matching this base name
+                # Pattern: base_name.(ext1|ext2)
+                unified_pattern = re.compile(re.escape(base_name) + r'\.\([^|]+\|[^)]+\)$')
+                logger.debug(f"Searching for unified key matching pattern: {unified_pattern.pattern}")
+                
+                found_unified_key = None
+                found_system = None
+                for system_id, games in catalog_dict.items():
+                    for rompath in games.keys():
+                        if unified_pattern.match(rompath):
+                            # Found the unified key!
+                            found_unified_key = rompath
+                            found_system = system_id
+                            logger.info(f"Found unified key '{rompath}' in system '{system_id}' for resolved path '{lookup_game_id}'")
+                            break
+                    if found_unified_key:
+                        break
+                
+                if found_unified_key:
+                    # Look up the game using the unified key
+                    game = self.game_service.get_game_by_id(found_unified_key, catalog_type=catalog_type)
+                    if game:
+                        # Use this unified key for archive
+                        if catalog_type == 'releases' and catalog_version:
+                            archive_game_id = f".zfs/snapshot/{catalog_version}/{found_unified_key}"
+                        else:
+                            archive_game_id = found_unified_key
+                        logger.info(f"Using unified key '{archive_game_id}' for archive (original resolved: '{download.game_id}')")
+                    else:
+                        logger.warning(f"Unified key '{found_unified_key}' found but game lookup failed")
+                else:
+                    logger.debug(f"Could not find unified key for base_name '{base_name}' in catalog")
+            
+            # If game was found and archive_game_id is still the resolved path (not unified),
+            # check if the game's path field has a unified key
+            if game and not is_unified_in_db and archive_game_id == download.game_id:
+                # Check if the game in catalog uses a unified key (which should be the original)
+                # The catalog game's path field will have the unified key if it was merged
+                game_path = game.get('path', '')
+                if game_path:
+                    # Remove leading ./ if present
+                    clean_path = game_path.lstrip('./')
+                    # Remove system prefix if present
+                    system = game.get('system', '')
+                    if system and clean_path.startswith(f"{system}/"):
+                        clean_path = clean_path[len(system) + 1:]
+                    
+                    # Check if this is a unified key
+                    import re
+                    unified_pattern = r'\.\([^|]+\|[^)]+\)$'
+                    if re.search(unified_pattern, clean_path):
+                        # This is a unified key - use it instead of the resolved game_id
+                        # Reconstruct with snapshot path if it was a releases catalog download
+                        if catalog_type == 'releases' and catalog_version:
+                            archive_game_id = f".zfs/snapshot/{catalog_version}/{clean_path}"
+                        else:
+                            archive_game_id = clean_path
+                        logger.info(f"Using unified key from game path for archive: '{archive_game_id}' (original resolved: '{download.game_id}')")
+            
+            # Get game name and system (game should be found by now if it's a unified key)
             if not game:
                 logger.warning(f"Game not found for download {download_id} (game_id: {lookup_game_id}, catalog_type: {catalog_type}, version: {catalog_version}), using game_id as game_name")
                 game_name = download.game_id
@@ -1647,7 +1878,7 @@ class DownloadService:
                 username=username,
                 game_name=game_name,
                 system=system,
-                rompath=download.game_id,
+                rompath=archive_game_id,  # Use unified key if available, otherwise use resolved game_id
                 download_status=status,
                 bytes_transferred=download.bytes_transferred or 0,
                 file_size=download.file_size,
