@@ -10,6 +10,8 @@ const Downloads = () => {
   const [maxBandwidthLimit, setMaxBandwidthLimit] = useState(null)
   const [bandwidthInput, setBandwidthInput] = useState('')
   const [savingBandwidth, setSavingBandwidth] = useState(false)
+  const [devices, setDevices] = useState([])
+  const [loadingDevices, setLoadingDevices] = useState(true)
 
   // Define formatMbits before it's used in useEffect
   const formatMbits = useCallback((bytes) => {
@@ -20,10 +22,12 @@ const Downloads = () => {
   useEffect(() => {
     loadQueue(true)
     loadBandwidthLimit()
+    loadDevices()
     
     // Poll for updates every 10 seconds
     const interval = setInterval(() => {
       loadQueue(false) // Don't show loading on refresh
+      loadDevices() // Also refresh devices status
     }, 10000) // Poll every 10 seconds
     
     return () => clearInterval(interval)
@@ -40,6 +44,25 @@ const Downloads = () => {
     } catch (error) {
       console.error('Error loading bandwidth limit:', error)
     }
+  }
+
+  const loadDevices = async () => {
+    try {
+      setLoadingDevices(true)
+      const response = await client.get('/api/download/devices')
+      setDevices(response.data.devices || [])
+    } catch (error) {
+      console.error('Error loading devices:', error)
+      setDevices([])
+    } finally {
+      setLoadingDevices(false)
+    }
+  }
+
+  const formatDate = (dateString) => {
+    if (!dateString) return 'Never'
+    const date = new Date(dateString)
+    return date.toLocaleString()
   }
 
   // Auto-save bandwidth limit with debouncing
@@ -313,6 +336,44 @@ const Downloads = () => {
           </table>
         </div>
       )}
+
+      {/* Connected Devices Section */}
+      <div className="connected-devices-section">
+        <h2>Connected Devices</h2>
+        {loadingDevices ? (
+          <div className="loading">Loading devices...</div>
+        ) : devices.length === 0 ? (
+          <div className="no-devices">No devices found</div>
+        ) : (
+          <div className="devices-list">
+            {devices.map((device) => (
+              <div key={device.token_id} className="device-item">
+                <div className="device-info">
+                  <div className="device-name">{device.token_name}</div>
+                  <div className="device-status">
+                    <span className={`status-indicator ${device.is_connected ? 'connected' : 'disconnected'}`}>
+                      {device.is_connected ? '● Connected' : '○ Disconnected'}
+                    </span>
+                  </div>
+                  {device.is_connected && device.connection_info && (
+                    <div className="device-details">
+                      <span>IP: {device.connection_info.ip}</span>
+                      <span>Platform: {device.connection_info.platform}</span>
+                      <span>Version: {device.connection_info.client_version}</span>
+                    </div>
+                  )}
+                  <div className="device-meta">
+                    <span>Created: {formatDate(device.created_at)}</span>
+                    {device.last_used_at && (
+                      <span>Last used: {formatDate(device.last_used_at)}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

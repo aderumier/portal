@@ -487,3 +487,111 @@
   color: var(--text-secondary, #999);
 }
 
+.connected-devices-section {
+  margin-top: 3rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+}
+
+.connected-devices-section h2 {
+  margin: 0 0 1.5rem 0;
+  color: var(--text-primary, #e0e0e0);
+  font-size: 1.5rem;
+}
+
+.no-devices {
+  text-align: center;
+  padding: 2rem;
+  color: var(--text-secondary, #999);
+  background: var(--card-bg, rgba(255, 255, 255, 0.05));
+  border-radius: 8px;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+}
+
+.devices-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1rem;
+}
+
+.device-item {
+  background: var(--card-bg, rgba(255, 255, 255, 0.05));
+  border-radius: 8px;
+  padding: 1.5rem;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.device-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.device-name {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary, #e0e0e0);
+  margin-bottom: 0.5rem;
+}
+
+.device-status {
+  margin-bottom: 0.5rem;
+}
+
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+}
+
+.status-indicator.connected {
+  color: #28a745;
+  background-color: rgba(40, 167, 69, 0.1);
+  border: 1px solid rgba(40, 167, 69, 0.3);
+}
+
+.status-indicator.disconnected {
+  color: var(--text-secondary, #999);
+  background-color: rgba(108, 117, 125, 0.1);
+  border: 1px solid rgba(108, 117, 125, 0.3);
+}
+
+.device-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.2));
+  border-radius: 4px;
+  margin-top: 0.5rem;
+}
+
+.device-details span {
+  font-size: 0.85rem;
+  color: var(--text-secondary, #a0a0a0);
+}
+
+.device-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+}
+
+.device-meta span {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #888);
+}
+

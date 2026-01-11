@@ -115,6 +115,13 @@ const Layout = () => {
                             Download Queues
                           </Link>
                           <Link 
+                            to="/downloads/history/all" 
+                            className="account-menu-item"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Global History
+                          </Link>
+                          <Link 
                             to="/connected-clients" 
                             className="account-menu-item"
                             onClick={() => setAccountMenuOpen(false)}

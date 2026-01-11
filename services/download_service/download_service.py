@@ -522,6 +522,11 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
     total_bytes_downloaded = resume_from  # Initialize for exception handlers
     
     while retry_count <= max_retries:
+        # Check if download is paused before making any request
+        if paused_ref and paused_ref[0]:
+            logger.info(f"Download paused - aborting before retry attempt {retry_count}")
+            return False
+        
         headers = {
             'Authorization': f'Bearer {API_TOKEN}',
         }
@@ -666,6 +671,11 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                     # Handle chunked encoding errors (connection broken during transfer)
                     response.close()
                     
+                    # Check if download is paused before retrying
+                    if paused_ref and paused_ref[0]:
+                        logger.info(f"Download was paused during chunked encoding error handling")
+                        return False
+                    
                     # Check if we made progress - if so, we can retry from current position
                     if total_bytes_downloaded > current_resume_from:
                         logger.warning(f"Chunked encoding error at {total_bytes_downloaded} bytes: {e}")
@@ -677,6 +687,10 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                             wait_time = min(2 ** (retry_count - 1), 16)
                             logger.info(f"Waiting {wait_time} seconds before retry...")
                             time.sleep(wait_time)
+                            # Check again if paused before making the retry request
+                            if paused_ref and paused_ref[0]:
+                                logger.info(f"Download was paused during retry wait, aborting")
+                                return False
                             continue  # Retry the download
                         else:
                             logger.error(f"Max retries ({max_retries}) exceeded for chunked encoding errors")
@@ -709,6 +723,10 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                     wait_time = min(2 ** (retry_count - 1), 16)
                     logger.info(f"Waiting {wait_time} seconds before retry...")
                     time.sleep(wait_time)
+                    # Check again if paused before making the retry request
+                    if paused_ref and paused_ref[0]:
+                        logger.info(f"Download was paused during retry wait, aborting")
+                        return False
                     continue  # Retry the download
                 else:
                     logger.warning(f"Stream ended unexpectedly but download is not paused - max retries exceeded")

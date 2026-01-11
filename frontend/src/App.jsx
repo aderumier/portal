@@ -10,6 +10,7 @@ import Search from './pages/Search'
 import GameDetails from './pages/GameDetails'
 import Downloads from './pages/Downloads'
 import DownloadHistory from './pages/DownloadHistory'
+import GlobalDownloadHistory from './pages/GlobalDownloadHistory'
 import Account from './pages/Account'
 import Login from './components/Auth/Login'
 import Unauthorized from './components/Auth/Unauthorized'
@@ -37,6 +38,7 @@ function App() {
             <Route path="downloads" element={<ProtectedRoute requireDownload><Downloads /></ProtectedRoute>} />
             <Route path="downloads/history" element={<ProtectedRoute requireDownload><DownloadHistory /></ProtectedRoute>} />
             <Route path="account" element={<ProtectedRoute><Account /></ProtectedRoute>} />
+            <Route path="downloads/history/all" element={<ProtectedRoute requireAdmin><GlobalDownloadHistory /></ProtectedRoute>} />
             <Route path="users-stats" element={<ProtectedRoute requireAdmin><UsersStats /></ProtectedRoute>} />
             <Route path="media-validation" element={<ProtectedRoute requireAdmin><MediaValidation /></ProtectedRoute>} />
             <Route path="download-queues" element={<ProtectedRoute requireAdmin><DownloadQueues /></ProtectedRoute>} />

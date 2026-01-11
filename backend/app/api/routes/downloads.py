@@ -78,6 +78,16 @@ async def get_download_history(
     history = download_service.get_user_download_history(user_id, limit)
     return {"history": history}
 
+@router.get("/history/all")
+async def get_all_download_history(
+    current_user: dict = Depends(require_admin_role),
+    download_service: DownloadService = Depends(get_download_service),
+    limit: int = Query(100, ge=1, le=1000)
+):
+    """Get download history for all users (admin only)."""
+    history = download_service.get_all_download_history(limit)
+    return {"history": history}
+
 @router.post("/queue")
 async def add_to_queue(
     request: AddToQueueRequest,
@@ -1424,4 +1434,62 @@ async def get_connected_clients(
                 })
     
     return {"connections": enriched_connections, "count": len(enriched_connections)}
+
+@router.get("/devices")
+async def get_connected_devices(
+    current_user: dict = Depends(require_download_role),
+    db: Session = Depends(get_db)
+):
+    """Get all non-revoked tokens with their connection status for the current user."""
+    user_id = current_user['id']
+    
+    # Get all non-revoked tokens for the user
+    from app.database import ApiToken
+    tokens = db.query(ApiToken).filter(
+        and_(
+            ApiToken.user_id == user_id,
+            ApiToken.revoked == False
+        )
+    ).order_by(ApiToken.created_at.desc()).all()
+    
+    # Get connected clients from WebSocket manager
+    ws_manager = get_websocket_manager()
+    connected_clients = await ws_manager.get_all_connections()
+    
+    # Create a set of connected token_ids for quick lookup
+    connected_token_ids = set()
+    for conn in connected_clients:
+        token_id = conn.get("token_id")
+        if token_id:
+            try:
+                connected_token_ids.add(int(token_id))
+            except (ValueError, TypeError):
+                pass  # Skip invalid token_ids
+    
+    # Build device list
+    devices = []
+    for token in tokens:
+        is_connected = token.id in connected_token_ids
+        # Get connection info if connected
+        connection_info = None
+        if is_connected:
+            conn = next((c for c in connected_clients if c.get("token_id") and int(c.get("token_id")) == token.id), None)
+            if conn:
+                connection_info = {
+                    "ip": conn.get("ip", "unknown"),
+                    "client_version": conn.get("client_version", "unknown"),
+                    "platform": conn.get("platform", "unknown"),
+                    "connected_at": conn.get("connected_at")
+                }
+        
+        devices.append({
+            "token_id": token.id,
+            "token_name": token.name,
+            "is_connected": is_connected,
+            "connection_info": connection_info,
+            "created_at": token.created_at.isoformat() if token.created_at else None,
+            "last_used_at": token.last_used_at.isoformat() if token.last_used_at else None
+        })
+    
+    return {"devices": devices}
 

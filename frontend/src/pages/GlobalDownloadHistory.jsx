@@ -4,7 +4,7 @@ import { getMediaUrl } from '../utils/constants'
 import client from '../api/client'
 import './DownloadHistory.css'
 
-const DownloadHistory = () => {
+const GlobalDownloadHistory = () => {
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -20,10 +20,10 @@ const DownloadHistory = () => {
     try {
       setLoading(true)
       setError(null)
-      const response = await client.get('/api/download/history')
+      const response = await client.get('/api/download/history/all')
       setHistory(response.data.history || [])
     } catch (err) {
-      console.error('Error loading download history:', err)
+      console.error('Error loading global download history:', err)
       setError('Failed to load download history')
     } finally {
       setLoading(false)
@@ -99,20 +99,20 @@ const DownloadHistory = () => {
   return (
     <div className="download-history-container">
       <div className="download-history-header">
-        <h1>Download History</h1>
-        <p>View your completed, cancelled, and failed downloads</p>
+        <h1>Global Download History</h1>
+        <p>View all completed, cancelled, and failed downloads for all users</p>
       </div>
 
       {history.length === 0 ? (
         <div className="empty-state">
           <p>No download history found.</p>
-          <Link to="/downloads" className="btn-primary">Go to Downloads</Link>
         </div>
       ) : (
         <div className="download-history-list">
           <table className="history-table">
             <thead>
               <tr>
+                <th>User ID</th>
                 <th>Game</th>
                 <th>System</th>
                 <th>Version</th>
@@ -126,6 +126,7 @@ const DownloadHistory = () => {
             <tbody>
               {history.map((item) => (
                 <tr key={item.id}>
+                  <td>{item.user_id || '-'}</td>
                   <td className="game-cell">
                     {item.image && (
                       <img 
@@ -209,5 +210,5 @@ const DownloadHistory = () => {
   )
 }
 
-export default DownloadHistory
+export default GlobalDownloadHistory
 

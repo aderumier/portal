@@ -1572,7 +1572,70 @@ class DownloadService:
             import traceback
             logger.error(traceback.format_exc())
             return []
-
+    
+    def get_all_download_history(self, limit: int = 100) -> List[Dict]:
+        """Get download history for all users from archive (admin only)."""
+        try:
+            from app.database import DownloadArchive
+            
+            # Get all archived downloads, ordered by most recent first
+            archive_items = self.db.query(DownloadArchive).order_by(
+                DownloadArchive.timestamp.desc()
+            ).limit(limit).all()
+            
+            history = []
+            for item in archive_items:
+                # Get catalog_version from archive item and derive catalog_type
+                catalog_version = item.catalog_version
+                catalog_type = 'releases' if catalog_version else 'wip'
+                # Remove snapshot path prefix to get original game_id for lookup
+                lookup_game_id = item.rompath
+                if catalog_type == 'releases' and catalog_version:
+                    # Extract original game_id after snapshot path
+                    # rompath format: ".zfs/snapshot/v2-RGS_bbc/game.rom"
+                    import re
+                    escaped_version = re.escape(catalog_version)
+                    pattern = re.compile(r'\.zfs/snapshot/' + escaped_version + r'/(.*)')
+                    match = pattern.match(item.rompath)
+                    if match:
+                        lookup_game_id = match.group(1)
+                
+                # Get game information if available
+                game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type) if lookup_game_id else None
+                
+                history_item = {
+                    'id': item.id,
+                    'download_id': item.download_id,
+                    'user_id': item.user_id,  # Include user_id for admin view
+                    'game_name': item.game_name,
+                    'system': item.system or '',
+                    'system_name': self.game_service.get_system_name(item.system) if item.system else '',
+                    'rompath': item.rompath,
+                    'status': item.download_status,
+                    'bytes_transferred': item.bytes_transferred or 0,
+                    'file_size': item.file_size,
+                    'timestamp': item.timestamp.isoformat() if item.timestamp else None,
+                    'image': '',
+                    'catalog_version': catalog_version,  # Include catalog version (e.g., "v2-RGS_bbc")
+                    'client_version': item.client_version  # Include client version (e.g., "0.1")
+                }
+                
+                # Add game image if available
+                if game:
+                    history_item['image'] = self._normalize_media_path_for_frontend(
+                        game.get('image', ''), 
+                        game.get('system', '')
+                    )
+                
+                history.append(history_item)
+            
+            return history
+        except Exception as e:
+            logger.error(f"Error getting all download history: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
     def remove_download(self, download_id: int) -> bool:
         """Remove download from queue without updating statistics (e.g., when file doesn't exist)."""
         try:
