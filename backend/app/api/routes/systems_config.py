@@ -25,6 +25,8 @@ class SystemUpdate(BaseModel):
     manufacturer: str = None
     batocera_system: str = None
     retrobat_system: str = None
+    batocera_extension: str = None
+    retrobat_extension: str = None
     enabled: bool = None
     download_enabled: bool = None
 
@@ -46,6 +48,8 @@ async def get_systems(
                 "manufacturer": s.manufacturer,
                 "batocera_system": s.batocera_system,
                 "retrobat_system": s.retrobat_system,
+                "batocera_extension": s.batocera_extension or "",
+                "retrobat_extension": s.retrobat_extension or "",
                 "enabled": s.enabled,
                 "download_enabled": s.download_enabled,
                 "created_at": s.created_at.isoformat() if s.created_at else None,
@@ -103,6 +107,10 @@ async def update_system(
         db_system.batocera_system = system_update.batocera_system
     if system_update.retrobat_system is not None:
         db_system.retrobat_system = system_update.retrobat_system
+    if system_update.batocera_extension is not None:
+        db_system.batocera_extension = system_update.batocera_extension
+    if system_update.retrobat_extension is not None:
+        db_system.retrobat_extension = system_update.retrobat_extension
     if system_update.enabled is not None:
         db_system.enabled = system_update.enabled
     if system_update.download_enabled is not None:
@@ -120,6 +128,8 @@ async def update_system(
         "manufacturer": db_system.manufacturer,
         "batocera_system": db_system.batocera_system,
         "retrobat_system": db_system.retrobat_system,
+        "batocera_extension": db_system.batocera_extension or "",
+        "retrobat_extension": db_system.retrobat_extension or "",
         "enabled": db_system.enabled,
         "download_enabled": db_system.download_enabled,
     }

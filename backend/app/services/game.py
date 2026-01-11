@@ -592,6 +592,182 @@ class GameService:
         
         return game_count
     
+    def _get_rom_filename_without_ext(self, rompath: str) -> str:
+        """Extract base filename without extension from ROM path.
+        
+        Args:
+            rompath: ROM path (e.g., "path/to/game.zip" or "game.bin")
+            
+        Returns:
+            str: Base path without extension (e.g., "path/to/game" or "game")
+        """
+        if not rompath:
+            return rompath
+        
+        # Remove leading ./ if present
+        clean_path = rompath.lstrip('./')
+        
+        # Split path and filename
+        if '/' in clean_path:
+            dir_part = clean_path.rsplit('/', 1)[0]
+            filename_part = clean_path.rsplit('/', 1)[1]
+        else:
+            dir_part = ''
+            filename_part = clean_path
+        
+        # Remove extension from filename
+        if '.' in filename_part:
+            filename_no_ext = filename_part.rsplit('.', 1)[0]
+        else:
+            filename_no_ext = filename_part
+        
+        # Reconstruct path
+        if dir_part:
+            return f"{dir_part}/{filename_no_ext}"
+        else:
+            return filename_no_ext
+    
+    def _create_unified_rom_key(self, base_path: str, batocera_ext: str, retrobat_ext: str) -> str:
+        """Create unified ROM key for games with both extensions.
+        
+        Args:
+            base_path: Base path without extension (e.g., "path/to/game")
+            batocera_ext: Batocera extension (e.g., ".z64")
+            retrobat_ext: Retrobat extension (e.g., ".n64")
+            
+        Returns:
+            str: Unified ROM key (e.g., "path/to/game.(z64|n64)")
+        """
+        # Remove leading dots from extensions if present
+        bat_ext = batocera_ext.lstrip('.') if batocera_ext else ''
+        ret_ext = retrobat_ext.lstrip('.') if retrobat_ext else ''
+        return f"{base_path}.({bat_ext}|{ret_ext})"
+    
+    def _merge_games_with_extensions(self, system_id: str, catalog_type: str, batocera_ext: str, retrobat_ext: str) -> int:
+        """Merge games with different extensions when both ROMs exist.
+        
+        When a system has both batocera_extension and retrobat_extension defined,
+        finds games with matching base paths but different extensions and creates
+        unified ROM keys.
+        
+        Args:
+            system_id: System identifier
+            catalog_type: 'wip' or 'releases'
+            batocera_ext: Batocera extension (e.g., ".z64")
+            retrobat_ext: Retrobat extension (e.g., ".n64")
+            
+        Returns:
+            int: Number of merged games
+        """
+        # Select appropriate catalog structures
+        if catalog_type == 'wip':
+            catalog = self.catalog_wip
+            catalog_responses = self.catalog_responses_wip
+            catalog_sorted_keys = self.catalog_sorted_keys_wip
+        elif catalog_type == 'releases':
+            catalog = self.catalog_releases
+            catalog_responses = self.catalog_responses_releases
+            catalog_sorted_keys = self.catalog_sorted_keys_releases
+        else:
+            raise ValueError(f"Invalid catalog_type: {catalog_type}")
+        
+        if system_id not in catalog:
+            return 0
+        
+        # Normalize extensions (remove leading dot if present, add if missing)
+        bat_ext = batocera_ext.strip()
+        if bat_ext and not bat_ext.startswith('.'):
+            bat_ext = '.' + bat_ext
+        
+        ret_ext = retrobat_ext.strip()
+        if ret_ext and not ret_ext.startswith('.'):
+            ret_ext = '.' + ret_ext
+        
+        if not bat_ext or not ret_ext:
+            return 0  # Both extensions must be defined
+        
+        # Build map of base path -> (rompath with bat_ext, rompath with ret_ext)
+        base_path_map = {}  # base_path -> {'batocera': rompath, 'retrobat': rompath}
+        
+        for rompath in catalog[system_id].keys():
+            base_path = self._get_rom_filename_without_ext(rompath)
+            rompath_lower = rompath.lower()
+            
+            # Check if this ROM path ends with batocera extension
+            if rompath_lower.endswith(bat_ext.lower()):
+                if base_path not in base_path_map:
+                    base_path_map[base_path] = {}
+                base_path_map[base_path]['batocera'] = rompath
+            # Check if this ROM path ends with retrobat extension
+            elif rompath_lower.endswith(ret_ext.lower()):
+                if base_path not in base_path_map:
+                    base_path_map[base_path] = {}
+                base_path_map[base_path]['retrobat'] = rompath
+        
+        # Find pairs that have both extensions
+        merged_count = 0
+        unified_keys_to_create = []
+        
+        for base_path, paths in base_path_map.items():
+            if 'batocera' in paths and 'retrobat' in paths:
+                # Both ROMs exist - create unified key
+                unified_key = self._create_unified_rom_key(base_path, bat_ext, ret_ext)
+                batocera_rompath = paths['batocera']
+                retrobat_rompath = paths['retrobat']
+                
+                # Choose batocera as primary (as per plan)
+                primary_rompath = batocera_rompath
+                primary_game_data = catalog[system_id][batocera_rompath]
+                primary_response = catalog_responses[system_id][batocera_rompath]
+                
+                # Store unified key with primary game data
+                catalog[system_id][unified_key] = primary_game_data.copy()
+                # Add metadata about both paths for download resolution
+                catalog[system_id][unified_key]['_original_batocera_path'] = batocera_rompath
+                catalog[system_id][unified_key]['_original_retrobat_path'] = retrobat_rompath
+                
+                # Create unified response
+                catalog_responses[system_id][unified_key] = primary_response.copy()
+                catalog_responses[system_id][unified_key]['id'] = unified_key
+                catalog_responses[system_id][unified_key]['_original_batocera_path'] = batocera_rompath
+                catalog_responses[system_id][unified_key]['_original_retrobat_path'] = retrobat_rompath
+                
+                # Remove individual ROM paths from catalog
+                del catalog[system_id][batocera_rompath]
+                del catalog[system_id][retrobat_rompath]
+                del catalog_responses[system_id][batocera_rompath]
+                del catalog_responses[system_id][retrobat_rompath]
+                
+                unified_keys_to_create.append((unified_key, batocera_rompath, retrobat_rompath))
+                merged_count += 1
+        
+        # Update sorted keys list - replace old keys with unified key
+        if system_id in catalog_sorted_keys:
+            sorted_keys = catalog_sorted_keys[system_id]
+            new_sorted_keys = []
+            for key in sorted_keys:
+                # Check if this key was merged
+                was_merged = False
+                for unified_key, bat_rom, ret_rom in unified_keys_to_create:
+                    if key == bat_rom or key == ret_rom:
+                        # Replace with unified key (only add once)
+                        if unified_key not in new_sorted_keys:
+                            new_sorted_keys.append(unified_key)
+                        was_merged = True
+                        break
+                
+                if not was_merged:
+                    new_sorted_keys.append(key)
+            
+            # Re-sort by game name
+            new_sorted_keys.sort(key=lambda k: catalog_responses[system_id].get(k, {}).get('name', '').lower())
+            catalog_sorted_keys[system_id] = new_sorted_keys
+        
+        if merged_count > 0:
+            logger.info(f"Merged {merged_count} game pairs in {system_id} ({catalog_type}): {bat_ext} <-> {ret_ext}")
+        
+        return merged_count
+    
     def preload_all_gamelists(self) -> None:
         """Preload all gamelist.xml files into memory at startup.
         Loads both WIP (current) and Releases (versioned) catalogs."""
@@ -605,14 +781,22 @@ class GameService:
         if not self._hardware_loaded:
             self._load_system_hardware()
         
-        # Get enabled systems from database
+        # Get enabled systems and their extensions from database
         enabled_systems = set()
+        system_extensions = {}  # system_id -> {'batocera_extension': str, 'retrobat_extension': str}
         try:
             from app.database import get_db, System
             db = next(get_db())
             enabled_systems_db = db.query(System).filter(System.enabled == True).all()
             enabled_systems = {s.id for s in enabled_systems_db}
-            logger.info(f"Found {len(enabled_systems)} enabled systems in database")
+            # Store extensions for each system
+            for s in enabled_systems_db:
+                if s.batocera_extension and s.retrobat_extension:
+                    system_extensions[s.id] = {
+                        'batocera_extension': s.batocera_extension,
+                        'retrobat_extension': s.retrobat_extension
+                    }
+            logger.info(f"Found {len(enabled_systems)} enabled systems in database, {len(system_extensions)} with both extensions defined")
         except Exception as e:
             logger.warning(f"Could not load enabled systems from database: {e}. Will load all systems.")
         
@@ -669,6 +853,17 @@ class GameService:
                 game_count_wip = self._load_catalog_from_gamelist(dir_name, gamelist_path, 'wip')
                 logger.debug(f"Loaded WIP catalog for {dir_name}: {game_count_wip} games")
                 
+                # Merge games with extensions if both extensions are defined for this system
+                if dir_name in system_extensions:
+                    ext_info = system_extensions[dir_name]
+                    merged_count = self._merge_games_with_extensions(
+                        dir_name, 'wip',
+                        ext_info['batocera_extension'],
+                        ext_info['retrobat_extension']
+                    )
+                    if merged_count > 0:
+                        logger.info(f"Merged {merged_count} WIP game pairs for {dir_name}")
+                
                 # Try to find and load Releases catalog (versioned gamelist.xml) if enabled
                 if settings.ENABLE_RELEASES_CATALOG:
                     version_result = self._find_latest_versioned_gamelist(dir_path)
@@ -679,6 +874,17 @@ class GameService:
                             self.system_versions[dir_name] = version_str
                             self.system_snapshot_paths[dir_name] = snapshot_dir_path
                             logger.info(f"Loaded Releases catalog for {dir_name} (version {version_str}, snapshot: {snapshot_dir_path}): {game_count_releases} games")
+                            
+                            # Merge games with extensions if both extensions are defined for this system
+                            if dir_name in system_extensions:
+                                ext_info = system_extensions[dir_name]
+                                merged_count = self._merge_games_with_extensions(
+                                    dir_name, 'releases',
+                                    ext_info['batocera_extension'],
+                                    ext_info['retrobat_extension']
+                                )
+                                if merged_count > 0:
+                                    logger.info(f"Merged {merged_count} Releases game pairs for {dir_name}")
                         except Exception as e:
                             logger.error(f"Error loading Releases catalog for {dir_name} (version {version_str}): {e}")
                             # Continue with WIP catalog only

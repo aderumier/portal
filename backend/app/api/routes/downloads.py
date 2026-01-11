@@ -875,12 +875,36 @@ async def download_file(
         
         recent_threshold = datetime.now(timezone.utc) - timedelta(hours=1)
         
-        # Refresh the queue item from database to get latest status
+        # Get platform from Redis connection info (if available) - needed for unified key resolution
+        platform = None
+        try:
+            ws_manager = get_websocket_manager()
+            redis_client = await ws_manager._get_redis_client()
+            if redis_client and token_id:
+                redis_key = f"ws_client:{token_id}"
+                conn_data = await redis_client.get(redis_key)
+                if conn_data:
+                    import json
+                    conn_info = json.loads(conn_data)
+                    platform = conn_info.get('platform', 'linux')  # Default to linux
+                    logger.debug(f"Got platform from Redis connection info: {platform}")
+        except Exception as e:
+            logger.debug(f"Could not get platform from Redis: {e}")
+        
+        # If platform not found, default to linux
+        if not platform:
+            platform = 'linux'
+        
+        # Get download service for resolution
+        download_service = DownloadService(db, get_game_service())
+        
+        # Refresh the queue item from database - check by requested game_id first
+        # The queue_item.game_id might be unified key or already resolved
         queue_item = db.query(DownloadQueue).filter(
             and_(
                 DownloadQueue.user_id == user_id,
                 DownloadQueue.token_id == token_id,
-                DownloadQueue.game_id == game_id,
+                DownloadQueue.game_id == game_id,  # Match requested game_id first
                 or_(
                     DownloadQueue.status.in_(['user_queue', 'downloading', 'paused']),
                     and_(
@@ -921,7 +945,24 @@ async def download_file(
                 detail="Download is paused"
             )
         
-        # Build base path
+        # Get catalog_type from queue_item
+        catalog_version = queue_item.catalog_version
+        catalog_type = 'releases' if catalog_version else 'wip'
+        
+        # Resolve unified ROM key if needed
+        # The queue_item.game_id might be unified (from add_to_queue) or already resolved (from get_next_download)
+        # The request game_id might also be unified or resolved
+        # Use queue_item.game_id as source of truth, but resolve if it's a unified key
+        resolved_game_id = queue_item.game_id
+        try:
+            resolved_game_id = download_service._resolve_unified_rom_key(queue_item.game_id, system, platform, catalog_type)
+            if resolved_game_id != queue_item.game_id:
+                logger.info(f"Resolved unified ROM key in file endpoint: '{queue_item.game_id}' -> '{resolved_game_id}' (platform: {platform})")
+        except Exception as e:
+            logger.warning(f"Failed to resolve unified ROM key from queue: {e}, using queue game_id as-is")
+            resolved_game_id = queue_item.game_id
+        
+        # Build base path using resolved game_id
         if not settings.GAMES_PATH:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -933,7 +974,7 @@ async def download_file(
         # But we need to determine catalog_type from the request or game data
         # For now, we'll check if game_id contains .zfs/snapshot pattern
         # TODO: Pass catalog_type as a parameter to this endpoint
-        base_path = os.path.join(settings.GAMES_PATH, system, game_id)
+        base_path = os.path.join(settings.GAMES_PATH, system, resolved_game_id)
         
         # If path contains .zfs/snapshot, it's from Releases catalog
         # The game_id should be in format: .zfs/snapshot/v10.5/game.zip

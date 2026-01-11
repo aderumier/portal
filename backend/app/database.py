@@ -149,6 +149,8 @@ class System(Base):
     manufacturer = Column(String, nullable=True)  # Manufacturer
     batocera_system = Column(String, nullable=True)  # System name from es_systems.cfg for Batocera (last directory of path)
     retrobat_system = Column(String, nullable=True)  # System name from es_systems.cfg for Retrobat (last directory of path)
+    batocera_extension = Column(String, nullable=True, default='')  # ROM file extension for Batocera (e.g., '.z64')
+    retrobat_extension = Column(String, nullable=True, default='')  # ROM file extension for Retrobat (e.g., '.n64')
     enabled = Column(Boolean, default=True, nullable=False, index=True)  # Whether system is enabled
     download_enabled = Column(Boolean, default=True, nullable=False)  # Whether downloads are enabled for this system
     created_at = Column(DateTime, server_default=func.now())

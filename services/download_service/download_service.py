@@ -1411,10 +1411,14 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
             # Use value as-is from game_data (already in original gamelist.xml format)
             batocera_game[field_name] = str(value)
         
-        # All fields including path and media paths are already in original gamelist.xml format from backend
-        # No path manipulation needed - use as-is
-        # Log the path field value for debugging
-        logger.info(f"Using original path from gamelist.xml: '{batocera_game.get('path', 'NOT SET')}'")
+        # Override the 'path' field with the resolved game_id (which has the correct extension for the platform)
+        # The game_id parameter contains the resolved ROM path (e.g., "game.m3u" for Linux, "game.xbox360" for Windows)
+        # Format it for gamelist.xml with './' prefix if not already present
+        resolved_path = game_id  # This is clean_original_path, which is the resolved ROM path
+        if not resolved_path.startswith('./'):
+            resolved_path = f'./{resolved_path}'
+        batocera_game['path'] = resolved_path
+        logger.info(f"Using resolved path with correct extension: '{resolved_path}' (platform-specific)")
         
         # Create XML structure
         root = ET.Element("gameList")
@@ -1506,7 +1510,7 @@ def download_game(download_info):
     logger.info(f"=== Starting download task for download_id: {download_id} ===")
     
     try:
-        game_id = download_info['game_id']  # Original game_id (may include snapshot path) - used for URL construction
+        game_id = download_info['game_id']  # Original game_id (may include snapshot path or unified key) - used for URL construction
         system = download_info.get('system', '')  # System ID (e.g., "atari2600") - used for API calls
         batocera_system = download_info.get('batocera_system', '')  # Batocera system directory name - used for local paths
         game_details = download_info.get('game_details', {})  # Full game data with original paths
@@ -1522,6 +1526,9 @@ def download_game(download_info):
         if not system or not game_id:
             logger.error(f"Missing system or game_id: system={system}, game_id={game_id}")
             return False
+        
+        # Backend now resolves unified ROM keys automatically based on platform
+        # No client-side resolution needed
         
         if not batocera_system:
             logger.error(f"Missing batocera_system in download_info for system: {system}")

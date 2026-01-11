@@ -222,6 +222,8 @@ const SystemsConfiguration = () => {
               <th>Release</th>
               <th>Batocera System</th>
               <th>Retrobat System</th>
+              <th>Batocera Extension</th>
+              <th>Retrobat Extension</th>
               <th>Enabled</th>
               <th>Download Enabled</th>
             </tr>
@@ -312,6 +314,26 @@ const SystemsConfiguration = () => {
                     onChange={(e) => handleFieldChange(system.id, 'retrobat_system', e.target.value)}
                     onBlur={(e) => handleFieldBlur(system.id, 'retrobat_system', e.target.value)}
                     className="editable-input"
+                  />
+                </td>
+                <td>
+                  <input
+                    type="text"
+                    value={system.batocera_extension || ''}
+                    onChange={(e) => handleFieldChange(system.id, 'batocera_extension', e.target.value)}
+                    onBlur={(e) => handleFieldBlur(system.id, 'batocera_extension', e.target.value)}
+                    className="editable-input"
+                    placeholder=".z64"
+                  />
+                </td>
+                <td>
+                  <input
+                    type="text"
+                    value={system.retrobat_extension || ''}
+                    onChange={(e) => handleFieldChange(system.id, 'retrobat_extension', e.target.value)}
+                    onBlur={(e) => handleFieldBlur(system.id, 'retrobat_extension', e.target.value)}
+                    className="editable-input"
+                    placeholder=".n64"
                   />
                 </td>
                 <td>

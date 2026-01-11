@@ -419,6 +419,90 @@ class DownloadService:
         
         return enriched_game
     
+    def _resolve_unified_rom_key(self, game_id: str, system_id: str, platform: Optional[str], catalog_type: str = 'releases') -> str:
+        """Resolve unified ROM key to actual ROM path based on platform.
+        
+        If game_id is a unified key (e.g., "path/to/game.(z64|n64)"), resolves it
+        to the actual ROM path based on platform:
+        - Linux: uses batocera_extension
+        - Windows: uses retrobat_extension
+        
+        Args:
+            game_id: Unified ROM key or regular ROM path
+            system_id: System ID
+            platform: 'linux' or 'windows' (None defaults to linux)
+            catalog_type: 'wip' or 'releases'
+            
+        Returns:
+            str: Resolved ROM path, or original game_id if not a unified key
+        """
+        import re
+        
+        # Check if game_id matches unified key pattern: path.(ext1|ext2)
+        unified_pattern = r'^(.+)\.\(([^|]+)\|([^|]+)\)$'
+        match = re.match(unified_pattern, game_id)
+        
+        if not match:
+            # Not a unified key, return as-is
+            return game_id
+        
+        # Extract components from unified key
+        base_path = match.group(1)
+        ext1 = match.group(2)
+        ext2 = match.group(3)
+        
+        # Get system extensions from database
+        from app.database import System
+        db_system = self.db.query(System).filter(System.id == system_id).first()
+        
+        if not db_system:
+            logger.warning(f"System {system_id} not found for ROM key resolution, using original game_id")
+            return game_id
+        
+        batocera_ext = (db_system.batocera_extension or '').strip().lstrip('.')
+        retrobat_ext = (db_system.retrobat_extension or '').strip().lstrip('.')
+        
+        if not batocera_ext or not retrobat_ext:
+            logger.debug(f"System {system_id} does not have both extensions configured, using original game_id")
+            return game_id
+        
+        # Determine which extension to use based on platform
+        platform_lower = (platform or 'linux').lower()
+        if platform_lower == 'windows':
+            target_ext = retrobat_ext
+        else:
+            target_ext = batocera_ext
+        
+        # Verify which extension matches (ext1 or ext2)
+        if ext1 == target_ext:
+            resolved_path = f"{base_path}.{target_ext}"
+        elif ext2 == target_ext:
+            resolved_path = f"{base_path}.{target_ext}"
+        else:
+            # Extensions in unified key don't match system extensions
+            # Try to construct path anyway using target_ext
+            resolved_path = f"{base_path}.{target_ext}"
+            logger.warning(f"Unified key extensions ({ext1}|{ext2}) don't match system extensions ({batocera_ext}|{retrobat_ext}), using target_ext: {target_ext}")
+        
+        # Verify resolved ROM exists in catalog
+        resolved_lookup_id = resolved_path
+        if catalog_type == 'releases' and '.zfs/snapshot' in resolved_path:
+            # Extract path after snapshot for lookup
+            parts = resolved_path.split('.zfs/snapshot/', 1)
+            if len(parts) > 1:
+                after_snapshot = parts[1]
+                if '/' in after_snapshot:
+                    resolved_lookup_id = '/'.join(after_snapshot.split('/')[1:])
+                else:
+                    resolved_lookup_id = after_snapshot
+        
+        if self.game_service.get_game_by_id(resolved_lookup_id, catalog_type=catalog_type):
+            logger.debug(f"Resolved unified ROM key '{game_id}' to '{resolved_path}' (platform: {platform_lower})")
+            return resolved_path
+        else:
+            logger.warning(f"Resolved ROM path not found in catalog: {resolved_path}, using original game_id")
+            return game_id
+    
     async def add_to_queue(self, user_id: str, game_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None, catalog_version: Optional[str] = None) -> bool:
         """Add a game to the user's FIFO queue."""
         try:
@@ -1156,10 +1240,45 @@ class DownloadService:
                 
                 logger.info(f"Using {system_type}='{target_system}' for client platform (service_id={service_id}, is_windows={is_windows})")
                 
+                # Resolve unified ROM key if needed (before using game_id for file path/URL)
+                original_game_id = resumable_download.game_id
+                resolved_game_id = self._resolve_unified_rom_key(original_game_id, system, platform, catalog_type)
+                if resolved_game_id != original_game_id:
+                    logger.info(f"Resolved unified ROM key for resumable download: '{original_game_id}' -> '{resolved_game_id}' (platform: {platform})")
+                    # Update game_id in database for consistency
+                    resumable_download.game_id = resolved_game_id
+                    # Update file_path to use resolved game_id
+                    file_path = os.path.join(settings.GAMES_PATH, system, resolved_game_id)
+                    # Verify resolved file exists
+                    if not os.path.exists(file_path):
+                        logger.error(f"Resolved ROM path does not exist: {file_path}")
+                        self.archive_download(resumable_download.id, 'error')
+                        self.db.delete(resumable_download)
+                        self.db.commit()
+                        return None
+                    self.db.commit()
+                    # Re-fetch game with resolved game_id for lookup
+                    resolved_lookup_id = resolved_game_id
+                    if catalog_type == 'releases' and '.zfs/snapshot' in resolved_game_id:
+                        parts = resolved_game_id.split('.zfs/snapshot/', 1)
+                        if len(parts) > 1:
+                            after_snapshot = parts[1]
+                            if '/' in after_snapshot:
+                                resolved_lookup_id = '/'.join(after_snapshot.split('/')[1:])
+                            else:
+                                resolved_lookup_id = after_snapshot
+                    game = self.game_service.get_game_by_id(resolved_lookup_id, catalog_type=catalog_type)
+                    if not game:
+                        logger.error(f"Game not found after resolution: {resolved_lookup_id}")
+                        self.archive_download(resumable_download.id, 'error')
+                        self.db.delete(resumable_download)
+                        self.db.commit()
+                        return None
+                
                 # Construct HTTP URL for the file
                 import urllib.parse
                 # Only remove './' prefix if present, preserve paths starting with '.zfs'
-                clean_game_id = resumable_download.game_id
+                clean_game_id = resolved_game_id
                 if clean_game_id.startswith('./'):
                     clean_game_id = clean_game_id[2:]
                 encoded_game_id = urllib.parse.quote(clean_game_id, safe='/')
@@ -1169,12 +1288,12 @@ class DownloadService:
                 http_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}"
                 
                 # For client: we need both original game_id (for URL construction) and normalized game_id (for destination paths)
-                # Keep original game_id and add normalized rom_path for destination
-                normalized_game_id = self._remove_snapshot_path_from_game_id(resumable_download.game_id, catalog_version)
+                # Keep resolved game_id and add normalized rom_path for destination
+                normalized_game_id = self._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
                 
                 download_info = {
                     'download_id': resumable_download.id,
-                    'game_id': resumable_download.game_id,  # Keep original for URL construction (needed for directory downloads)
+                    'game_id': resolved_game_id,  # Use resolved game_id (unified key already resolved)
                     'rom_path': normalized_game_id,  # Normalized path for client destination (without snapshot path)
                     'user_id': resumable_download.user_id,
                     'file_path': file_path,
@@ -1340,10 +1459,45 @@ class DownloadService:
             
             logger.info(f"Using {system_type}='{target_system}' for client platform (service_id={service_id}, is_windows={is_windows})")
             
+            # Resolve unified ROM key if needed (before using game_id for file path/URL)
+            original_game_id = pending_download.game_id
+            resolved_game_id = self._resolve_unified_rom_key(original_game_id, system, platform, catalog_type)
+            if resolved_game_id != original_game_id:
+                logger.info(f"Resolved unified ROM key: '{original_game_id}' -> '{resolved_game_id}' (platform: {platform})")
+                # Update game_id in database for consistency
+                pending_download.game_id = resolved_game_id
+                # Update file_path to use resolved game_id
+                file_path = os.path.join(settings.GAMES_PATH, system, resolved_game_id)
+                # Verify resolved file exists
+                if not os.path.exists(file_path):
+                    logger.error(f"Resolved ROM path does not exist: {file_path}")
+                    self.archive_download(pending_download.id, 'error')
+                    self.db.delete(pending_download)
+                    self.db.commit()
+                    return None
+                self.db.commit()
+                # Re-fetch game with resolved game_id for lookup
+                resolved_lookup_id = resolved_game_id
+                if catalog_type == 'releases' and '.zfs/snapshot' in resolved_game_id:
+                    parts = resolved_game_id.split('.zfs/snapshot/', 1)
+                    if len(parts) > 1:
+                        after_snapshot = parts[1]
+                        if '/' in after_snapshot:
+                            resolved_lookup_id = '/'.join(after_snapshot.split('/')[1:])
+                        else:
+                            resolved_lookup_id = after_snapshot
+                game = self.game_service.get_game_by_id(resolved_lookup_id, catalog_type=catalog_type)
+                if not game:
+                    logger.error(f"Game not found after resolution: {resolved_lookup_id}")
+                    self.archive_download(pending_download.id, 'error')
+                    self.db.delete(pending_download)
+                    self.db.commit()
+                    return None
+            
             # Construct HTTP URL for the file
             import urllib.parse
             # Only remove './' prefix if present, preserve paths starting with '.zfs'
-            clean_game_id = pending_download.game_id
+            clean_game_id = resolved_game_id
             if clean_game_id.startswith('./'):
                 clean_game_id = clean_game_id[2:]
             encoded_game_id = urllib.parse.quote(clean_game_id, safe='/')
@@ -1353,12 +1507,12 @@ class DownloadService:
             http_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}"
             
             # For client: we need both original game_id (for URL construction) and normalized game_id (for destination paths)
-            # Keep original game_id and add normalized rom_path for destination
-            normalized_game_id = self._remove_snapshot_path_from_game_id(pending_download.game_id, catalog_version)
+            # Keep resolved game_id and add normalized rom_path for destination
+            normalized_game_id = self._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
             
             download_info = {
                 'download_id': pending_download.id,
-                'game_id': pending_download.game_id,  # Keep original for URL construction (needed for directory downloads)
+                'game_id': resolved_game_id,  # Use resolved game_id (unified key already resolved)
                 'rom_path': normalized_game_id,  # Normalized path for client destination (without snapshot path)
                 'user_id': pending_download.user_id,
                 'file_path': file_path,
