@@ -105,11 +105,12 @@ logger.setLevel(getattr(logging, log_level, logging.INFO))
 for handler in logger.handlers[:]:
     logger.removeHandler(handler)
 
-# Add rotating file handler
+# Add rotating file handler with UTF-8 encoding (fixes Unicode encoding issues on Windows)
 file_handler = RotatingFileHandler(
     log_file_path,
     maxBytes=500 * 1024 * 1024,  # 500 MB
-    backupCount=10
+    backupCount=10,
+    encoding='utf-8'  # Use UTF-8 encoding to support Unicode characters
 )
 file_handler.setLevel(getattr(logging, log_level, logging.INFO))
 file_handler.setFormatter(logging.Formatter(
@@ -167,14 +168,17 @@ API_URL = config.get('API_URL') or os.getenv('API_URL', 'https://rgs-retro.ddns.
 
 # Set ROMS_PATH based on platform
 if platform.system() == 'Windows':
-    DEFAULT_ROMS_PATH = os.path.join(os.getenv('PROGRAMDATA', 'C:\\ProgramData'), 'RGS', 'roms')
-    DEFAULT_SAVEDIR = os.path.join(os.getenv('PROGRAMDATA', 'C:\\ProgramData'), 'RGS', 'saves')
+    DEFAULT_ROMS_PATH = '../../../roms'
+    DEFAULT_SAVEDIR = '../../../saves'
+    DEFAULT_CONFIGDIR = '../../../configs'
 else:
     DEFAULT_ROMS_PATH = '/userdata/roms'
     DEFAULT_SAVEDIR = '/userdata/saves'
+    DEFAULT_CONFIGDIR = '/userdata/system/configs'
 
 ROMS_PATH = config.get('ROMS_PATH') or os.getenv('ROMS_PATH', DEFAULT_ROMS_PATH)
 SAVEDIR = config.get('SAVEDIR') or os.getenv('SAVEDIR', DEFAULT_SAVEDIR)
+CONFIGDIR = config.get('CONFIGDIR') or os.getenv('CONFIGDIR', DEFAULT_CONFIGDIR) if DEFAULT_CONFIGDIR else None
 
 # BANDWIDTH_UPDATE_INTERVAL will be fetched from backend on first request_download call
 # No fallback - must be set by backend
@@ -207,6 +211,8 @@ logger.info(f"Download service configuration:")
 logger.info(f"  API_URL: {API_URL}")
 logger.info(f"  ROMS_PATH: {ROMS_PATH}")
 logger.info(f"  SAVEDIR: {SAVEDIR}")
+if CONFIGDIR:
+    logger.info(f"  CONFIGDIR: {CONFIGDIR}")
 logger.info(f"  SERVICE_ID: {SERVICE_ID}")
 logger.info(f"  BANDWIDTH_UPDATE_INTERVAL: Will be set from backend on first connection")
 
@@ -241,6 +247,9 @@ def ensure_directories():
     logger.info(f"ROMs directory ensured: {ROMS_PATH}")
     Path(SAVEDIR).mkdir(parents=True, exist_ok=True)
     logger.info(f"Saves directory ensured: {SAVEDIR}")
+    if CONFIGDIR:
+        Path(CONFIGDIR).mkdir(parents=True, exist_ok=True)
+        logger.info(f"Config directory ensured: {CONFIGDIR}")
 
 def update_bandwidth_update_interval(new_interval):
     """Update the global BANDWIDTH_UPDATE_INTERVAL value.
@@ -1691,10 +1700,22 @@ def download_game(download_info):
         logger.info(f"  System: {system}")
         logger.info(f"  Batocera System: {target_system}")
         
-        # Check if save_location is provided (for .psvita files)
+        # Check if save_location is provided (for .psvita files and .psn files on Windows)
         save_location = download_info.get('save_location')
-        if save_location:
-            # Use SAVEDIR with save_location for special save files
+        # Check if config_location is provided (for .psn files on Linux)
+        config_location = download_info.get('config_location')
+        
+        if config_location:
+            # Use CONFIGDIR with config_location for .psn files on Linux
+            if not CONFIGDIR:
+                logger.error(f"Received config_location '{config_location}' but CONFIGDIR is not configured")
+                raise ValueError("CONFIGDIR must be configured for .psn files on Linux")
+            logger.info(f"Received config_location from backend: '{config_location}'")
+            logger.info(f"CONFIGDIR is: '{CONFIGDIR}'")
+            dest_base_path = os.path.join(CONFIGDIR, config_location)
+            logger.info(f"Using config_location, destination base path: {dest_base_path}")
+        elif save_location:
+            # Use SAVEDIR with save_location for special save files (.psvita files and .psn files on Windows)
             logger.info(f"Received save_location from backend: '{save_location}'")
             logger.info(f"SAVEDIR is: '{SAVEDIR}'")
             dest_base_path = os.path.join(SAVEDIR, save_location)
@@ -1745,19 +1766,20 @@ def download_game(download_info):
                         base_path_type = dir_info.get('base_path_type', 'directory')
                         source_file = dir_info.get('source_file', 'directory')
                         download_type = source_file if source_file != 'directory' else "directory"
-                        logger.info(f"✓ {download_type} download detected: {len(files_list)} files, {dir_info.get('total_size', 0)} bytes")
+                        logger.info(f"[*] {download_type} download detected: {len(files_list)} files, {dir_info.get('total_size', 0)} bytes")
                         
                         # For special files with base_path_type='file' (.m3u, .cue, etc.),
                         # dest_base_path should be the directory containing the source file
                         # (not the file itself, since relative_path values are relative to the file's directory)
-                        # BUT: If save_location is provided (e.g., for .psvita files), don't adjust it
-                        # because save_location already contains the correct target directory path
-                        if base_path_type == 'file' and not save_location:
+                        # BUT: If save_location or config_location is provided (e.g., for .psvita or .psn files), don't adjust it
+                        # because save_location/config_location already contains the correct target directory path
+                        if base_path_type == 'file' and not save_location and not config_location:
                             # dest_base_path currently points to the source file, change it to its directory
                             dest_base_path = os.path.dirname(dest_base_path)
                             logger.info(f"Adjusted dest_base_path for {source_file} to directory: {dest_base_path}")
-                        elif base_path_type == 'file' and save_location:
-                            logger.info(f"Using save_location for {source_file}, dest_base_path remains: {dest_base_path}")
+                        elif base_path_type == 'file' and (save_location or config_location):
+                            location_type = "save_location" if save_location else "config_location"
+                            logger.info(f"Using {location_type} for {source_file}, dest_base_path remains: {dest_base_path}")
                         
                         # Extract base URL from http_url
                         from urllib.parse import urlparse

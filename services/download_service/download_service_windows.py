@@ -123,7 +123,8 @@ os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 file_handler = RotatingFileHandler(
     log_file_path,
     maxBytes=500 * 1024 * 1024,  # 500 MB
-    backupCount=10
+    backupCount=10,
+    encoding='utf-8'  # Use UTF-8 encoding to support Unicode characters
 )
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 file_handler.setLevel(getattr(logging, log_level, logging.INFO))

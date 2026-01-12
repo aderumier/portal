@@ -189,6 +189,41 @@ def parse_psvita_file(psvita_file_path: str) -> str:
         return None
 
 
+def parse_psn_file(psn_file_path: str) -> str:
+    """Parse a .psn file and return the directory name to download.
+    
+    Args:
+        psn_file_path: Full path to the .psn file
+        
+    Returns:
+        Directory name (e.g., "BLUS12345")
+    """
+    try:
+        # Read and parse the .psn file
+        if not os.path.exists(psn_file_path):
+            logger.warning(f".psn file not found: {psn_file_path}")
+            return None
+        
+        with open(psn_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines
+                if not line:
+                    continue
+                
+                # The file contains just the directory name (e.g., "BLUS12345")
+                directory_name = line
+                logger.info(f"Parsed .psn file {psn_file_path}: found directory '{directory_name}'")
+                return directory_name
+        
+        logger.warning(f"No valid directory found in .psn file: {psn_file_path}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error parsing .psn file {psn_file_path}: {e}", exc_info=True)
+        return None
+
+
 def detect_and_parse_special_file(file_path: str) -> Optional[Dict]:
     """Detect and parse special file types that require additional files to be downloaded.
     
@@ -247,6 +282,18 @@ def detect_and_parse_special_file(file_path: str) -> Optional[Dict]:
         if directory_name:
             # For .psvita files, we return the directory name as a single-item list
             # Similar to .xbox360, but the source directory path is different
+            return {
+                'files': [directory_name],  # This will be treated as a directory path
+                'base_path_type': 'file',
+                'source_file': source_filename
+            }
+    
+    # Check for .psn files
+    if file_lower.endswith('.psn'):
+        directory_name = parse_psn_file(file_path)
+        if directory_name:
+            # For .psn files, we return the directory name as a single-item list
+            # Similar to .psvita, but the source directory path is different
             return {
                 'files': [directory_name],  # This will be treated as a directory path
                 'base_path_type': 'file',
@@ -722,6 +769,33 @@ class DownloadService:
                                         logger.warning(f"PS Vita save directory not found: {dir_full_path}")
                                     
                                     # Include the .psvita file itself in the total size
+                                    if os.path.exists(game_path) and os.path.isfile(game_path):
+                                        total_size += os.path.getsize(game_path)
+                            elif source_file.lower().endswith('.psn'):
+                                # For .psn files: parsed_files contains the directory name
+                                # Source directory is at {GAMES_PATH}/_saves_/ps3/rpcs3/dev_hdd0/game/{directory_name}
+                                if parsed_files:
+                                    directory_name = parsed_files[0]
+                                    # Build path to save directory
+                                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game', directory_name)
+                                    dir_full_path = os.path.normpath(save_dir_path)
+                                    
+                                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                                        # Security check: ensure directory is within games directory
+                                        try:
+                                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                                # Walk the directory and sum all file sizes
+                                                for root, dirs, files in os.walk(dir_full_path):
+                                                    for filename in files:
+                                                        file_full_path = os.path.join(root, filename)
+                                                        if os.path.isfile(file_full_path):
+                                                            total_size += os.path.getsize(file_full_path)
+                                        except ValueError:
+                                            logger.warning(f"Directory {dir_full_path} path validation failed, skipping from size calculation")
+                                    else:
+                                        logger.warning(f"PS3 save directory not found: {dir_full_path}")
+                                    
+                                    # Include the .psn file itself in the total size
                                     if os.path.exists(game_path) and os.path.isfile(game_path):
                                         total_size += os.path.getsize(game_path)
                             else:
@@ -1420,6 +1494,23 @@ class DownloadService:
                             save_location = f"psvita/ux0/app/{directory_name}"
                         logger.info(f"Detected .psvita file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
                 
+                # Check if this is a .psn file and calculate config_location/save_location
+                config_location = None
+                if resolved_game_id.lower().endswith('.psn'):
+                    # Parse the .psn file to get directory name
+                    directory_name = parse_psn_file(file_path)
+                    if directory_name:
+                        # Build location path based on platform
+                        # Linux: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses config_location)
+                        # Windows: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses save_location)
+                        location_path = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
+                        if is_windows:
+                            save_location = location_path
+                            logger.info(f"Detected .psn file, save_location: {save_location} (platform: windows)")
+                        else:
+                            config_location = location_path
+                            logger.info(f"Detected .psn file, config_location: {config_location} (platform: linux)")
+                
                 download_info = {
                     'download_id': resumable_download.id,
                     'game_id': resolved_game_id,  # Use resolved game_id (unified key already resolved)
@@ -1437,9 +1528,13 @@ class DownloadService:
                     'game_details': self._normalize_game_details_for_client(game, catalog_version)  # Include full game details for media download (snapshot paths removed)
                 }
                 
-                # Add save_location if this is a .psvita file
+                # Add save_location if this is a .psvita or .psn file (Windows)
                 if save_location:
                     download_info['save_location'] = save_location
+                
+                # Add config_location if this is a .psn file (Linux)
+                if config_location:
+                    download_info['config_location'] = config_location
                 
                 logger.info(f"Resuming download {resumable_download.id} from {resumable_download.bytes_transferred} bytes")
                 return download_info
@@ -1653,6 +1748,24 @@ class DownloadService:
                         save_location = f"psvita/ux0/app/{directory_name}"
                     logger.info(f"Detected .psvita file, save_location: {save_location} (platform: {'windows' if is_windows_platform else 'linux'})")
             
+            # Check if this is a .psn file and calculate config_location/save_location
+            config_location = None
+            if resolved_game_id.lower().endswith('.psn'):
+                # Parse the .psn file to get directory name
+                directory_name = parse_psn_file(file_path)
+                if directory_name:
+                    # Build location path based on platform
+                    # Linux: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses config_location)
+                    # Windows: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses save_location)
+                    location_path = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
+                    is_windows_platform = is_windows
+                    if is_windows_platform:
+                        save_location = location_path
+                        logger.info(f"Detected .psn file, save_location: {save_location} (platform: windows)")
+                    else:
+                        config_location = location_path
+                        logger.info(f"Detected .psn file, config_location: {config_location} (platform: linux)")
+            
             download_info = {
                 'download_id': pending_download.id,
                 'game_id': resolved_game_id,  # Use resolved game_id (unified key already resolved)
@@ -1670,9 +1783,13 @@ class DownloadService:
                 'game_details': self._normalize_game_details_for_client(game, catalog_version)  # Include full game details for media download (snapshot paths removed)
             }
             
-            # Add save_location if this is a .psvita file
+            # Add save_location if this is a .psvita or .psn file (Windows)
             if save_location:
                 download_info['save_location'] = save_location
+            
+            # Add config_location if this is a .psn file (Linux)
+            if config_location:
+                download_info['config_location'] = config_location
             
             logger.info(f"Assigned download {pending_download.id} to service {service_id} with {allocated_bandwidth} bytes/s")
             return download_info
