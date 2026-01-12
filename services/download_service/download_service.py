@@ -967,7 +967,14 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
     for file_info in files_list:
         relative_path = file_info['relative_path']
         expected_size = file_info['size']
-        dest_file_path = os.path.join(dest_base_path, relative_path)
+        # Check if file_info has destination_rom_path override (e.g., for .psvita file that should go to roms)
+        if 'destination_rom_path' in file_info:
+            # File should be saved to roms directory instead of save directory
+            dest_rom_path = file_info['destination_rom_path']
+            dest_system = file_info.get('destination_system', system)
+            dest_file_path = os.path.join(ROMS_PATH, dest_system, dest_rom_path)
+        else:
+            dest_file_path = os.path.join(dest_base_path, relative_path)
         
         # Check if file exists
         if os.path.exists(dest_file_path):
@@ -1023,7 +1030,14 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
                 file_url = f"{base_url}/api/download/file?system={encoded_system}&game_id={encoded_game_id}&relative_path={encoded_rel_path}"
             
             # Destination path preserving directory structure
-            dest_file_path = os.path.join(dest_base_path, relative_path)
+            # Check if file_info has destination_rom_path override (e.g., for .psvita file that should go to roms)
+            if 'destination_rom_path' in file_info:
+                # File should be saved to roms directory instead of save directory
+                dest_rom_path = file_info['destination_rom_path']
+                dest_system = file_info.get('destination_system', system)
+                dest_file_path = os.path.join(ROMS_PATH, dest_system, dest_rom_path)
+            else:
+                dest_file_path = os.path.join(dest_base_path, relative_path)
             dest_file_dir = os.path.dirname(dest_file_path)
             os.makedirs(dest_file_dir, exist_ok=True)
             
@@ -1671,6 +1685,8 @@ def download_game(download_info):
         save_location = download_info.get('save_location')
         if save_location:
             # Use SAVEDIR with save_location for special save files
+            logger.info(f"Received save_location from backend: '{save_location}'")
+            logger.info(f"SAVEDIR is: '{SAVEDIR}'")
             dest_base_path = os.path.join(SAVEDIR, save_location)
             logger.info(f"Using save_location, destination base path: {dest_base_path}")
         else:
@@ -1724,10 +1740,14 @@ def download_game(download_info):
                         # For special files with base_path_type='file' (.m3u, .cue, etc.),
                         # dest_base_path should be the directory containing the source file
                         # (not the file itself, since relative_path values are relative to the file's directory)
-                        if base_path_type == 'file':
+                        # BUT: If save_location is provided (e.g., for .psvita files), don't adjust it
+                        # because save_location already contains the correct target directory path
+                        if base_path_type == 'file' and not save_location:
                             # dest_base_path currently points to the source file, change it to its directory
                             dest_base_path = os.path.dirname(dest_base_path)
                             logger.info(f"Adjusted dest_base_path for {source_file} to directory: {dest_base_path}")
+                        elif base_path_type == 'file' and save_location:
+                            logger.info(f"Using save_location for {source_file}, dest_base_path remains: {dest_base_path}")
                         
                         # Extract base URL from http_url
                         from urllib.parse import urlparse

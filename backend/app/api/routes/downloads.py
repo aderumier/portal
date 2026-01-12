@@ -1132,15 +1132,37 @@ async def download_file(
                                                 })
                                         
                                         # Include the .psvita file itself in the download
-                                        # The .psvita file's relative path should be relative to where it will be saved
-                                        # Since the client will save to SAVEDIR/psvita/vita3k/ux0/app/{directory_name},
-                                        # we need the .psvita file to be saved alongside it
-                                        # For now, we'll include it with a relative path that matches its original location
+                                        # The .psvita file should be saved to roms directory, not save directory
+                                        # Get the normalized game path for roms directory (same logic as get_next_download)
                                         psvita_rel_path = os.path.relpath(base_path, source_dir)
                                         psvita_file_size = os.path.getsize(base_path)
+                                        
+                                        # Get normalized rom_path (without system prefix and snapshot path) for client destination
+                                        # Use the same normalization method as get_next_download for consistency
+                                        normalized_rom_path = download_service._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
+                                        # Remove system prefix if present (client will add it back with batocera_system)
+                                        if normalized_rom_path.startswith(f"{system}/"):
+                                            normalized_rom_path = normalized_rom_path[len(system) + 1:]
+                                        
+                                        # Get target system (batocera_system) from queue_item's download info or derive from game
+                                        # This should match what's in download_info['batocera_system']
+                                        target_system = system
+                                        try:
+                                            game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+                                            if game:
+                                                # Use the same logic as get_next_download to determine target_system
+                                                game_system = game.get('system', '')
+                                                if game_system:
+                                                    target_system = game_system
+                                        except Exception as e:
+                                            logger.debug(f"Could not get game for target_system: {e}")
+                                        
+                                        # Include destination info: relative path for API calls, destination_rom_path for saving to roms
                                         files_list.append({
-                                            'relative_path': psvita_rel_path.replace('\\', '/'),
-                                            'size': psvita_file_size
+                                            'relative_path': psvita_rel_path.replace('\\', '/'),  # For API calls to download_file endpoint
+                                            'size': psvita_file_size,
+                                            'destination_rom_path': normalized_rom_path,  # Path relative to ROMS_PATH/system/ for saving
+                                            'destination_system': target_system  # System name for destination path (batocera_system)
                                         })
                                     else:
                                         logger.warning(f"Directory {dir_full_path} is outside games directory, skipping")
@@ -1230,6 +1252,23 @@ async def download_file(
                             # For .xbox360 files: relative_path includes directory name and is relative to source file's directory
                             source_dir = os.path.dirname(base_path)
                             file_path = os.path.normpath(os.path.join(source_dir, relative_path))
+                        elif source_file_name.lower().endswith('.psvita'):
+                            # For .psvita files: parsed_files contains the directory name
+                            # Source directory is at {GAMES_PATH}/_saves_/psvita/vita3k/ux0/app/{directory_name}
+                            if parsed_info['files']:
+                                directory_name = parsed_info['files'][0]
+                                # Check if relative_path is the .psvita file itself (it will be just the filename)
+                                # In that case, serve it from its original location (base_path), not from save directory
+                                if relative_path == os.path.basename(base_path):
+                                    # This is the .psvita file itself, serve from original location
+                                    file_path = base_path
+                                else:
+                                    # This is a file from the save directory
+                                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'psvita', 'vita3k', 'ux0', 'app', directory_name)
+                                    file_path = os.path.normpath(os.path.join(save_dir_path, relative_path))
+                            else:
+                                # Fallback: treat as regular file
+                                file_path = os.path.join(base_path, relative_path)
                         else:
                             # For .m3u and .cue files: relative_path is relative to the source file's directory
                             source_dir = os.path.dirname(base_path)
