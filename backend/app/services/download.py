@@ -1408,12 +1408,17 @@ class DownloadService:
                 # Check if this is a .psvita file and calculate save_location
                 save_location = None
                 if resolved_game_id.lower().endswith('.psvita'):
-                    # Parse the .psvita file to get directory name
+                    # Parse the .psvita file to get directory name (TITLE ID)
                     directory_name = parse_psvita_file(file_path)
                     if directory_name:
-                        # Build save_location path: psvita/vita3k/ux0/app/{directory_name} (without leading / or _)
-                        save_location = f"psvita/vita3k/ux0/app/{directory_name}"
-                        logger.info(f"Detected .psvita file, save_location: {save_location}")
+                        # Build save_location path based on platform
+                        # Linux: psvita/ux0/app/{directory_name}
+                        # Windows: psvita/vita3k/app/{directory_name}
+                        if is_windows:
+                            save_location = f"psvita/vita3k/app/{directory_name}"
+                        else:
+                            save_location = f"psvita/ux0/app/{directory_name}"
+                        logger.info(f"Detected .psvita file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
                 
                 download_info = {
                     'download_id': resumable_download.id,
@@ -1635,12 +1640,18 @@ class DownloadService:
             # Check if this is a .psvita file and calculate save_location
             save_location = None
             if resolved_game_id.lower().endswith('.psvita'):
-                # Parse the .psvita file to get directory name
+                # Parse the .psvita file to get directory name (TITLE ID)
                 directory_name = parse_psvita_file(file_path)
                 if directory_name:
-                    # Build save_location path: psvita/vita3k/ux0/app/{directory_name} (without leading / or _)
-                    save_location = f"psvita/vita3k/ux0/app/{directory_name}"
-                    logger.info(f"Detected .psvita file, save_location: {save_location}")
+                    # Build save_location path based on platform
+                    # Linux: psvita/ux0/app/{directory_name}
+                    # Windows: psvita/vita3k/app/{directory_name}
+                    is_windows_platform = is_windows
+                    if is_windows_platform:
+                        save_location = f"psvita/vita3k/app/{directory_name}"
+                    else:
+                        save_location = f"psvita/ux0/app/{directory_name}"
+                    logger.info(f"Detected .psvita file, save_location: {save_location} (platform: {'windows' if is_windows_platform else 'linux'})")
             
             download_info = {
                 'download_id': pending_download.id,

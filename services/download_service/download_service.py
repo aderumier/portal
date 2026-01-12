@@ -779,7 +779,8 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
             
             # When resuming, total_bytes_downloaded includes resume_from, so compare final_size with expected_size
             # expected_size should be the TOTAL file size, not just the remaining bytes
-            if expected_size and final_size != expected_size:
+            # Ensure both are integers for proper comparison
+            if expected_size is not None and int(final_size) != int(expected_size):
                 logger.error(f"File size mismatch: final_size={final_size} != expected_size={expected_size} (resumed from {current_resume_from}, downloaded {bytes_downloaded_this_session} bytes this session, total_bytes_downloaded={total_bytes_downloaded})")
                 # Don't delete file here - let caller handle deletion and error reporting
                 # This allows caller to distinguish between 404 and size mismatch
@@ -884,7 +885,7 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
         dest_file_path = os.path.join(dest_base_path, rel_path)
         if os.path.exists(dest_file_path):
             existing_size = os.path.getsize(dest_file_path)
-            file_size = file_info['size']
+            file_size = int(file_info['size'])  # Ensure integer type
             if existing_size <= file_size:
                 # Count existing file size (complete or partial)
                 total_bytes_downloaded += existing_size
@@ -966,7 +967,7 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
     deleted_files_count = 0
     for file_info in files_list:
         relative_path = file_info['relative_path']
-        expected_size = file_info['size']
+        expected_size = int(file_info['size'])  # Ensure integer type
         # Check if file_info has destination_rom_path override (e.g., for .psvita file that should go to roms)
         if 'destination_rom_path' in file_info:
             # File should be saved to roms directory instead of save directory
@@ -1015,7 +1016,7 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
                 return False
             
             relative_path = file_info['relative_path']
-            file_size = file_info['size']
+            file_size = int(file_info['size'])  # Ensure integer type
             
             # Construct URL for this file
             # Only remove './' prefix if present, preserve paths starting with '.zfs'
@@ -1097,17 +1098,25 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
                 if os.path.exists(dest_file_path):
                     # Size mismatch case - file exists but wrong size
                     final_size = os.path.getsize(dest_file_path)
-                    logger.error(f"File size mismatch for {relative_path}: downloaded {final_size} bytes, expected {file_size} bytes")
-                    
-                    # Delete only this corrupted file
-                    try:
-                        os.remove(dest_file_path)
-                        logger.info(f"Deleted corrupted file: {dest_file_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to delete corrupted file {dest_file_path}: {e}")
-                    
-                    # Track this error but continue with other files
-                    files_with_errors.append((relative_path, f"File size mismatch: {final_size} != {file_size}"))
+                    # Ensure both are integers for proper comparison
+                    final_size_int = int(final_size)
+                    file_size_int = int(file_size)
+                    if final_size_int != file_size_int:
+                        logger.error(f"File size mismatch for {relative_path}: downloaded {final_size} bytes, expected {file_size} bytes")
+                        
+                        # Delete only this corrupted file
+                        try:
+                            os.remove(dest_file_path)
+                            logger.info(f"Deleted corrupted file: {dest_file_path}")
+                        except Exception as e:
+                            logger.error(f"Failed to delete corrupted file {dest_file_path}: {e}")
+                        
+                        # Track this error but continue with other files
+                        files_with_errors.append((relative_path, f"File size mismatch: {final_size} != {file_size}"))
+                    else:
+                        # Sizes match but download_file_via_http returned None - likely a different issue (404/410)
+                        # Don't treat as size mismatch
+                        logger.warning(f"download_file_via_http returned None for {relative_path} but file size matches ({final_size} bytes) - may be 404/410")
                     continue
                 else:
                     # 404 or 410 case - file not found or download removed
@@ -1137,7 +1146,8 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
             # Verify file size after successful download
             if os.path.exists(dest_file_path):
                 actual_size = os.path.getsize(dest_file_path)
-                if actual_size != file_size:
+                # Ensure both are integers for proper comparison
+                if int(actual_size) != int(file_size):
                     logger.error(f"File size mismatch for {relative_path} after download: {actual_size} bytes, expected {file_size} bytes")
                     try:
                         os.remove(dest_file_path)
