@@ -983,10 +983,41 @@ class DownloadService:
                 
                 game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
                 if game:
+                    # For active downloads, check Redis for latest progress
+                    bytes_transferred = item.bytes_transferred
+                    bandwidth_used = item.bandwidth_used
+                    status = item.status
+                    
+                    if item.status == 'downloading':
+                        # Try to get latest data from Redis (if no event loop is running)
+                        try:
+                            import asyncio
+                            from app.services.redis_downloads import RedisDownloadTracker
+                            try:
+                                loop = asyncio.get_running_loop()
+                                # Event loop is running - can't use asyncio.run(), skip Redis
+                                # Progress will be updated via report_progress which updates both Redis and SQLite
+                                pass
+                            except RuntimeError:
+                                # No event loop running, safe to use asyncio.run()
+                                try:
+                                    redis_status = asyncio.run(
+                                        RedisDownloadTracker.get_download_status(item.id)
+                                    )
+                                    if redis_status:
+                                        bytes_transferred = redis_status.get('bytes_transferred', bytes_transferred)
+                                        bandwidth_used = redis_status.get('bytes_per_second', bandwidth_used)
+                                        status = redis_status.get('status', status)
+                                except Exception as redis_error:
+                                    logger.debug(f"Failed to get Redis status for download {item.id}: {redis_error}")
+                        except Exception as e:
+                            logger.debug(f"Failed to check Redis for download {item.id}: {e}")
+                    
                     # Calculate progress for active downloads
                     progress_percent = 0
-                    if item.status == 'downloading' and item.file_size and item.file_size > 0:
-                        progress_percent = min(100, int((item.bytes_transferred / item.file_size) * 100))
+                    file_size = item.file_size
+                    if status == 'downloading' and file_size and file_size > 0:
+                        progress_percent = min(100, int((bytes_transferred / file_size) * 100))
                     
                     # Get token name if token_id exists
                     token_name = None
@@ -1001,7 +1032,7 @@ class DownloadService:
                         'id': item.id,
                         'user_id': item.user_id,
                         'game_id': item.game_id,  # Keep original game_id (matches database)
-                        'status': item.status,
+                        'status': status,  # Use status from Redis if available
                         'queue_type': item.queue_type,
                         'created_at': item.created_at.isoformat() if item.created_at else None,
                         'started_at': item.started_at.isoformat() if item.started_at else None,
@@ -1009,9 +1040,9 @@ class DownloadService:
                         'image': self._normalize_media_path_for_frontend(game.get('image', ''), game.get('system', '')),
                         'system_name': self.game_service.get_system_name(game.get('system', '')),
                         'progress_percent': progress_percent,
-                        'bytes_transferred': item.bytes_transferred,
-                        'file_size': item.file_size,
-                        'bandwidth_used': item.bandwidth_used,
+                        'bytes_transferred': bytes_transferred,  # Use from Redis if available
+                        'file_size': file_size,
+                        'bandwidth_used': bandwidth_used,  # Use from Redis if available
                         'token_name': token_name,
                         'download_id': item.id,  # Include download_id for pause/resume actions
                         'catalog_version': catalog_version,  # Include catalog version (e.g., "v2-RGS_bbc")
@@ -1222,6 +1253,22 @@ class DownloadService:
                 download.bandwidth_used = 0
             
             self.db.commit()
+            
+            # Update Redis status
+            try:
+                import asyncio
+                from app.services.redis_downloads import RedisDownloadTracker
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(RedisDownloadTracker.update_status(download_id, 'paused'))
+                    else:
+                        loop.run_until_complete(RedisDownloadTracker.update_status(download_id, 'paused'))
+                except RuntimeError:
+                    asyncio.run(RedisDownloadTracker.update_status(download_id, 'paused'))
+            except Exception as e:
+                logger.debug(f"Failed to update Redis status for pause: {e}")
+            
             logger.info(f"Paused download {download_id} for user {user_id}")
             
             # Send WebSocket notification to client (if token_id exists)
@@ -1265,6 +1312,22 @@ class DownloadService:
             download.active_download = False
             
             self.db.commit()
+            
+            # Remove from Redis (back to user queue, not active)
+            try:
+                import asyncio
+                from app.services.redis_downloads import RedisDownloadTracker
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(RedisDownloadTracker.remove_download(download_id))
+                    else:
+                        loop.run_until_complete(RedisDownloadTracker.remove_download(download_id))
+                except RuntimeError:
+                    asyncio.run(RedisDownloadTracker.remove_download(download_id))
+            except Exception as e:
+                logger.debug(f"Failed to remove from Redis on resume: {e}")
+            
             logger.info(f"Resumed download {download_id} for user {user_id}")
             return True
         except Exception as e:
@@ -1809,6 +1872,9 @@ class DownloadService:
                 pending_download.client_version = client_version
             self.db.commit()
             
+            # Note: Redis storage will be done in the async endpoint after this function returns
+            # This avoids async/sync mixing issues
+            
             # Construct HTTP URL for the file using download_id (simpler and more reliable)
             # Use DOWNLOAD_FILE_URL if set, otherwise fall back to API_URL
             base_url = settings.DOWNLOAD_FILE_URL if settings.DOWNLOAD_FILE_URL else settings.API_URL
@@ -1897,9 +1963,56 @@ class DownloadService:
             return None
     
     def update_progress(self, download_id: int, bytes_transferred: int, bytes_per_second: int, client_version: Optional[str] = None) -> bool:
-        """Update download progress."""
+        """Update download progress (uses Redis for active downloads, SQLite for user queues)."""
         try:
-            # Query the download
+            # Update Redis first for active downloads (faster)
+            try:
+                import asyncio
+                from app.services.redis_downloads import RedisDownloadTracker
+                redis_updated = False
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # If loop is running, create a task
+                        asyncio.create_task(RedisDownloadTracker.update_progress(
+                            download_id, bytes_transferred, bytes_per_second
+                        ))
+                        redis_updated = True
+                    else:
+                        # No loop running, run it
+                        loop.run_until_complete(RedisDownloadTracker.update_progress(
+                            download_id, bytes_transferred, bytes_per_second
+                        ))
+                        redis_updated = True
+                except RuntimeError:
+                    # No event loop, create one
+                    asyncio.run(RedisDownloadTracker.update_progress(
+                        download_id, bytes_transferred, bytes_per_second
+                    ))
+                    redis_updated = True
+                
+                # If Redis update succeeded, we're done (active downloads are in Redis)
+                if redis_updated:
+                    # Still update SQLite for persistence, but don't fail if it doesn't exist
+                    try:
+                        download = self.db.query(DownloadQueue).filter(
+                            DownloadQueue.id == download_id
+                        ).first()
+                        if download:
+                            download.bytes_transferred = bytes_transferred
+                            download.bandwidth_used = bytes_per_second
+                            download.last_progress_at = datetime.now(timezone.utc)
+                            if client_version:
+                                download.client_version = client_version
+                            self.db.commit()
+                    except Exception as sqlite_error:
+                        logger.debug(f"SQLite update failed (download may be in Redis only): {sqlite_error}")
+                    
+                    return True
+            except Exception as redis_error:
+                logger.debug(f"Redis update failed, falling back to SQLite: {redis_error}")
+            
+            # Fallback to SQLite (for user queues or if Redis fails)
             download = self.db.query(DownloadQueue).filter(
                 DownloadQueue.id == download_id
             ).first()
@@ -1927,6 +2040,20 @@ class DownloadService:
                 logger.info(f"Download {download_id} resumed after being stuck, changing status to downloading")
                 download.status = 'downloading'
                 download.active_download = True
+                # Also update Redis
+                try:
+                    import asyncio
+                    from app.services.redis_downloads import RedisDownloadTracker
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.create_task(RedisDownloadTracker.update_status(download_id, 'downloading'))
+                        else:
+                            loop.run_until_complete(RedisDownloadTracker.update_status(download_id, 'downloading'))
+                    except RuntimeError:
+                        asyncio.run(RedisDownloadTracker.update_status(download_id, 'downloading'))
+                except Exception:
+                    pass
             
             # Mark object as modified explicitly (though assignment should do this)
             from sqlalchemy.orm.attributes import flag_modified
@@ -2260,6 +2387,21 @@ class DownloadService:
             # Archive the download before deletion
             self.archive_download(download_id, 'error')
             
+            # Remove from Redis before deletion
+            try:
+                import asyncio
+                from app.services.redis_downloads import RedisDownloadTracker
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(RedisDownloadTracker.remove_download(download_id))
+                    else:
+                        loop.run_until_complete(RedisDownloadTracker.remove_download(download_id))
+                except RuntimeError:
+                    asyncio.run(RedisDownloadTracker.remove_download(download_id))
+            except Exception as e:
+                logger.debug(f"Failed to remove download from Redis: {e}")
+            
             # Delete the download without updating statistics
             self.db.delete(download)
             self.db.commit()
@@ -2414,6 +2556,13 @@ class DownloadService:
             # Archive the download before deletion
             self.archive_download(download_id, 'completed')
             
+            # Remove from Redis before deletion
+            try:
+                from app.services.redis_downloads import RedisDownloadTracker
+                await RedisDownloadTracker.remove_download(download_id)
+            except Exception as e:
+                logger.debug(f"Failed to remove download from Redis: {e}")
+            
             # Delete the download from queue instead of marking as completed
             self.db.delete(download)
             self.db.commit()
@@ -2491,6 +2640,13 @@ class DownloadService:
             
             # Archive the download with error status before deletion
             self.archive_download(download_id, 'error')
+            
+            # Remove from Redis before deletion
+            try:
+                from app.services.redis_downloads import RedisDownloadTracker
+                await RedisDownloadTracker.remove_download(download_id)
+            except Exception as e:
+                logger.debug(f"Failed to remove download from Redis: {e}")
             
             # Delete the download from queue
             self.db.delete(download)
