@@ -391,11 +391,28 @@ async def process_websocket_archive_stream(
             current_time = time_module.time()
             if current_time - last_status_log_time >= status_log_interval:
                 elapsed = current_time - stream_start_time
+                # Calculate file progress info
+                file_remaining_str = 'N/A'
+                file_progress_str = ''
+                if current_file_info:
+                    if current_file_bytes_remaining is not None:
+                        # Validate that remaining doesn't exceed file size
+                        if current_file_bytes_remaining > current_file_size:
+                            logger.warning(f"WebSocket: Invalid file_remaining ({current_file_bytes_remaining}) > file_size ({current_file_size}) for {current_file_relative_path}")
+                            file_remaining_str = f"{current_file_bytes_remaining} (INVALID)"
+                        else:
+                            file_remaining_str = str(current_file_bytes_remaining)
+                            bytes_written = current_file_size - current_file_bytes_remaining
+                            progress_pct = (bytes_written / current_file_size * 100) if current_file_size > 0 else 0
+                            file_progress_str = f", file_progress={bytes_written}/{current_file_size} ({progress_pct:.1f}%)"
+                    else:
+                        file_remaining_str = 'None'
+                
                 logger.info(f"WebSocket stream status (download_id={download_id}, elapsed={elapsed:.1f}s): "
                           f"total_received={bytes_transferred_this_session[0]}, "
                           f"buffer_size={len(buffer)}, "
                           f"current_file={current_file_relative_path if current_file_info else 'None'}, "
-                          f"file_remaining={current_file_bytes_remaining if current_file_info else 'N/A'}, "
+                          f"file_bytes_remaining={file_remaining_str}{file_progress_str}, "
                           f"files_completed={len(extracted_files)}")
                 last_status_log_time = current_time
             
