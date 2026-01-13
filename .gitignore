@@ -40,6 +40,8 @@ public/*
 
 # Build artifacts
 build-deb/
+*.deb
+*.deb.ok
 
 # IDE
 .vscode/
