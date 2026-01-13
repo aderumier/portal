@@ -37,23 +37,6 @@ cp backend/media_mapping.json "$BUILD_DIR/opt/batocera-games-catalog/backend/" 2
 mkdir -p "$BUILD_DIR/opt/batocera-games-catalog/data"
 mkdir -p "$BUILD_DIR/opt/batocera-games-catalog/logs"
 
-# Copy system configuration files (for hardware categorization)
-echo "Copying system configuration files..."
-if [ -d "data/systemscfg" ]; then
-    mkdir -p "$BUILD_DIR/opt/batocera-games-catalog/data/systemscfg"
-    # Copy all .cfg files from systemscfg directory
-    # Use find to handle cases where there are many files
-    if find data/systemscfg -maxdepth 1 -name "*.cfg" -type f | head -1 | grep -q .; then
-        find data/systemscfg -maxdepth 1 -name "*.cfg" -type f -exec cp -v {} "$BUILD_DIR/opt/batocera-games-catalog/data/systemscfg/" \;
-        COUNT=$(find "$BUILD_DIR/opt/batocera-games-catalog/data/systemscfg" -name "*.cfg" -type f 2>/dev/null | wc -l)
-        echo "  Copied $COUNT system config files"
-    else
-        echo "  Warning: No .cfg files found in data/systemscfg/"
-    fi
-else
-    echo "  Warning: data/systemscfg directory not found"
-fi
-
 # Copy frontend files
 echo "Copying frontend files..."
 mkdir -p "$BUILD_DIR/opt/batocera-games-catalog/frontend"

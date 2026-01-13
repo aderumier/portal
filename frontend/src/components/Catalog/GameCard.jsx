@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext'
 import { getMediaUrl } from '../../utils/constants'
 import './GameCard.css'
 
-const GameCard = ({ game, onDownload, onGameClick }) => {
+const GameCard = ({ game, onDownload, onGameClick, showSystemName = true }) => {
   const navigate = useNavigate()
   const { isDownload, isFastDownload } = useAuth()
   
@@ -39,6 +39,39 @@ const GameCard = ({ game, onDownload, onGameClick }) => {
     onDownload(game.id)
   }
 
+  // Format gametime from minutes to readable format
+  const formatGametime = (minutes) => {
+    if (!minutes || minutes === 0) return null
+    const hours = Math.floor(minutes / 60)
+    const mins = minutes % 60
+    if (hours > 0 && mins > 0) {
+      return `${hours}h ${mins}m`
+    } else if (hours > 0) {
+      return `${hours}h`
+    } else {
+      return `${mins}m`
+    }
+  }
+
+  // Handle both string and number types for playcount/gametime
+  const getPlaycount = () => {
+    if (game.playcount == null) return 0
+    if (typeof game.playcount === 'number') return game.playcount
+    const parsed = parseInt(game.playcount, 10)
+    return isNaN(parsed) ? 0 : parsed
+  }
+  
+  const getGametime = () => {
+    if (game.gametime == null) return 0
+    if (typeof game.gametime === 'number') return game.gametime
+    const parsed = parseInt(game.gametime, 10)
+    return isNaN(parsed) ? 0 : parsed
+  }
+  
+  const playcount = getPlaycount()
+  const gametime = getGametime()
+  const formattedGametime = formatGametime(gametime)
+
   return (
     <div 
       className="game-card" 
@@ -49,9 +82,21 @@ const GameCard = ({ game, onDownload, onGameClick }) => {
       </div>
       <div className="game-card-content">
         <h3 className="game-card-title">{game.name}</h3>
-        {game.systemName && (
+        {showSystemName && game.systemName && (
           <div className="game-card-system">{game.systemName}</div>
         )}
+        <div className="game-card-stats">
+          {playcount > 0 && (
+            <span className="game-card-stat">
+              <span className="stat-label">Plays:</span> {playcount}
+            </span>
+          )}
+          {formattedGametime && (
+            <span className="game-card-stat">
+              <span className="stat-label">Time:</span> {formattedGametime}
+            </span>
+          )}
+        </div>
         {(isDownload || isFastDownload) && game?.download_enabled !== false && (
           <div className="game-card-actions">
             <button 

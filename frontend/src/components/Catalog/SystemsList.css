@@ -36,27 +36,31 @@
 }
 
 .hardware-filter-bar {
+  position: sticky;
+  top: 80px;
+  z-index: 99;
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
   margin-bottom: 2rem;
   padding: 1rem;
-  background: var(--bg-card);
+  background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 2px 8px var(--shadow);
+  border-bottom: 1px solid var(--border);
 }
 
 .hardware-filter-btn {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.625rem 1.25rem;
+  padding: 0.625rem 0.875rem;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text-primary);
-  font-size: 0.95rem;
+  font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -192,7 +196,7 @@
 }
 
 .system-card-content {
-  padding: 1.5rem 2rem 2rem;
+  padding: 0.75rem 2rem;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -298,6 +302,14 @@
 
 .system-link:hover {
   color: var(--accent);
+}
+
+.system-release-cell {
+  color: var(--text-secondary);
+}
+
+.system-manufacturer-cell {
+  color: var(--text-secondary);
 }
 
 .system-games-cell {

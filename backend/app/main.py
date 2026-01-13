@@ -46,14 +46,15 @@ async def preload_game_data():
         game_service = get_game_service()
         
         # Try loading catalog from cache (this also sets _gamelists_loaded flag)
-        logger.info("Attempting to load catalog from cache...")
+        logger.info("=== STARTUP: Attempting to load catalog from cache... ===")
         catalog_loaded_from_cache = game_service._load_catalog_from_cache()
         if not catalog_loaded_from_cache:
-            logger.info("Cache miss - preloading all gamelist.xml files into memory...")
+            logger.info("=== CACHE MISS: Preloading all gamelist.xml files into memory... ===")
             game_service.preload_all_gamelists()
             logger.info("All gamelist.xml files loaded into memory")
         else:
-            logger.info("Catalog loaded from cache")
+            logger.info("=== CACHE HIT: Catalog loaded from cache ===")
+            logger.info("Assuming playcount/gametime stats are precomputed in cached catalog (stats only computed during catalog refresh)")
         
         # Try loading search index from cache (build_search_index will handle this)
         logger.info("Attempting to load search index from cache...")

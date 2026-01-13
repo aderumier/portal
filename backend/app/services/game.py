@@ -8,6 +8,9 @@ import time
 from typing import List, Dict, Optional, Tuple
 import re
 from pathlib import Path
+import tarfile
+import tempfile
+import shutil
 from app.config import settings
 from app.services.game_utils import normalize_game_name
 
@@ -86,7 +89,6 @@ class GameService:
         self.system_manufacturer = {}  # Cache: system_id -> manufacturer
         self.system_release = {}  # Cache: system_id -> release year
         self.system_fullname = {}  # Cache: system_id -> full name
-        self._hardware_loaded = False
         self.subdirectory_counts_wip = {}  # Cache: system_id -> {subdirectory: count} for WIP
         self.subdirectory_counts_releases = {}  # Cache: system_id -> {subdirectory: count} for Releases
         self._catalog_timestamp = None  # Timestamp when catalog was last loaded/refreshed for ETag generation
@@ -161,156 +163,6 @@ class GameService:
             'x68000': 'X68000',
             'zxspectrum': 'ZX Spectrum'
         }
-    
-    def _load_system_hardware(self) -> Dict[str, str]:
-        """Load system hardware categories, manufacturers, release years, and full names from es_systems*.cfg files.
-        
-        Parses es_systems.cfg first, then es_systems_*.cfg files which can override or add systems.
-        Stores hardware category, manufacturer, release year, and full name for each system.
-        
-        Returns:
-            dict: Mapping of system_id -> hardware category
-        """
-        logger.info("_load_system_hardware() called")
-        if self._hardware_loaded:
-            logger.info(f"Hardware already loaded, returning {len(self.system_hardware)} systems")
-            return self.system_hardware
-        
-        hardware_map = {}
-        manufacturer_map = {}
-        release_map = {}
-        fullname_map = {}
-        
-        # Try multiple paths to find data/systemscfg directory
-        # game.py is at: backend/app/services/game.py
-        # We need to go up 4 levels to reach project root: backend/app/services -> backend/app -> backend -> project_root
-        # 1. Relative to project root (development): project_root/data/systemscfg
-        # 2. Relative to installation directory (production: /opt/batocera-games-catalog)
-        possible_paths = [
-            Path(__file__).parent.parent.parent.parent / 'data' / 'systemscfg',  # Development: project_root/data/systemscfg
-            Path('/opt/batocera-games-catalog/data/systemscfg'),  # Production installation
-            Path(__file__).parent.parent.parent / 'data' / 'systemscfg',  # Fallback: backend/data/systemscfg (if data is in backend)
-        ]
-        
-        logger.info(f"Searching for systemscfg directory in: {possible_paths}")
-        systemcfg_dir = None
-        for path in possible_paths:
-            logger.debug(f"Checking path: {path} (exists: {path.exists()})")
-            if path.exists():
-                systemcfg_dir = path
-                logger.info(f"Found systemscfg directory at: {systemcfg_dir}")
-                break
-        
-        if not systemcfg_dir:
-            logger.error(f"System config directory not found. Tried: {possible_paths}")
-            self._hardware_loaded = True
-            return hardware_map
-        
-        # First, parse es_systems.cfg
-        main_config = systemcfg_dir / 'es_systems.cfg'
-        logger.info(f"Checking for main config file: {main_config} (exists: {main_config.exists()})")
-        if main_config.exists():
-            try:
-                logger.info(f"Parsing {main_config}")
-                tree = ET.parse(main_config)
-                root = tree.getroot()
-                logger.debug(f"Root element: {root.tag}")
-                # The root should be <systemList>, find all <system> elements
-                systems = root.findall('.//system')
-                logger.info(f"Found {len(systems)} systems in {main_config.name}")
-                parsed_count = 0
-                for system in systems:
-                    name_elem = system.find('name')
-                    hardware_elem = system.find('hardware')
-                    manufacturer_elem = system.find('manufacturer')
-                    release_elem = system.find('release')
-                    fullname_elem = system.find('fullname')
-                    if name_elem is not None and name_elem.text and hardware_elem is not None and hardware_elem.text:
-                        system_id = name_elem.text.strip()
-                        hardware = hardware_elem.text.strip()
-                        manufacturer = manufacturer_elem.text.strip() if manufacturer_elem is not None and manufacturer_elem.text else 'Unknown'
-                        release = release_elem.text.strip() if release_elem is not None and release_elem.text else 'Unknown'
-                        fullname = fullname_elem.text.strip() if fullname_elem is not None and fullname_elem.text else None
-                        if system_id and hardware:
-                            hardware_map[system_id] = hardware
-                            manufacturer_map[system_id] = manufacturer
-                            release_map[system_id] = release
-                            if fullname:
-                                fullname_map[system_id] = fullname
-                            parsed_count += 1
-                            if parsed_count <= 5:  # Log first 5 for debugging
-                                logger.info(f"Loaded hardware for {system_id}: {hardware}, manufacturer: {manufacturer}, release: {release}, fullname: {fullname}")
-                    else:
-                        # Log missing elements for debugging (only first few)
-                        if parsed_count < 3:
-                            if name_elem is None or not name_elem.text:
-                                logger.warning(f"System missing <name> element in {main_config.name}")
-                            if hardware_elem is None or not hardware_elem.text:
-                                logger.warning(f"System missing <hardware> element in {main_config.name}")
-                logger.info(f"Successfully parsed {parsed_count} systems from {main_config.name}")
-            except Exception as e:
-                logger.error(f"Error parsing {main_config}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-        else:
-            logger.error(f"Main config file not found: {main_config}")
-        
-        # Then, parse all es_systems_*.cfg files (these can override or add systems)
-        additional_files = sorted(systemcfg_dir.glob('es_systems_*.cfg'))
-        logger.info(f"Found {len(additional_files)} additional es_systems_*.cfg files")
-        for cfg_file in additional_files:
-            if cfg_file.name == 'es_systems.cfg':
-                continue  # Skip main file, already processed
-            try:
-                logger.debug(f"Parsing {cfg_file.name}")
-                tree = ET.parse(cfg_file)
-                root = tree.getroot()
-                systems = root.findall('.//system')
-                logger.debug(f"Found {len(systems)} systems in {cfg_file.name}")
-                parsed_count = 0
-                for system in systems:
-                    name_elem = system.find('name')
-                    hardware_elem = system.find('hardware')
-                    manufacturer_elem = system.find('manufacturer')
-                    release_elem = system.find('release')
-                    fullname_elem = system.find('fullname')
-                    if name_elem is not None and name_elem.text and hardware_elem is not None and hardware_elem.text:
-                        system_id = name_elem.text.strip()
-                        hardware = hardware_elem.text.strip()
-                        manufacturer = manufacturer_elem.text.strip() if manufacturer_elem is not None and manufacturer_elem.text else 'Unknown'
-                        release = release_elem.text.strip() if release_elem is not None and release_elem.text else 'Unknown'
-                        fullname = fullname_elem.text.strip() if fullname_elem is not None and fullname_elem.text else None
-                        if system_id and hardware:
-                            # Override or add (later files override earlier ones)
-                            hardware_map[system_id] = hardware
-                            manufacturer_map[system_id] = manufacturer
-                            release_map[system_id] = release
-                            if fullname:
-                                fullname_map[system_id] = fullname
-                            parsed_count += 1
-                if parsed_count > 0:
-                    logger.debug(f"Parsed {parsed_count} systems from {cfg_file.name}")
-            except Exception as e:
-                logger.error(f"Error parsing {cfg_file}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-        
-        self.system_hardware = hardware_map
-        self.system_manufacturer = manufacturer_map
-        self.system_release = release_map
-        self.system_fullname = fullname_map
-        self._hardware_loaded = True
-        logger.info(f"=== Loaded hardware categories for {len(hardware_map)} systems ===")
-        logger.info(f"=== Loaded manufacturers for {len(manufacturer_map)} systems ===")
-        logger.info(f"=== Loaded release years for {len(release_map)} systems ===")
-        logger.info(f"=== Loaded full names for {len(fullname_map)} systems ===")
-        if hardware_map:
-            # Log a few examples for debugging
-            sample_systems = [(k, hardware_map[k], manufacturer_map.get(k, 'Unknown'), release_map.get(k, 'Unknown'), fullname_map.get(k, None)) for k in list(hardware_map.keys())[:10]]
-            logger.info(f"Sample mappings (first 10): {sample_systems}")
-        else:
-            logger.warning("No hardware mappings loaded! Check if es_systems.cfg files exist and are properly formatted.")
-        return hardware_map
     
     def _find_latest_versioned_gamelist(self, system_path: str) -> Optional[Tuple[str, str, str]]:
         """Find the latest versioned gamelist.xml in .zfs/snapshot/ directories.
@@ -453,9 +305,13 @@ class GameService:
             
             # Build game data dictionary with all fields from XML
             # Store ALL fields exactly as they appear in XML without any normalization
+            # Skip playcount and gametime fields - these are only aggregated from user gamelists
             game_data = {}
             for child in game:
                 tag = child.tag
+                # Skip playcount and gametime - these are only from user gamelists
+                if tag in ('playcount', 'gametime'):
+                    continue
                 text = child.text or ''
                 game_data[tag] = text
             
@@ -587,7 +443,10 @@ class GameService:
                 'description': game_data.get('desc', ''),
                 'image': catalog_image,
                 'system': system_id,
-                'systemName': system_name_temp
+                'systemName': system_name_temp,
+                'favorite': game_data.get('favorite', ''),  # Include favorite field
+                'publisher': game_data.get('publisher', ''),  # Include publisher field
+                'releasedate': game_data.get('releasedate', '')  # Include releasedate field
             }
         
         return game_count
@@ -781,10 +640,6 @@ class GameService:
             return
         
         logger.info("Preloading all gamelist.xml files into memory (WIP and Releases)...")
-        
-        # Load system hardware mapping once (parsed and kept in memory)
-        if not self._hardware_loaded:
-            self._load_system_hardware()
         
         # Get enabled systems and their extensions from database
         enabled_systems = set()
@@ -1025,13 +880,16 @@ class GameService:
         if catalog_type == 'wip':
             catalog_responses = self.catalog_responses_wip
             catalog_sorted_keys = self.catalog_sorted_keys_wip
+            raw_catalog = self.catalog_wip  # Raw catalog with playcount/gametime stats
         elif catalog_type == 'releases':
             catalog_responses = self.catalog_responses_releases
             catalog_sorted_keys = self.catalog_sorted_keys_releases
+            raw_catalog = self.catalog_releases  # Raw catalog with playcount/gametime stats
         else:
             logger.error(f"Invalid catalog_type: {catalog_type}. Defaulting to 'wip'")
             catalog_responses = self.catalog_responses_wip
             catalog_sorted_keys = self.catalog_sorted_keys_wip
+            raw_catalog = self.catalog_wip
         
         # Check if system exists in pre-computed responses (games list uses catalog_responses)
         if system not in catalog_responses:
@@ -1071,9 +929,48 @@ class GameService:
             paginated_rompaths = sorted_rompaths[offset:offset + limit]
             logger.info(f"Games after pagination: {len(paginated_rompaths)}")
             
-            # Return pre-computed response structures (zero dict building overhead)
-            # Responses are already built during catalog initialization - just return them
-            games = [system_responses[rompath] for rompath in paginated_rompaths if rompath in system_responses]
+            # Return pre-computed response structures, but enrich with playcount/gametime from raw catalog
+            # Responses are already built during catalog initialization - add stats from raw catalog
+            games = []
+            for rompath in paginated_rompaths:
+                if rompath in system_responses:
+                    game_response = system_responses[rompath].copy()  # Start with pre-computed response
+                    
+                    # Add playcount, gametime, favorite, publisher, and releasedate from raw catalog if available
+                    raw_game_data = None
+                    if system in raw_catalog:
+                        # Try exact match first
+                        if rompath in raw_catalog[system]:
+                            raw_game_data = raw_catalog[system][rompath]
+                        else:
+                            # Try with ./ prefix
+                            alt_rompath = f'./{rompath}' if not rompath.startswith('./') else rompath.lstrip('./')
+                            if alt_rompath in raw_catalog[system]:
+                                raw_game_data = raw_catalog[system][alt_rompath]
+                            else:
+                                # Try normalized path matching (handle path variations)
+                                rompath_normalized = rompath.lstrip('./')
+                                for catalog_rompath in raw_catalog[system].keys():
+                                    cat_normalized = catalog_rompath.lstrip('./')
+                                    if cat_normalized == rompath_normalized:
+                                        raw_game_data = raw_catalog[system][catalog_rompath]
+                                        break
+                    
+                    if raw_game_data:
+                        if 'playcount' in raw_game_data:
+                            game_response['playcount'] = raw_game_data['playcount']
+                        if 'gametime' in raw_game_data:
+                            game_response['gametime'] = raw_game_data['gametime']
+                        # favorite should already be in response, but ensure it's there from raw catalog too
+                        if 'favorite' in raw_game_data:
+                            game_response['favorite'] = raw_game_data['favorite']
+                        # Add publisher and releasedate fields
+                        if 'publisher' in raw_game_data:
+                            game_response['publisher'] = raw_game_data['publisher']
+                        if 'releasedate' in raw_game_data:
+                            game_response['releasedate'] = raw_game_data['releasedate']
+                    
+                    games.append(game_response)
             
             logger.info(f"Returning {len(games)} games")
             self.cache[cache_key] = games
@@ -1650,30 +1547,25 @@ class GameService:
             logger.warning(f"Failed to save index to cache ({catalog_type}): {e}")
     
     def _load_catalog_from_cache(self) -> bool:
-        """Load catalog from pickle file if it exists and is valid. Returns True if loaded successfully."""
-        catalog_file = self._get_catalog_file_path()
-        hash_file = self._get_index_hash_file_path()  # Reuse hash file for catalog validation
+        """Load catalog from pickle file if it exists. Returns True if loaded successfully.
         
-        if not os.path.isfile(catalog_file) or not os.path.isfile(hash_file):
-            logger.info("No cached catalog found")
+        Note: Hash validation is disabled - cache will be used if file exists."""
+        catalog_file = self._get_catalog_file_path()
+        
+        logger.info(f"Checking for cached catalog at: {catalog_file}")
+        
+        if not os.path.isfile(catalog_file):
+            logger.info(f"Cached catalog file not found: {catalog_file}")
             return False
         
+        logger.info("Cache file found, loading catalog from cache (hash validation disabled)...")
+        
         try:
-            # Check if hash matches current games state
-            # Note: We need systems_list to calculate hash, but if catalog is not loaded yet,
-            # we'll calculate hash based on filesystem state
-            current_hash = self._calculate_games_hash()
-            with open(hash_file, 'r') as f:
-                cached_hash = f.read().strip()
-            
-            if current_hash != cached_hash:
-                logger.info("Games have changed, invalidating cached catalog")
-                return False
-            
-            # Load catalog from pickle
+            # Load catalog from pickle (no hash validation)
             with open(catalog_file, 'rb') as f:
                 catalog_data = pickle.load(f)
             
+            logger.info(f"Pickle file loaded, restoring catalog structures...")
             # Restore catalog structures
             self.catalog_wip = catalog_data.get('catalog_wip', {})
             self.catalog_releases = catalog_data.get('catalog_releases', {})
@@ -1690,12 +1582,60 @@ class GameService:
             self._catalog_timestamp = catalog_data.get('_catalog_timestamp', time.time())
             
             logger.info(f"Loaded catalog from cache: {len(self.systems_list)} systems, WIP: {len(self.catalog_wip)}, Releases: {len(self.catalog_releases)}")
+            logger.info("Catalog loaded from cache - aggregated playcount/gametime stats (if any) are preserved from cache")
+            
+            # When loading from cache, we trust that playcount/gametime in the cache are already
+            # aggregated stats (since refresh_catalog now clears system gamelist.xml playcount/gametime
+            # before aggregating user stats and saving to cache). However, if user gamelist files have
+            # been updated since the cache was created, we should re-aggregate to get the latest stats.
+            
+            # Re-aggregate user stats to ensure we have the latest (user gamelists may have been updated)
+            logger.info("Re-aggregating playcount/gametime from user gamelists to ensure latest stats...")
+            aggregated_stats = self._aggregate_users_playcount_gametime()
+            
+            if aggregated_stats:
+                logger.info(f"Found aggregated stats for {len(aggregated_stats)} systems, merging into catalogs...")
+                # Merge aggregated stats into both catalogs (this will overwrite any cached stats with latest)
+                catalog_types = ['WIP', 'Releases']
+                for catalog_type_idx, catalog in enumerate([self.catalog_wip, self.catalog_releases]):
+                    catalog_type = catalog_types[catalog_type_idx]
+                    merged_count = 0
+                    
+                    for system_id, games_stats in aggregated_stats.items():
+                        if system_id not in catalog:
+                            continue
+                        
+                        for rompath, stats in games_stats.items():
+                            # Try to find the game in catalog
+                            matched = False
+                            if rompath in catalog[system_id]:
+                                catalog[system_id][rompath]['playcount'] = stats['playcount']
+                                catalog[system_id][rompath]['gametime'] = stats['gametime']
+                                merged_count += 1
+                                matched = True
+                            else:
+                                # Try to match by normalized path
+                                catalog_normalized = rompath.lstrip('./')
+                                for catalog_rompath, game_data in catalog[system_id].items():
+                                    cat_normalized = catalog_rompath.lstrip('./')
+                                    if catalog_normalized == cat_normalized:
+                                        game_data['playcount'] = stats['playcount']
+                                        game_data['gametime'] = stats['gametime']
+                                        merged_count += 1
+                                        matched = True
+                                        break
+                    
+                    logger.info(f"  {catalog_type} catalog: merged stats for {merged_count} games")
+                logger.info("Finished updating aggregated user stats in cached catalog")
+            else:
+                logger.info("No user gamelist stats found - using cached stats if available")
+            
             return True
             
         except Exception as e:
             logger.warning(f"Failed to load cached catalog: {e}")
             import traceback
-            logger.debug(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return False
     
     def _save_catalog_to_cache(self) -> None:
@@ -1884,7 +1824,10 @@ class GameService:
                         'description': game_data.get('desc', ''),
                         'image': display_image,
                         'system': system_id,
-                        'systemName': self.get_system_name(system_id)
+                        'systemName': self.get_system_name(system_id),
+                        'favorite': game_data.get('favorite', ''),  # Include favorite
+                        'playcount': game_data.get('playcount', 0),  # Include playcount
+                        'gametime': game_data.get('gametime', 0)  # Include gametime
                     }
                     
                     # Add to index (normalized name -> list of games)
@@ -1908,6 +1851,216 @@ class GameService:
         
         logger.info(f"Search index built ({catalog_type}): {len(index)} letters, {total_games} games indexed")
         return index
+    
+    def _normalize_game_path(self, path: str, system_id: str = None) -> Tuple[Optional[str], Optional[str]]:
+        """Normalize a game path from user gamelist to match catalog structure.
+        
+        Args:
+            path: Path from user gamelist.xml (e.g., "./game.zip", "system/game.zip", "game.zip")
+            system_id: Optional system ID to help normalize
+            
+        Returns:
+            Tuple of (system_id, rompath) or (None, None) if unable to normalize
+        """
+        if not path:
+            return None, None
+        
+        # Remove leading ./
+        normalized = path.lstrip('./')
+        
+        # If path contains a system prefix (e.g., "system/game.zip")
+        # Extract system and rompath
+        parts = normalized.split('/', 1)
+        if len(parts) == 2:
+            # Has system prefix
+            potential_system, rompath = parts
+            if system_id and potential_system == system_id:
+                # Matches expected system
+                return system_id, rompath
+            elif system_id is None:
+                # Try to determine system from path
+                return potential_system, rompath
+            else:
+                # System mismatch, but return what we have
+                return potential_system, rompath
+        else:
+            # No system prefix - need system_id to proceed
+            if system_id:
+                return system_id, normalized
+            # Can't determine system without system_id
+            return None, normalized
+    
+    def _aggregate_users_playcount_gametime(self) -> Dict[str, Dict[str, Dict[str, int]]]:
+        """Parse user gamelist.xml files from tar.gz archives and aggregate playcount/gametime.
+        
+        Scans backend/data/users_gamelist/*/ for all *.tar.gz files, extracts them,
+        parses gamelist.xml files, and aggregates playcount and gametime across all users.
+        
+        Returns:
+            Dictionary: {system_id: {rompath: {'playcount': int, 'gametime': int}}}
+        """
+        aggregated_stats = {}  # {system_id: {rompath: {'playcount': int, 'gametime': int}}}
+        
+        # Determine users_gamelist path
+        # Try multiple possible locations
+        possible_paths = [
+            Path(__file__).parent.parent.parent / 'data' / 'users_gamelist',  # backend/data/users_gamelist
+            Path(__file__).parent.parent.parent.parent / 'data' / 'users_gamelist',  # project_root/data/users_gamelist
+            Path('/opt/batocera-games-catalog/data/users_gamelist'),  # Production
+            Path(settings.USERS_GAMELIST_PATH),  # From config
+        ]
+        
+        users_gamelist_path = None
+        for path in possible_paths:
+            if path.exists() and path.is_dir():
+                users_gamelist_path = path
+                break
+        
+        if not users_gamelist_path:
+            logger.warning(f"Users gamelist directory not found. Tried: {possible_paths}")
+            return aggregated_stats
+        
+        logger.info(f"Scanning for user gamelist files in: {users_gamelist_path}")
+        
+        # Create temporary directory for extraction
+        temp_dir = tempfile.mkdtemp(prefix='gamelist_extract_')
+        logger.info(f"Created temporary extraction directory: {temp_dir}")
+        
+        try:
+            # Find all tar.gz files in user directories
+            tar_files = []
+            for user_dir in users_gamelist_path.iterdir():
+                if not user_dir.is_dir():
+                    continue
+                
+                logger.info(f"Scanning user directory: {user_dir.name}")
+                for tar_file in user_dir.glob('*.tar.gz'):
+                    tar_files.append(tar_file)
+                    logger.info(f"  Found tar.gz: {tar_file.name} ({tar_file.stat().st_size} bytes)")
+            
+            if not tar_files:
+                logger.info("No tar.gz files found in users_gamelist directory")
+                return aggregated_stats
+            
+            logger.info(f"Found {len(tar_files)} tar.gz file(s) to process")
+            
+            # Process each tar.gz file
+            for tar_file in tar_files:
+                try:
+                    logger.info(f"Processing tar.gz: {tar_file.name}")
+                    # Extract to temporary directory
+                    extract_dir = os.path.join(temp_dir, tar_file.stem)
+                    os.makedirs(extract_dir, exist_ok=True)
+                    
+                    with tarfile.open(tar_file, 'r:gz') as tar:
+                        tar.extractall(extract_dir)
+                        logger.info(f"  Extracted {len(tar.getnames())} files to {extract_dir}")
+                    
+                    # Find all gamelist.xml files (may be in subdirectories)
+                    gamelist_files = []
+                    for root, dirs, files in os.walk(extract_dir):
+                        if 'gamelist.xml' in files:
+                            gamelist_files.append(os.path.join(root, 'gamelist.xml'))
+                    
+                    logger.info(f"  Found {len(gamelist_files)} gamelist.xml file(s)")
+                    
+                    # Parse each gamelist.xml
+                    for gamelist_path in gamelist_files:
+                        try:
+                            logger.info(f"  Parsing gamelist.xml: {gamelist_path}")
+                            # Try to determine system from directory structure
+                            # gamelist.xml is typically in: extract_dir/system_id/gamelist.xml
+                            # or extract_dir/system_id/.../gamelist.xml
+                            rel_path = os.path.relpath(gamelist_path, extract_dir)
+                            path_parts = rel_path.split(os.sep)
+                            
+                            # If gamelist.xml is in a subdirectory, use that as system_id
+                            system_id_from_path = None
+                            if len(path_parts) > 1:
+                                # First directory component is likely the system_id
+                                system_id_from_path = path_parts[0]
+                                logger.info(f"    Detected system_id from path: {system_id_from_path}")
+                            
+                            tree = ET.parse(gamelist_path)
+                            root = tree.getroot()
+                            
+                            games_with_stats = 0
+                            games_processed = 0
+                            
+                            for game in root.findall('.//game'):
+                                games_processed += 1
+                                # Get path
+                                path_elem = game.find('path')
+                                if path_elem is None or not path_elem.text:
+                                    continue
+                                
+                                game_path = path_elem.text
+                                
+                                # Get playcount and gametime
+                                playcount_elem = game.find('playcount')
+                                gametime_elem = game.find('gametime')
+                                
+                                playcount = 0
+                                gametime = 0
+                                
+                                if playcount_elem is not None and playcount_elem.text:
+                                    try:
+                                        playcount = int(playcount_elem.text)
+                                    except (ValueError, TypeError):
+                                        pass
+                                
+                                if gametime_elem is not None and gametime_elem.text:
+                                    try:
+                                        gametime = int(gametime_elem.text)
+                                    except (ValueError, TypeError):
+                                        pass
+                                
+                                # Skip if both are zero
+                                if playcount == 0 and gametime == 0:
+                                    continue
+                                
+                                # Normalize path
+                                system_id, rompath = self._normalize_game_path(game_path, system_id_from_path)
+                                
+                                if not system_id or not rompath:
+                                    # Couldn't determine system or rompath, skip
+                                    logger.debug(f"    Skipping game (couldn't normalize path): {game_path} -> system_id={system_id}, rompath={rompath}")
+                                    continue
+                                
+                                games_with_stats += 1
+                                
+                                # Initialize nested dictionaries if needed
+                                if system_id not in aggregated_stats:
+                                    aggregated_stats[system_id] = {}
+                                    logger.debug(f"    Created new system entry: {system_id}")
+                                if rompath not in aggregated_stats[system_id]:
+                                    aggregated_stats[system_id][rompath] = {'playcount': 0, 'gametime': 0}
+                                
+                                # Add to aggregated stats
+                                aggregated_stats[system_id][rompath]['playcount'] += playcount
+                                aggregated_stats[system_id][rompath]['gametime'] += gametime
+                            
+                            logger.info(f"    Processed {games_processed} games, {games_with_stats} had stats (playcount or gametime > 0)")
+                        
+                        except Exception as e:
+                            logger.error(f"Error parsing gamelist.xml from {gamelist_path}: {e}")
+                            continue
+                
+                except Exception as e:
+                    logger.error(f"Error processing tar.gz file {tar_file}: {e}")
+                    continue
+        
+        finally:
+            # Clean up temporary directory
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                logger.warning(f"Error cleaning up temp directory {temp_dir}: {e}")
+        
+        total_games = sum(len(games) for games in aggregated_stats.values())
+        logger.info(f"Aggregated playcount/gametime stats for {total_games} games across {len(aggregated_stats)} systems")
+        
+        return aggregated_stats
     
     def refresh_catalog(self) -> dict:
         """Refresh catalog cache and search index by clearing cache and reloading everything."""
@@ -1933,7 +2086,6 @@ class GameService:
         self._gamelists_loaded = False
         self._index_built_wip = False
         self._index_built_releases = False
-        self._hardware_loaded = False
         
         # Clear hardware mappings
         self.system_hardware = {}
@@ -1943,6 +2095,85 @@ class GameService:
         
         # Reload everything
         self.preload_all_gamelists()
+        
+        # Clear any existing playcount/gametime from all games in catalogs
+        # These should only come from user gamelists, not from system gamelist.xml files
+        logger.info("Clearing playcount/gametime fields from catalogs (they will be replaced with aggregated user stats)...")
+        for catalog in [self.catalog_wip, self.catalog_releases]:
+            for system_id in catalog:
+                for rompath, game_data in catalog[system_id].items():
+                    # Remove playcount and gametime if they exist
+                    if 'playcount' in game_data:
+                        del game_data['playcount']
+                    if 'gametime' in game_data:
+                        del game_data['gametime']
+        
+        # Aggregate playcount and gametime from users' gamelist files
+        logger.info("Aggregating playcount and gametime from users' gamelist files...")
+        aggregated_stats = self._aggregate_users_playcount_gametime()
+        
+        logger.info(f"Aggregated stats summary: {len(aggregated_stats)} systems with stats")
+        for system_id, games_stats in aggregated_stats.items():
+            total_playcount = sum(s['playcount'] for s in games_stats.values())
+            total_gametime = sum(s['gametime'] for s in games_stats.values())
+            logger.info(f"  System {system_id}: {len(games_stats)} games, total playcount={total_playcount}, total gametime={total_gametime}")
+        
+        # Merge aggregated stats into both catalogs
+        catalog_types = ['WIP', 'Releases']
+        for catalog_type_idx, catalog in enumerate([self.catalog_wip, self.catalog_releases]):
+            catalog_type = catalog_types[catalog_type_idx]
+            logger.info(f"Merging stats into {catalog_type} catalog...")
+            merged_count = 0
+            skipped_system_count = 0
+            skipped_game_count = 0
+            
+            for system_id, games_stats in aggregated_stats.items():
+                if system_id not in catalog:
+                    logger.warning(f"  System {system_id} not found in {catalog_type} catalog, skipping {len(games_stats)} games")
+                    skipped_system_count += 1
+                    continue
+                
+                logger.info(f"  Processing system {system_id} ({len(games_stats)} games with stats)...")
+                
+                for rompath, stats in games_stats.items():
+                    # Try to find the game in catalog
+                    # rompath might match directly or might need normalization
+                    matched = False
+                    if rompath in catalog[system_id]:
+                        catalog[system_id][rompath]['playcount'] = stats['playcount']
+                        catalog[system_id][rompath]['gametime'] = stats['gametime']
+                        merged_count += 1
+                        matched = True
+                    else:
+                        # Try to match by normalized path (handle variations)
+                        # Check all games in this system
+                        catalog_normalized = rompath.lstrip('./')
+                        
+                        for catalog_rompath, game_data in catalog[system_id].items():
+                            # Normalize both paths for comparison
+                            cat_normalized = catalog_rompath.lstrip('./')
+                            
+                            if catalog_normalized == cat_normalized:
+                                game_data['playcount'] = stats['playcount']
+                                game_data['gametime'] = stats['gametime']
+                                merged_count += 1
+                                matched = True
+                                break
+                        
+                        if not matched:
+                            skipped_game_count += 1
+                
+                logger.info(f"    System {system_id}: merged {sum(1 for rp in games_stats.keys() if rp in catalog.get(system_id, {}))} games")
+            
+            logger.info(f"  {catalog_type} catalog merge complete: {merged_count} games merged, {skipped_system_count} systems skipped, {skipped_game_count} games not matched")
+        
+        logger.info("Finished merging playcount and gametime stats into catalogs")
+        
+        # Update catalog timestamp to invalidate ETags and force clients to refresh
+        # This ensures clients get the updated catalog with stats after refresh
+        self._catalog_timestamp = time.time()
+        logger.info(f"Updated catalog timestamp to {self._catalog_timestamp} to invalidate ETags (forcing cache refresh)")
+        
         self.build_search_index('wip')
         self.build_search_index('releases')
         
@@ -1984,6 +2215,14 @@ class GameService:
         index_built_flag = '_index_built_wip' if catalog_type == 'wip' else '_index_built_releases'
         index_attr = 'search_index_wip' if catalog_type == 'wip' else 'search_index_releases'
         
+        # Select appropriate raw catalog for enriching results
+        if catalog_type == 'wip':
+            raw_catalog = self.catalog_wip
+        elif catalog_type == 'releases':
+            raw_catalog = self.catalog_releases
+        else:
+            raw_catalog = self.catalog_wip
+        
         # Build index if not already built
         if not getattr(self, index_built_flag, False):
             self.build_search_index(catalog_type)
@@ -2016,11 +2255,25 @@ class GameService:
                         relevance = 2  # Contains
                     
                     # Add all games with this normalized name, with relevance score
-                    # Filter by enabled systems
+                    # Filter by enabled systems and enrich with playcount/gametime from raw catalog
                     for game in games:
                         # Only include games from enabled systems
                         if enabled_systems and game['system'] not in enabled_systems:
                             continue
+                        
+                        # Enrich game data with playcount/gametime from raw catalog if available
+                        system_id = game['system']
+                        rompath = game['id']
+                        if system_id in raw_catalog and rompath in raw_catalog[system_id]:
+                            raw_game_data = raw_catalog[system_id][rompath]
+                            if 'playcount' in raw_game_data:
+                                game['playcount'] = raw_game_data['playcount']
+                            if 'gametime' in raw_game_data:
+                                game['gametime'] = raw_game_data['gametime']
+                            # Ensure favorite is included
+                            if 'favorite' in raw_game_data:
+                                game['favorite'] = raw_game_data['favorite']
+                        
                         results.append((relevance, game))
         
         # Remove duplicates (same game might appear multiple times if indexed multiple ways)

@@ -134,16 +134,43 @@ server {
         proxy_buffering off;
     }
 
-    # Frontend - serve static files (must be last to catch all other requests)
+    # Static assets with hashed filenames (Vite build) - cache forever
+    # These files have content hashes in their names (e.g., app.abc123.js)
+    # so they can be cached forever since the hash changes when content changes
+    location ~* ^/assets/.+\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|webp)$ {
+        root /opt/batocera-games-catalog/frontend/dist;
+        try_files $uri =404;
+        
+        # Cache forever - files with hashes are immutable
+        expires max;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        
+        # Add ETag support
+        etag on;
+    }
+
+    # Other static files (images, fonts) in root
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|webp)$ {
+        root /opt/batocera-games-catalog/frontend/dist;
+        try_files $uri =404;
+        
+        # Cache for 30 days (files without hashes)
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000" always;
+        
+        # Add ETag support
+        etag on;
+    }
+
+    # Frontend - serve static files and SPA routing (must be last to catch all other requests)
     location / {
         root /opt/batocera-games-catalog/frontend/dist;
         try_files $uri $uri/ /index.html;
         
-        # Cache static assets
-        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
-            expires 30d;
-            add_header Cache-Control "public, immutable";
-        }
+        # Don't cache index.html - it should always be fresh
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+        add_header Pragma "no-cache" always;
+        add_header Expires "0" always;
     }
 
     # Let's Encrypt renewal endpoint

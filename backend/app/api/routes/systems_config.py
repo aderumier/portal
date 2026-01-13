@@ -64,7 +64,7 @@ async def import_systems(
     current_user: dict = Depends(require_admin_role),
     db: Session = Depends(get_db)
 ):
-    """Import systems from GAMES_PATH and update with info from es_systems*.cfg."""
+    """Import systems from GAMES_PATH."""
     logger.info(f"Admin {current_user.get('username')} requested system import")
     
     try:

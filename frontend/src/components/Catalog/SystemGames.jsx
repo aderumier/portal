@@ -22,6 +22,12 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
   const [selectedSubdirectory, setSelectedSubdirectory] = useState(null) // null = all, or specific subdirectory
   const [subdirectoryCounts, setSubdirectoryCounts] = useState({}) // Pre-computed counts from backend
   const [selectedLetter, setSelectedLetter] = useState(null) // null = all, or specific letter (A-Z)
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false) // Filter to show only favorites
+  const [sortByPlaycount, setSortByPlaycount] = useState(false) // Sort/filter by playcount
+  const [sortByPlaytime, setSortByPlaytime] = useState(false) // Sort/filter by playtime
+  const [nameFilter, setNameFilter] = useState('') // Filter by game name
+  const [tableSortColumn, setTableSortColumn] = useState('name') // 'name', 'publisher', 'releaseDate'
+  const [tableSortDirection, setTableSortDirection] = useState('asc') // 'asc' or 'desc'
   const observerRef = useRef(null)
   const loadingRef = useRef(null)
   const scrollRestoredRef = useRef(false)
@@ -52,9 +58,14 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
     const savedFilters = localStorage.getItem(filtersKey)
     if (savedFilters && !filtersRestoredRef.current) {
       try {
-        const { subdirectory, letter } = JSON.parse(savedFilters)
+        const { subdirectory, letter, favorite, playcount, playtime, nameFilter } = JSON.parse(savedFilters)
         setSelectedSubdirectory(subdirectory)
         setSelectedLetter(letter)
+        setShowFavoritesOnly(favorite || false)
+        setSortByPlaycount(playcount || false)
+        setSortByPlaytime(playtime || false)
+        setNameFilter(nameFilter || '')
+        setNameFilter(filters.nameFilter || '')
         filtersRestoredRef.current = true
       } catch (e) {
         console.error('Error restoring filters:', e)
@@ -72,10 +83,21 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       const filtersKey = getStorageKey('filters')
       localStorage.setItem(filtersKey, JSON.stringify({
         subdirectory: selectedSubdirectory,
-        letter: selectedLetter
+        letter: selectedLetter,
+        favorite: showFavoritesOnly,
+        playcount: sortByPlaycount,
+        playtime: sortByPlaytime,
+        nameFilter: nameFilter
       }))
     }
-  }, [selectedSubdirectory, selectedLetter, getStorageKey])
+  }, [selectedSubdirectory, selectedLetter, showFavoritesOnly, sortByPlaycount, sortByPlaytime, nameFilter, getStorageKey])
+
+  // Reset displayed count when filters change to show all filtered results
+  useEffect(() => {
+    if (filtersRestoredRef.current) {
+      setDisplayedGamesCount(100) // Show more games when filters are applied
+    }
+  }, [sortByPlaycount, sortByPlaytime, showFavoritesOnly])
 
   // Save view preference to localStorage
   const handleViewChange = (mode) => {
@@ -234,6 +256,9 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
     if (systemChanged || searchChanged) {
       setSelectedSubdirectory(null) // Reset filter when system or search changes
       setSelectedLetter(null) // Reset letter filter when system or search changes
+      setShowFavoritesOnly(false) // Reset favorite filter when system or search changes
+      setSortByPlaycount(false) // Reset playcount filter when system or search changes
+      setSortByPlaytime(false) // Reset playtime filter when system or search changes
       filtersRestoredRef.current = false // Allow filters to be restored for new system/search
       // Clear saved filters for old system/search
       const oldFiltersKey = `systemGames_filters_${oldSystemId}_${oldSearchQuery || 'no-search'}`
@@ -263,7 +288,52 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
   const filteredGames = React.useMemo(() => {
     let filtered = allGames
     
-    // Apply subdirectory filter
+    // Apply playcount filter/sort FIRST (before letter/subdirectory filters)
+    // This ensures we get all games with stats, then filter by letter/subdirectory
+    if (sortByPlaycount) {
+      // Helper function to safely parse playcount
+      const getPlaycount = (game) => {
+        if (game.playcount == null) return 0
+        if (typeof game.playcount === 'number') return game.playcount
+        const parsed = parseInt(game.playcount, 10)
+        return isNaN(parsed) ? 0 : parsed
+      }
+      
+      filtered = filtered
+        .filter(game => {
+          const playcount = getPlaycount(game)
+          return playcount > 0
+        })
+        .sort((a, b) => {
+          const playcountA = getPlaycount(a)
+          const playcountB = getPlaycount(b)
+          return playcountB - playcountA // Descending order
+        })
+    }
+    
+    // Apply playtime filter/sort FIRST (before letter/subdirectory filters)
+    if (sortByPlaytime) {
+      // Helper function to safely parse gametime
+      const getGametime = (game) => {
+        if (game.gametime == null) return 0
+        if (typeof game.gametime === 'number') return game.gametime
+        const parsed = parseInt(game.gametime, 10)
+        return isNaN(parsed) ? 0 : parsed
+      }
+      
+      filtered = filtered
+        .filter(game => {
+          const gametime = getGametime(game)
+          return gametime > 0
+        })
+        .sort((a, b) => {
+          const gametimeA = getGametime(a)
+          const gametimeB = getGametime(b)
+          return gametimeB - gametimeA // Descending order
+        })
+    }
+    
+    // Now apply subdirectory filter AFTER playcount/playtime
     if (selectedSubdirectory !== null) {
       // Special value "(root)" means show only root directory games
       if (selectedSubdirectory === '(root)') {
@@ -279,7 +349,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       }
     }
     
-    // Apply letter filter
+    // Apply letter filter AFTER playcount/playtime
     if (selectedLetter !== null) {
       filtered = filtered.filter(game => {
         const firstChar = game.name?.charAt(0).toUpperCase() || ''
@@ -293,13 +363,136 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       })
     }
     
+    // Apply favorite filter AFTER playcount/playtime
+    if (showFavoritesOnly) {
+      filtered = filtered.filter(game => game.favorite === 'true')
+    }
+    
+    // Apply name filter (case-insensitive contains match)
+    if (nameFilter && nameFilter.trim()) {
+      const filterLower = nameFilter.toLowerCase().trim()
+      filtered = filtered.filter(game => {
+        const gameName = (game.name || '').toLowerCase()
+        return gameName.includes(filterLower)
+      })
+    }
+    
     return filtered
-  }, [allGames, selectedSubdirectory, selectedLetter, getGameSubdirectory])
+  }, [allGames, selectedSubdirectory, selectedLetter, showFavoritesOnly, sortByPlaycount, sortByPlaytime, nameFilter, getGameSubdirectory])
+
+  // Format release date to show only year
+  const formatReleaseYear = (dateStr) => {
+    if (!dateStr) return ''
+    // Format: YYYYMMDDTHHMMSS or YYYYMMDD -> YYYY
+    if (dateStr.length >= 4) {
+      const year = dateStr.substring(0, 4)
+      // Validate it's a valid year (1900-2100)
+      const yearNum = parseInt(year)
+      if (yearNum >= 1900 && yearNum <= 2100) {
+        return year
+      }
+    }
+    return ''
+  }
+
+  // Format gametime from minutes to readable format
+  const formatGametime = (minutes) => {
+    if (!minutes || minutes === 0) return null
+    const hours = Math.floor(minutes / 60)
+    const mins = minutes % 60
+    if (hours > 0 && mins > 0) {
+      return `${hours}h ${mins}m`
+    } else if (hours > 0) {
+      return `${hours}h`
+    } else {
+      return `${mins}m`
+    }
+  }
+
+  // Handle both string and number types for playcount/gametime
+  const getPlaycount = (game) => {
+    if (game.playcount == null) return 0
+    if (typeof game.playcount === 'number') return game.playcount
+    const parsed = parseInt(game.playcount, 10)
+    return isNaN(parsed) ? 0 : parsed
+  }
+  
+  const getGametime = (game) => {
+    if (game.gametime == null) return 0
+    if (typeof game.gametime === 'number') return game.gametime
+    const parsed = parseInt(game.gametime, 10)
+    return isNaN(parsed) ? 0 : parsed
+  }
+
+  // Sort games for table view if needed
+  const sortedGamesForTable = React.useMemo(() => {
+    if (viewMode !== 'table') {
+      return filteredGames
+    }
+    
+    // Sort by table sort column
+    const sorted = [...filteredGames].sort((a, b) => {
+      let compareResult = 0
+      
+      if (tableSortColumn === 'name') {
+        const nameA = (a.name || '').toLowerCase()
+        const nameB = (b.name || '').toLowerCase()
+        compareResult = nameA.localeCompare(nameB)
+      } else if (tableSortColumn === 'publisher') {
+        const pubA = (a.publisher || 'Unknown').toLowerCase()
+        const pubB = (b.publisher || 'Unknown').toLowerCase()
+        compareResult = pubA.localeCompare(pubB)
+      } else if (tableSortColumn === 'releaseDate') {
+        const dateA = a.releasedate || 'Unknown'
+        const dateB = b.releasedate || 'Unknown'
+        if (dateA === 'Unknown' && dateB === 'Unknown') {
+          compareResult = 0
+        } else if (dateA === 'Unknown') {
+          compareResult = 1  // Unknown goes last
+        } else if (dateB === 'Unknown') {
+          compareResult = -1  // Unknown goes last
+        } else {
+          // Extract year from releasedate (format: YYYYMMDDTHHMMSS or YYYYMMDD)
+          const yearA = dateA.length >= 4 ? parseInt(dateA.substring(0, 4)) : 0
+          const yearB = dateB.length >= 4 ? parseInt(dateB.substring(0, 4)) : 0
+          if (yearA && yearB) {
+            compareResult = yearA - yearB
+          } else {
+            compareResult = dateA.localeCompare(dateB)
+          }
+        }
+      } else if (tableSortColumn === 'playcount') {
+        const playcountA = getPlaycount(a)
+        const playcountB = getPlaycount(b)
+        compareResult = playcountA - playcountB
+      } else if (tableSortColumn === 'gametime') {
+        const gametimeA = getGametime(a)
+        const gametimeB = getGametime(b)
+        compareResult = gametimeA - gametimeB
+      }
+      
+      return tableSortDirection === 'desc' ? -compareResult : compareResult
+    })
+    
+    return sorted
+  }, [filteredGames, viewMode, tableSortColumn, tableSortDirection])
+
+  const handleTableSort = (column) => {
+    if (tableSortColumn === column) {
+      // Toggle direction if clicking the same column
+      setTableSortDirection(tableSortDirection === 'asc' ? 'desc' : 'asc')
+    } else {
+      // New column, default to ascending
+      setTableSortColumn(column)
+      setTableSortDirection('asc')
+    }
+  }
 
   // Get displayed games (frontend pagination)
   const displayedGames = React.useMemo(() => {
-    return filteredGames.slice(0, displayedGamesCount)
-  }, [filteredGames, displayedGamesCount])
+    const gamesToDisplay = viewMode === 'table' ? sortedGamesForTable : filteredGames
+    return gamesToDisplay.slice(0, displayedGamesCount)
+  }, [filteredGames, sortedGamesForTable, displayedGamesCount, viewMode])
 
   const hasMoreGames = filteredGames.length > displayedGamesCount
 
@@ -394,9 +587,60 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       <div className="system-games-header">
         <div className="system-games-title-section">
           <h1>{systemName}</h1>
-          {catalogType === 'releases' && systemVersion && (
-            <span className="system-version">version {systemVersion}</span>
-          )}
+          <button
+            className={`favorite-filter-btn ${showFavoritesOnly ? 'active' : ''}`}
+            onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+            title={showFavoritesOnly ? 'Show all games' : 'Show favorites only'}
+            aria-label={showFavoritesOnly ? 'Show all games' : 'Show favorites only'}
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              {showFavoritesOnly ? (
+                <path d="M10 15L4.5 18L5.5 11.5L1 7L7.5 6.25L10 0L12.5 6.25L19 7L14.5 11.5L15.5 18L10 15Z" fill="currentColor"/>
+              ) : (
+                <path d="M10 15L4.5 18L5.5 11.5L1 7L7.5 6.25L10 0L12.5 6.25L19 7L14.5 11.5L15.5 18L10 15Z" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+              )}
+            </svg>
+          </button>
+          <button
+            className={`playcount-filter-btn ${sortByPlaycount ? 'active' : ''}`}
+            onClick={() => {
+              if (sortByPlaycount) {
+                setSortByPlaycount(false)
+              } else {
+                setSortByPlaycount(true)
+                setSortByPlaytime(false) // Only one can be active at a time
+              }
+            }}
+            title={sortByPlaycount ? 'Show all games' : 'Sort by playcount (highest first)'}
+            aria-label={sortByPlaycount ? 'Show all games' : 'Sort by playcount (highest first)'}
+          >
+            <span>Playcount</span>
+          </button>
+          <button
+            className={`playtime-filter-btn ${sortByPlaytime ? 'active' : ''}`}
+            onClick={() => {
+              if (sortByPlaytime) {
+                setSortByPlaytime(false)
+              } else {
+                setSortByPlaytime(true)
+                setSortByPlaycount(false) // Only one can be active at a time
+              }
+            }}
+            title={sortByPlaytime ? 'Show all games' : 'Sort by playtime (highest first)'}
+            aria-label={sortByPlaytime ? 'Show all games' : 'Sort by playtime (highest first)'}
+          >
+            <span>Playtime</span>
+          </button>
+          <div className="name-filter-container">
+            <input
+              id="name-filter-input"
+              type="text"
+              className="name-filter-input"
+              placeholder="Filter by name..."
+              value={nameFilter}
+              onChange={(e) => setNameFilter(e.target.value)}
+            />
+          </div>
           {searchQuery && <p>Search results for: "{searchQuery}"</p>}
         </div>
         <div className="view-toggle">
@@ -502,6 +746,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                     game={game} 
                     onDownload={handleDownload}
                     onGameClick={handleGameClick}
+                    showSystemName={false}
                   />
                 </div>
               ))}
@@ -512,7 +757,41 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                 <thead>
                   <tr>
                     <th>Image</th>
-                    <th>Game Name</th>
+                    <th 
+                      className="sortable" 
+                      onClick={() => handleTableSort('name')}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      Game Name {tableSortColumn === 'name' && (tableSortDirection === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th 
+                      className="sortable" 
+                      onClick={() => handleTableSort('publisher')}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      Publisher {tableSortColumn === 'publisher' && (tableSortDirection === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th 
+                      className="sortable" 
+                      onClick={() => handleTableSort('releaseDate')}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      Year {tableSortColumn === 'releaseDate' && (tableSortDirection === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th 
+                      className="sortable" 
+                      onClick={() => handleTableSort('playcount')}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      Plays {tableSortColumn === 'playcount' && (tableSortDirection === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th 
+                      className="sortable" 
+                      onClick={() => handleTableSort('gametime')}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      Playtime {tableSortColumn === 'gametime' && (tableSortDirection === 'asc' ? '↑' : '↓')}
+                    </th>
                     <th>Actions</th>
                   </tr>
                 </thead>
@@ -548,6 +827,18 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                         </td>
                         <td className="game-name-cell">
                           <span className="game-name">{game.name}</span>
+                        </td>
+                        <td className="game-publisher-cell">
+                          {game.publisher || '-'}
+                        </td>
+                        <td className="game-releaseyear-cell">
+                          {formatReleaseYear(game.releasedate) || '-'}
+                        </td>
+                        <td className="game-playcount-cell">
+                          {getPlaycount(game) > 0 ? getPlaycount(game) : '-'}
+                        </td>
+                        <td className="game-gametime-cell">
+                          {formatGametime(getGametime(game)) || '-'}
                         </td>
                         <td className="game-actions-cell" onClick={(e) => e.stopPropagation()}>
                           {(isDownload || isFastDownload) && (

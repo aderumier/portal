@@ -7,6 +7,8 @@ const SystemsList = ({ systems }) => {
   const { catalogType } = useCatalog()
   const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
   const [selectedHardware, setSelectedHardware] = useState(null) // null = all, or specific hardware type
+  const [sortColumn, setSortColumn] = useState('name') // 'name', 'manufacturer', 'release'
+  const [sortDirection, setSortDirection] = useState('asc') // 'asc' or 'desc'
 
   // Load view preference from localStorage
   useEffect(() => {
@@ -36,39 +38,87 @@ const SystemsList = ({ systems }) => {
     return acc
   }, {})
 
-  // Sort systems within each hardware category by manufacturer, then by release year, then by name
+  // Sort systems within each hardware category
+  // In table view, use the selected sort column/direction
+  // In grid view, use default sorting (manufacturer, then release, then name)
   Object.keys(groupedSystems).forEach(hardware => {
     groupedSystems[hardware].sort((a, b) => {
-      // First sort by manufacturer
-      const manufacturerA = (a.manufacturer || 'Unknown').toLowerCase()
-      const manufacturerB = (b.manufacturer || 'Unknown').toLowerCase()
-      if (manufacturerA !== manufacturerB) {
-        return manufacturerA.localeCompare(manufacturerB)
-      }
-      // If same manufacturer, sort by release year (ascending, Unknown last)
-      const releaseA = a.release || 'Unknown'
-      const releaseB = b.release || 'Unknown'
-      if (releaseA !== releaseB) {
-        // If both are numeric years, compare as numbers
-        const yearA = parseInt(releaseA)
-        const yearB = parseInt(releaseB)
-        if (!isNaN(yearA) && !isNaN(yearB)) {
-          return yearA - yearB
+      if (viewMode === 'table' && sortColumn) {
+        // Table view: use selected sort column
+        let compareResult = 0
+        
+        if (sortColumn === 'name') {
+          compareResult = (a.name || '').localeCompare(b.name || '')
+        } else if (sortColumn === 'manufacturer') {
+          const manufacturerA = (a.manufacturer || 'Unknown').toLowerCase()
+          const manufacturerB = (b.manufacturer || 'Unknown').toLowerCase()
+          compareResult = manufacturerA.localeCompare(manufacturerB)
+        } else if (sortColumn === 'release') {
+          const releaseA = a.release || 'Unknown'
+          const releaseB = b.release || 'Unknown'
+          // Try to parse as numbers first
+          const yearA = parseInt(releaseA)
+          const yearB = parseInt(releaseB)
+          if (!isNaN(yearA) && !isNaN(yearB)) {
+            compareResult = yearA - yearB
+          } else {
+            // If one is Unknown, Unknown goes last
+            if (releaseA === 'Unknown') compareResult = 1
+            else if (releaseB === 'Unknown') compareResult = -1
+            else compareResult = releaseA.localeCompare(releaseB)
+          }
         }
-        // If one is numeric and the other is not, numeric comes first
-        if (!isNaN(yearA) && isNaN(yearB)) return -1
-        if (isNaN(yearA) && !isNaN(yearB)) return 1
-        // Both are non-numeric, sort alphabetically (Unknown goes last)
-        if (releaseA === 'Unknown') return 1
-        if (releaseB === 'Unknown') return -1
-        return releaseA.localeCompare(releaseB)
+        
+        // Apply sort direction
+        return sortDirection === 'desc' ? -compareResult : compareResult
+      } else {
+        // Grid view: default sorting (manufacturer, then release, then name)
+        // First sort by manufacturer
+        const manufacturerA = (a.manufacturer || 'Unknown').toLowerCase()
+        const manufacturerB = (b.manufacturer || 'Unknown').toLowerCase()
+        if (manufacturerA !== manufacturerB) {
+          return manufacturerA.localeCompare(manufacturerB)
+        }
+        // If same manufacturer, sort by release year (ascending, Unknown last)
+        const releaseA = a.release || 'Unknown'
+        const releaseB = b.release || 'Unknown'
+        if (releaseA !== releaseB) {
+          // If both are numeric years, compare as numbers
+          const yearA = parseInt(releaseA)
+          const yearB = parseInt(releaseB)
+          if (!isNaN(yearA) && !isNaN(yearB)) {
+            return yearA - yearB
+          }
+          // If one is numeric and the other is not, numeric comes first
+          if (!isNaN(yearA) && isNaN(yearB)) return -1
+          if (isNaN(yearA) && !isNaN(yearB)) return 1
+          // Both are non-numeric, sort alphabetically (Unknown goes last)
+          if (releaseA === 'Unknown') return 1
+          if (releaseB === 'Unknown') return -1
+          return releaseA.localeCompare(releaseB)
+        }
+        // If same manufacturer and release, sort by name
+        const nameA = (a.name || '').toLowerCase()
+        const nameB = (b.name || '').toLowerCase()
+        return nameA.localeCompare(nameB)
       }
-      // If same manufacturer and release, sort by name
-      const nameA = (a.name || '').toLowerCase()
-      const nameB = (b.name || '').toLowerCase()
-      return nameA.localeCompare(nameB)
     })
   })
+
+  // handleSort must be defined before using it in JSX
+  const handleSort = React.useCallback((column) => {
+    setSortColumn(prevColumn => {
+      if (prevColumn === column) {
+        // Toggle direction if clicking the same column
+        setSortDirection(prevDir => prevDir === 'asc' ? 'desc' : 'asc')
+        return column
+      } else {
+        // New column, default to ascending
+        setSortDirection('asc')
+        return column
+      }
+    })
+  }, [])
 
   // Sort hardware categories (custom order, then alphabetically)
   const hardwareOrder = ['console', 'portable', 'computer', 'arcade', 'port', 'pcgaming', 'vintage', 'pinball', 'unknown']
@@ -204,7 +254,27 @@ const SystemsList = ({ systems }) => {
                   <thead>
                     <tr>
                       <th>Image</th>
-                      <th>System Name</th>
+                      <th 
+                        className="sortable" 
+                        onClick={() => handleSort('name')}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        System Name {sortColumn === 'name' && (sortDirection === 'asc' ? '↑' : '↓')}
+                      </th>
+                      <th 
+                        className="sortable" 
+                        onClick={() => handleSort('release')}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        Release {sortColumn === 'release' && (sortDirection === 'asc' ? '↑' : '↓')}
+                      </th>
+                      <th 
+                        className="sortable" 
+                        onClick={() => handleSort('manufacturer')}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        Manufacturer {sortColumn === 'manufacturer' && (sortDirection === 'asc' ? '↑' : '↓')}
+                      </th>
                       <th>Games</th>
                       <th>Actions</th>
                     </tr>
@@ -232,6 +302,12 @@ const SystemsList = ({ systems }) => {
                             {catalogType === 'releases' && system.version && extractVersionNumber(system.version) && (
                               <div className="system-version-text">version {extractVersionNumber(system.version)}</div>
                             )}
+                          </td>
+                          <td className="system-release-cell">
+                            {system.release || 'Unknown'}
+                          </td>
+                          <td className="system-manufacturer-cell">
+                            {system.manufacturer || 'Unknown'}
                           </td>
                           <td className="system-games-cell">
                             <span className="games-count">{system.gameCount} games</span>

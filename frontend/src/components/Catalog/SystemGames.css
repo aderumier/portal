@@ -12,7 +12,7 @@
 
 .system-games-title-section {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 1rem;
   flex: 1;
   flex-wrap: wrap;
@@ -166,6 +166,116 @@
   font-weight: 400;
 }
 
+.favorite-filter-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 0.75rem;
+  height: 2.125rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.favorite-filter-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px var(--shadow);
+}
+
+.favorite-filter-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.favorite-filter-btn.active:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.playcount-filter-btn,
+.playtime-filter-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 0.75rem;
+  height: 2.125rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.playcount-filter-btn:hover,
+.playtime-filter-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px var(--shadow);
+}
+
+.playcount-filter-btn.active,
+.playtime-filter-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.playcount-filter-btn.active:hover,
+.playtime-filter-btn.active:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.name-filter-container {
+  display: flex;
+  align-items: center;
+  margin-left: 0.5rem;
+}
+
+.name-filter-input {
+  padding: 0.5rem 0.75rem;
+  height: 2.125rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  transition: all 0.2s ease;
+  min-width: 200px;
+}
+
+.name-filter-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg-primary);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.1);
+}
+
+.name-filter-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
 .view-toggle {
   display: flex;
   gap: 0.5rem;
@@ -251,6 +361,14 @@
   letter-spacing: 0.5px;
 }
 
+.games-table th.sortable {
+  user-select: none;
+}
+
+.games-table th.sortable:hover {
+  background-color: var(--bg-hover);
+}
+
 .games-table tbody tr {
   border-bottom: 1px solid var(--border);
   transition: background-color 0.2s ease;
@@ -291,6 +409,27 @@
 
 .game-name {
   color: var(--text-primary);
+}
+
+.game-publisher-cell {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.game-releaseyear-cell {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.game-playcount-cell {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  text-align: center;
+}
+
+.game-gametime-cell {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
 }
 
 .game-actions-cell {
