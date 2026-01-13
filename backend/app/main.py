@@ -380,11 +380,13 @@ async def promote_user_queue_items():
 async def cleanup_stuck_downloads():
     """Background task to detect and clean up stuck downloads.
     
-    - Downloads with status 'downloading' and no progress for 2 minutes -> set to 'stuck'
-    - Downloads with status 'stuck' for more than 5 minutes -> remove from queue
+    - Downloads with status 'downloading' and no progress for 2 minutes -> move back to user_queue for retry
+    - Checks Redis for progress tracking (Redis is the source of truth for active downloads)
     """
     from app.database import get_db, DownloadQueue
+    from app.services.redis_downloads import RedisDownloadTracker
     from datetime import timedelta
+    from sqlalchemy import or_, and_
     
     while True:
         try:
@@ -395,43 +397,65 @@ async def cleanup_stuck_downloads():
             try:
                 now = datetime.now(timezone.utc)
                 
-                # 1. Check downloads with status 'downloading' - if no progress for 30 seconds, move back to user_queue for retry
-                stuck_threshold = now - timedelta(seconds=30)
+                # 1. Check downloads with status 'downloading' - if no progress for 2 minutes, move back to user_queue for retry
+                stuck_threshold = now - timedelta(seconds=120)
                 
-                stuck_downloads = db.query(DownloadQueue).filter(
+                # Get all active downloads from database
+                active_downloads = db.query(DownloadQueue).filter(
                     DownloadQueue.status == 'downloading',
                     DownloadQueue.active_download == True
-                ).filter(
-                    or_(
-                        DownloadQueue.last_progress_at < stuck_threshold,
-                        and_(
-                            DownloadQueue.last_progress_at.is_(None),
-                            DownloadQueue.started_at.isnot(None),
-                            DownloadQueue.started_at < stuck_threshold
-                        )
-                    )
                 ).all()
                 
                 retried_count = 0
-                for download in stuck_downloads:
-                    logger.warning(f"Download {download.id} (game: {download.game_id}) has no progress for 30+ seconds, moving back to user_queue for retry")
+                for download in active_downloads:
+                    # Check Redis for progress (Redis is the source of truth for active downloads)
+                    redis_status = await RedisDownloadTracker.get_download_status(download.id)
                     
-                    # Move back to user_queue so it can be retried
-                    download.status = 'user_queue'
-                    download.active_download = False
-                    download.assigned_to_service = None
-                    # Reset started_at so it can be retried fresh
-                    download.started_at = None
-                    # Keep last_progress_at to track when it was last attempted
+                    is_stuck = False
                     
-                    # Release bandwidth
-                    if download.bandwidth_used > 0:
-                        from app.services.bandwidth import BandwidthManager
-                        bandwidth_manager = BandwidthManager(db)
-                        bandwidth_manager.update_usage(download.queue_type, -download.bandwidth_used)
-                        download.bandwidth_used = 0
+                    if redis_status:
+                        # Download is in Redis - check last_progress_at from Redis
+                        last_progress_str = redis_status.get('last_progress_at')
+                        if last_progress_str:
+                            try:
+                                # Parse ISO format datetime string (from datetime.now(timezone.utc).isoformat())
+                                last_progress = datetime.fromisoformat(last_progress_str.replace('Z', '+00:00'))
+                                if last_progress < stuck_threshold:
+                                    is_stuck = True
+                            except Exception as e:
+                                logger.warning(f"Failed to parse last_progress_at from Redis for download {download.id}: {e}")
+                                # If we can't parse, assume stuck
+                                is_stuck = True
+                        else:
+                            # No last_progress_at in Redis - assume stuck
+                            is_stuck = True
+                    else:
+                        # Not in Redis but should be active - this means it's stuck
+                        # (download should be in Redis if it's actively downloading)
+                        is_stuck = True
                     
-                    retried_count += 1
+                    if is_stuck:
+                        logger.warning(f"Download {download.id} (game: {download.game_id}) has no progress for 2+ minutes, moving back to user_queue for retry")
+                        
+                        # Move back to user_queue so it can be retried
+                        download.status = 'user_queue'
+                        download.active_download = False
+                        download.assigned_to_service = None
+                        # Reset started_at so it can be retried fresh
+                        download.started_at = None
+                        # Keep last_progress_at to track when it was last attempted
+                        
+                        # Remove from Redis as well
+                        await RedisDownloadTracker.remove_download(download.id)
+                        
+                        # Release bandwidth
+                        if download.bandwidth_used > 0:
+                            from app.services.bandwidth import BandwidthManager
+                            bandwidth_manager = BandwidthManager(db)
+                            bandwidth_manager.update_usage(download.queue_type, -download.bandwidth_used)
+                            download.bandwidth_used = 0
+                        
+                        retried_count += 1
                 
                 # 2. Check downloads that have been retried multiple times (keep last_progress_at from multiple retries)
                 # If a download has been in user_queue for a while and keeps getting stuck, we should eventually remove it

@@ -950,10 +950,14 @@ class DownloadService:
             self.db.rollback()
             return False
     
-    def get_queue(self, user_id: str) -> List[Dict]:
-        """Get download queue for a user (includes user_queue, pending, downloading). Completed downloads are removed from the queue."""
+    async def get_queue(self, user_id: str) -> List[Dict]:
+        """Get download queue for a user (includes user_queue, pending, downloading). Completed downloads are removed from the queue.
+        
+        For active downloads (status='downloading'), progress data is read from Redis only (no SQLite fallback).
+        """
         try:
             from app.database import ApiToken
+            from app.services.redis_downloads import RedisDownloadTracker
             
             # Filter out completed downloads - they should be deleted, but filter just in case
             queue_items = self.db.query(DownloadQueue).filter(
@@ -983,39 +987,24 @@ class DownloadService:
                 
                 game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
                 if game:
-                    # For active downloads, check Redis for latest progress
+                    # For active downloads, get data from Redis only (no SQLite fallback)
                     bytes_transferred = item.bytes_transferred
                     bandwidth_used = item.bandwidth_used
                     status = item.status
                     
                     if item.status == 'downloading':
                         # Active downloads MUST be in Redis - get latest data from Redis
-                        try:
-                            import asyncio
-                            from app.services.redis_downloads import RedisDownloadTracker
-                            try:
-                                loop = asyncio.get_running_loop()
-                                # Event loop is running - can't use asyncio.run()
-                                # Skip Redis check in this case (will use SQLite data)
-                                # This is OK for display purposes, but active downloads should be in Redis
-                                pass
-                            except RuntimeError:
-                                # No event loop running, safe to use asyncio.run()
-                                try:
-                                    redis_status = asyncio.run(
-                                        RedisDownloadTracker.get_download_status(item.id)
-                                    )
-                                    if redis_status:
-                                        bytes_transferred = redis_status.get('bytes_transferred', bytes_transferred)
-                                        bandwidth_used = redis_status.get('bytes_per_second', bandwidth_used)
-                                        status = redis_status.get('status', status)
-                                    else:
-                                        # Download marked as 'downloading' but not in Redis - log warning
-                                        logger.warning(f"Download {item.id} has status 'downloading' but not found in Redis")
-                                except Exception as redis_error:
-                                    logger.warning(f"Failed to get Redis status for active download {item.id}: {redis_error}")
-                        except Exception as e:
-                            logger.warning(f"Failed to check Redis for active download {item.id}: {e}")
+                        redis_status = await RedisDownloadTracker.get_download_status(item.id)
+                        if redis_status:
+                            bytes_transferred = redis_status.get('bytes_transferred', 0)
+                            bandwidth_used = redis_status.get('bytes_per_second', 0)
+                            status = redis_status.get('status', status)
+                        else:
+                            # Download marked as 'downloading' but not in Redis - log warning
+                            logger.warning(f"Download {item.id} has status 'downloading' but not found in Redis")
+                            # Use defaults (0) for active downloads not in Redis
+                            bytes_transferred = 0
+                            bandwidth_used = 0
                     
                     # Calculate progress for active downloads
                     progress_percent = 0
@@ -1044,9 +1033,9 @@ class DownloadService:
                         'image': self._normalize_media_path_for_frontend(game.get('image', ''), game.get('system', '')),
                         'system_name': self.game_service.get_system_name(game.get('system', '')),
                         'progress_percent': progress_percent,
-                        'bytes_transferred': bytes_transferred,  # Use from Redis if available
+                        'bytes_transferred': bytes_transferred,  # From Redis for active downloads
                         'file_size': file_size,
-                        'bandwidth_used': bandwidth_used,  # Use from Redis if available
+                        'bandwidth_used': bandwidth_used,  # From Redis for active downloads
                         'token_name': token_name,
                         'download_id': item.id,  # Include download_id for pause/resume actions
                         'catalog_version': catalog_version,  # Include catalog version (e.g., "v2-RGS_bbc")

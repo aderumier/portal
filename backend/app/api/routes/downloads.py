@@ -407,11 +407,16 @@ async def stream_archive_via_websocket(
             pause_check_interval = 2.0
             last_pause_check = start_time
             bandwidth_changed = False
+            last_ping_time = start_time
+            ping_interval = 20.0  # Send ping every 20 seconds to keep connection alive
         else:
             chunk_size = 1024 * 1024  # 1MB chunks
             bytes_per_second = 0
             seconds_per_chunk = 0
             logger.info("WebSocket archive stream: no throttling (allocated_bandwidth is 0)")
+            start_time = time.time()
+            last_ping_time = start_time
+            ping_interval = 20.0  # Send ping every 20 seconds to keep connection alive
         
         # Stream files in binary format with throttling
         for file_info in all_files_list:
@@ -455,11 +460,22 @@ async def stream_archive_via_websocket(
                         sleep_time = 0.5
                     if sleep_time > 0:
                         await asyncio.sleep(sleep_time)
-                await websocket.send_bytes(header)
+                
+                # Send header (will raise exception if connection is closed)
+                try:
+                    await websocket.send_bytes(header)
+                except (RuntimeError, ConnectionError, WebSocketDisconnect) as e:
+                    logger.warning(f"WebSocket connection closed during archive streaming: {e}")
+                    raise ConnectionError("WebSocket connection closed") from e
                 last_chunk_time = time.time()
                 total_bytes += len(header)
             else:
-                await websocket.send_bytes(header)
+                # Send header (will raise exception if connection is closed)
+                try:
+                    await websocket.send_bytes(header)
+                except (RuntimeError, ConnectionError, WebSocketDisconnect) as e:
+                    logger.warning(f"WebSocket connection closed during archive streaming: {e}")
+                    raise ConnectionError("WebSocket connection closed") from e
             
             # Stream file data in chunks with throttling
             with open(source_path, 'rb') as f:
@@ -523,9 +539,21 @@ async def stream_archive_via_websocket(
                     if not chunk:
                         break
                     
+                    # Send periodic ping to keep WebSocket connection alive
+                    current_time = time.time()
+                    if current_time - last_ping_time >= ping_interval:
+                        try:
+                            await websocket.send_json({"type": "ping"})
+                            last_ping_time = current_time
+                        except (RuntimeError, ConnectionError, WebSocketDisconnect) as e:
+                            logger.warning(f"Failed to send WebSocket ping during archive streaming: {e}")
+                            raise  # Re-raise to stop streaming
+                        except Exception as e:
+                            logger.warning(f"Unexpected error sending WebSocket ping: {e}")
+                            raise
+                    
                     # Apply throttling if needed
                     if allocated_bandwidth > 0:
-                        current_time = time.time()
                         expected_time = last_chunk_time + seconds_per_chunk
                         
                         # Sleep to throttle
@@ -536,7 +564,12 @@ async def stream_archive_via_websocket(
                             if sleep_time > 0:
                                 await asyncio.sleep(sleep_time)
                         
-                        await websocket.send_bytes(chunk)
+                        # Send chunk (will raise exception if connection is closed)
+                        try:
+                            await websocket.send_bytes(chunk)
+                        except (RuntimeError, ConnectionError, WebSocketDisconnect) as e:
+                            logger.warning(f"WebSocket connection closed during archive streaming: {e}")
+                            raise ConnectionError("WebSocket connection closed") from e
                         last_chunk_time = time.time()
                         chunk_count += 1
                         total_bytes += len(chunk)
@@ -547,7 +580,12 @@ async def stream_archive_via_websocket(
                             current_rate = total_bytes / elapsed_total if elapsed_total > 0 else 0
                             logger.debug(f"WebSocket archive stream: {total_bytes} bytes ({chunk_count} chunks), rate: {current_rate / 125000:.2f} Mbits/s (target: {bytes_per_second / 125000:.2f} Mbits/s)")
                     else:
-                        await websocket.send_bytes(chunk)
+                        # Send chunk (will raise exception if connection is closed)
+                        try:
+                            await websocket.send_bytes(chunk)
+                        except (RuntimeError, ConnectionError, WebSocketDisconnect) as e:
+                            logger.warning(f"WebSocket connection closed during archive streaming: {e}")
+                            raise ConnectionError("WebSocket connection closed") from e
         
         # Send end marker (4 zero bytes) with throttling if needed
         end_marker = struct.pack('>I', 0)
@@ -561,7 +599,12 @@ async def stream_archive_via_websocket(
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
         
-        await websocket.send_bytes(end_marker)
+        # Send end marker (will raise exception if connection is closed)
+        try:
+            await websocket.send_bytes(end_marker)
+        except (RuntimeError, ConnectionError, WebSocketDisconnect) as e:
+            logger.warning(f"WebSocket connection closed before sending end marker: {e}")
+            raise ConnectionError("WebSocket connection closed") from e
         
         # Send completion message
         await websocket.send_json({
@@ -572,15 +615,24 @@ async def stream_archive_via_websocket(
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
+    except ConnectionError as e:
+        # Connection errors - don't try to send error message as connection is already closed
+        logger.error(f"WebSocket connection error during archive streaming: {e}")
+        raise
     except Exception as e:
         logger.error(f"Error streaming archive via WebSocket: {e}", exc_info=True)
         try:
+            # Try to send error message (will fail silently if connection is closed)
             await websocket.send_json({
                 "type": "archive_error",
                 "download_id": download_id,
                 "error": str(e)
             })
-        except:
+        except (RuntimeError, ConnectionError, WebSocketDisconnect):
+            # Connection already closed, ignore
+            pass
+        except Exception:
+            # Other errors, ignore
             pass
         raise
 
@@ -591,7 +643,7 @@ async def get_queue(
 ):
     """Get download queue for current user."""
     user_id = current_user['id']
-    queue = download_service.get_queue(user_id)
+    queue = await download_service.get_queue(user_id)
     return queue
 
 @router.get("/history")

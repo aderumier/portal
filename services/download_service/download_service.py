@@ -269,7 +269,11 @@ async def process_websocket_archive_stream(
     download_id, websocket, dest_base_path, system, 
     files_list, bytes_already_transferred, paused_ref
 ):
-    """Process binary archive stream from WebSocket."""
+    """Process WebSocket archive stream with detailed logging."""
+    import time as time_module
+    stream_start_time = time_module.time()
+    last_status_log_time = stream_start_time
+    status_log_interval = 30.0  # Log status every 30 seconds
     import shutil
     import threading
     
@@ -383,6 +387,18 @@ async def process_websocket_archive_stream(
     try:
         # Receive binary chunks from WebSocket
         while True:
+            # Periodic status logging
+            current_time = time_module.time()
+            if current_time - last_status_log_time >= status_log_interval:
+                elapsed = current_time - stream_start_time
+                logger.info(f"WebSocket stream status (download_id={download_id}, elapsed={elapsed:.1f}s): "
+                          f"total_received={bytes_transferred_this_session[0]}, "
+                          f"buffer_size={len(buffer)}, "
+                          f"current_file={current_file_relative_path if current_file_info else 'None'}, "
+                          f"file_remaining={current_file_bytes_remaining if current_file_info else 'N/A'}, "
+                          f"files_completed={len(extracted_files)}")
+                last_status_log_time = current_time
+            
             # Check for pause
             if paused_ref and paused_ref[0]:
                 logger.info(f"Download {download_id} was paused during WebSocket streaming")
@@ -397,9 +413,15 @@ async def process_websocket_archive_stream(
             try:
                 async with recv_lock:
                     message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                logger.debug(f"WebSocket: Received message, type: {type(message).__name__}, size: {len(message) if isinstance(message, bytes) else 'N/A'}")
             except asyncio.TimeoutError:
                 # Timeout - check pause and continue
+                if current_file_info:
+                    logger.debug(f"WebSocket: Receive timeout, current file: {current_file_relative_path}, remaining: {current_file_bytes_remaining}, buffer: {len(buffer)}")
                 continue
+            except Exception as e:
+                logger.error(f"WebSocket: Error receiving message: {e}", exc_info=True)
+                raise
             
             # Check if it's a control message (JSON) or binary data
             if isinstance(message, str):
@@ -415,6 +437,16 @@ async def process_websocket_archive_stream(
                         progress_thread_running = False
                         progress_thread.join(timeout=10)
                         return False, [("unknown", f"Server error: {error}")]
+                    elif msg_type == "ping":
+                        # Respond to ping to keep connection alive
+                        try:
+                            await websocket.send(json.dumps({"type": "pong"}))
+                        except Exception as e:
+                            logger.debug(f"Failed to send pong response: {e}")
+                        continue
+                    elif msg_type == "pong":
+                        # Server responded to our ping, continue
+                        continue
                     # Other JSON messages can be ignored
                     continue
                 except json.JSONDecodeError:
@@ -423,25 +455,39 @@ async def process_websocket_archive_stream(
             
             # Binary message - add to buffer
             if isinstance(message, bytes):
-                bytes_transferred_this_session[0] += len(message)
+                chunk_size = len(message)
+                bytes_transferred_this_session[0] += chunk_size
                 buffer += message
+                logger.debug(f"WebSocket: Received {chunk_size} bytes, buffer size now: {len(buffer)}, total received this session: {bytes_transferred_this_session[0]}")
                 
                 # Parse buffer (same logic as HTTP version)
+                parse_iterations = 0
+                max_parse_iterations = 1000  # Prevent infinite loops
                 while True:
+                    parse_iterations += 1
+                    if parse_iterations > max_parse_iterations:
+                        logger.error(f"WebSocket: Parse loop exceeded {max_parse_iterations} iterations, buffer size: {len(buffer)}, current_file: {current_file_relative_path if current_file_info else 'None'}")
+                        break
+                    
                     if current_file_info is None:
                         # Waiting for file header
                         if len(buffer) < 4:
+                            logger.debug(f"WebSocket: Not enough data for header (need 4 bytes, have {len(buffer)})")
                             break  # Not enough data
                         
                         path_length = struct.unpack('>I', buffer[:4])[0]
+                        logger.debug(f"WebSocket: Parsing file header, path_length={path_length}, buffer_size={len(buffer)}")
                         
                         # Check for end marker
                         if path_length == 0:
+                            logger.info("WebSocket: Received end marker, stream complete")
                             buffer = buffer[4:]
                             break  # End of stream
                         
                         # Need full header
-                        if len(buffer) < 4 + path_length + 8:
+                        header_size_needed = 4 + path_length + 8
+                        if len(buffer) < header_size_needed:
+                            logger.debug(f"WebSocket: Waiting for full header, have {len(buffer)} bytes, need {header_size_needed} bytes (path_length={path_length})")
                             break
                         
                         # Extract path and file_size
@@ -482,7 +528,7 @@ async def process_websocket_archive_stream(
                             current_file_bytes_remaining = file_size
                             current_file_skip = False
                             current_dest_file = open(dest_file_path, 'wb')
-                            # Removed debug log - only log failures
+                            logger.info(f"WebSocket: Opened file for writing: {relative_path} (size: {file_size} bytes, dest: {dest_file_path})")
                         except Exception as e:
                             logger.error(f"Failed to open file {relative_path}: {e}")
                             files_with_errors.append((relative_path, f"File open error: {e}"))
@@ -494,60 +540,101 @@ async def process_websocket_archive_stream(
                             current_dest_file = None
                     
                     # Write file data
-                    if current_file_bytes_remaining is not None and current_file_bytes_remaining > 0:
-                        bytes_to_write = min(len(buffer), current_file_bytes_remaining)
-                        if bytes_to_write > 0:
-                            if current_file_skip:
-                                buffer = buffer[bytes_to_write:]
-                                current_file_bytes_remaining -= bytes_to_write
-                            else:
-                                if current_dest_file:
-                                    current_dest_file.write(buffer[:bytes_to_write])
+                    if current_file_info is not None:
+                        # We have a current file - check if it's complete first
+                        if current_file_bytes_remaining == 0:
+                            # File is complete, handle completion
+                            logger.info(f"WebSocket: File complete: {current_file_relative_path} ({current_file_size} bytes)")
+                            if current_dest_file:
+                                try:
+                                    current_dest_file.close()
+                                    logger.debug(f"WebSocket: Closed file: {current_file_relative_path}")
+                                except Exception as e:
+                                    logger.error(f"WebSocket: Error closing file {current_file_relative_path}: {e}")
+                                current_dest_file = None
+                            
+                            if not current_file_skip and current_file_info:
+                                # Verify file size
+                                if 'destination_rom_path' in current_file_info:
+                                    dest_file_path = os.path.join(ROMS_PATH, current_file_info.get('destination_system', system), current_file_info['destination_rom_path'])
+                                else:
+                                    dest_file_path = os.path.join(dest_base_path, current_file_relative_path)
+                                
+                                if os.path.exists(dest_file_path):
+                                    actual_size = os.path.getsize(dest_file_path)
+                                    expected_size = int(current_file_info['size'])
+                                    if actual_size == expected_size:
+                                        extracted_files.add(current_file_relative_path)
+                                        logger.info(f"WebSocket: File verified successfully: {current_file_relative_path} ({actual_size} bytes)")
+                                    else:
+                                        logger.error(f"Failed file {current_file_relative_path}: Size mismatch (local={actual_size}, expected={expected_size})")
+                                        files_with_errors.append((current_file_relative_path, f"Size mismatch: {actual_size} != {expected_size}"))
+                                        try:
+                                            os.remove(dest_file_path)
+                                        except:
+                                            pass
+                                else:
+                                    logger.error(f"Failed file {current_file_relative_path}: File not created")
+                                    files_with_errors.append((current_file_relative_path, "File not created"))
+                            
+                            # Reset for next file
+                            current_file_info = None
+                            current_file_relative_path = None
+                            current_file_size = None
+                            current_file_bytes_remaining = None
+                            current_file_skip = False
+                            logger.debug(f"WebSocket: Reset for next file, remaining buffer: {len(buffer)} bytes")
+                            # Continue parsing to look for next file header in buffer
+                            continue
+                        
+                        # File is not complete, write data
+                        if current_file_bytes_remaining is not None and current_file_bytes_remaining > 0:
+                            bytes_to_write = min(len(buffer), current_file_bytes_remaining)
+                            if bytes_to_write > 0:
+                                if current_file_skip:
+                                    logger.debug(f"WebSocket: Skipping {bytes_to_write} bytes for {current_file_relative_path} (remaining: {current_file_bytes_remaining})")
                                     buffer = buffer[bytes_to_write:]
                                     current_file_bytes_remaining -= bytes_to_write
                                 else:
-                                    buffer = buffer[bytes_to_write:]
-                                    current_file_bytes_remaining -= bytes_to_write
-                            
-                            # File complete
-                            if current_file_bytes_remaining == 0:
-                                if current_dest_file:
-                                    current_dest_file.close()
-                                    current_dest_file = None
-                                
-                                if not current_file_skip and current_file_info:
-                                    # Verify file size
-                                    if 'destination_rom_path' in current_file_info:
-                                        dest_file_path = os.path.join(ROMS_PATH, current_file_info.get('destination_system', system), current_file_info['destination_rom_path'])
-                                    else:
-                                        dest_file_path = os.path.join(dest_base_path, current_file_relative_path)
-                                    
-                                    if os.path.exists(dest_file_path):
-                                        actual_size = os.path.getsize(dest_file_path)
-                                        expected_size = int(current_file_info['size'])
-                                        if actual_size == expected_size:
-                                            extracted_files.add(current_file_relative_path)
-                                            # Removed debug log - only log failures
-                                        else:
-                                            logger.error(f"Failed file {current_file_relative_path}: Size mismatch (local={actual_size}, expected={expected_size})")
-                                            files_with_errors.append((current_file_relative_path, f"Size mismatch: {actual_size} != {expected_size}"))
+                                    if current_dest_file:
+                                        try:
+                                            current_dest_file.write(buffer[:bytes_to_write])
+                                            logger.debug(f"WebSocket: Wrote {bytes_to_write} bytes to {current_file_relative_path} (remaining: {current_file_bytes_remaining - bytes_to_write}/{current_file_size})")
+                                            buffer = buffer[bytes_to_write:]
+                                            current_file_bytes_remaining -= bytes_to_write
+                                        except Exception as e:
+                                            logger.error(f"WebSocket: Error writing to file {current_file_relative_path}: {e}", exc_info=True)
+                                            files_with_errors.append((current_file_relative_path, f"Write error: {e}"))
+                                            # Close file and mark for skip
                                             try:
-                                                os.remove(dest_file_path)
+                                                current_dest_file.close()
                                             except:
                                                 pass
+                                            current_dest_file = None
+                                            current_file_skip = True
+                                            buffer = buffer[bytes_to_write:]
+                                            current_file_bytes_remaining -= bytes_to_write
                                     else:
-                                        logger.error(f"Failed file {current_file_relative_path}: File not created")
-                                        files_with_errors.append((current_file_relative_path, "File not created"))
+                                        logger.warning(f"WebSocket: No file handle for {current_file_relative_path}, skipping {bytes_to_write} bytes")
+                                        buffer = buffer[bytes_to_write:]
+                                        current_file_bytes_remaining -= bytes_to_write
                                 
-                                # Reset for next file
-                                current_file_info = None
-                                current_file_relative_path = None
-                                current_file_size = None
-                                current_file_bytes_remaining = None
-                                current_file_skip = False
+                                # Check if file is now complete after writing
+                                if current_file_bytes_remaining == 0:
+                                    # File is complete, handle completion (will be handled in next iteration)
+                                    continue
+                            else:
+                                # No more data to write for current file, wait for more buffer
+                                logger.debug(f"WebSocket: No more data to write, buffer exhausted. File: {current_file_relative_path if current_file_info else 'None'}, remaining: {current_file_bytes_remaining if current_file_info else 'N/A'}, buffer: {len(buffer)}")
+                                break
                         else:
+                            # Invalid state - file info exists but bytes_remaining is None or <= 0
+                            logger.warning(f"WebSocket: Invalid state - file_info exists but bytes_remaining is {current_file_bytes_remaining}")
                             break
                     else:
+                        # No current file, waiting for header - this should be handled at the top of the loop
+                        # But if we reach here, it means we've already tried to parse and didn't find a header
+                        logger.debug(f"WebSocket: No current file, waiting for header. Buffer: {len(buffer)} bytes")
                         break
         
         # Cleanup
@@ -1263,7 +1350,6 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                         
                         if chunk:
                             f.write(chunk)
-                            f.flush()  # Ensure data is written to disk
                             bytes_written = len(chunk)
                             total_bytes_downloaded += bytes_written
                             bytes_downloaded_this_session += bytes_written
@@ -3515,7 +3601,8 @@ async def websocket_client():
         
         while True:
             try:
-                async with websockets.connect(ws_url) as websocket:
+                # Set max_size to 10MB to handle larger archive chunks (default is 1MB)
+                async with websockets.connect(ws_url, max_size=10 * 1024 * 1024) as websocket:
                     logger.info("WebSocket connected successfully")
                     backoff_delay = 0  # Reset backoff to 0 on successful connection
                     
