@@ -1048,7 +1048,7 @@ async def download_file(
         # Check if this is a special file type that needs parsing (when relative_path is not provided)
         if relative_path is None and os.path.isfile(base_path):
             from app.services.download import detect_and_parse_special_file
-            parsed_info = detect_and_parse_special_file(base_path)
+            parsed_info = detect_and_parse_special_file(base_path, system=system)
             
             if parsed_info:
                 # This is a special file type (.m3u, .cue, or .xbox360)
@@ -1237,6 +1237,72 @@ async def download_file(
                                     logger.warning(f"Directory {dir_full_path} path validation failed, skipping")
                             else:
                                 logger.warning(f"PS3 save directory listed in {source_file} does not exist: {dir_full_path}")
+                    elif source_file.lower().endswith('.m3u') and system and system.lower() == 'ps3':
+                        # For PS3 .m3u files: parsed_files contains the directory name
+                        # Source directory is at {GAMES_PATH}/_saves_/ps3/rpcs3/dev_hdd0/game/{directory_name}
+                        if parsed_files:
+                            directory_name = parsed_files[0]
+                            # Build path to save directory (same as .psn)
+                            save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game', directory_name)
+                            dir_full_path = os.path.normpath(save_dir_path)
+                            
+                            # Verify the directory exists and is within the games directory
+                            if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                                # Ensure the directory is within the games directory (security check)
+                                try:
+                                    if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                        # Walk the directory and add all files
+                                        # For PS3 .m3u files, relative paths should maintain the directory structure
+                                        for root, dirs, files in os.walk(dir_full_path):
+                                            for filename in files:
+                                                file_full_path = os.path.join(root, filename)
+                                                # Get relative path from the save directory root
+                                                rel_path_from_dir = os.path.relpath(file_full_path, dir_full_path)
+                                                file_size = os.path.getsize(file_full_path)
+                                                files_list.append({
+                                                    'relative_path': rel_path_from_dir.replace('\\', '/'),  # Normalize path separators
+                                                    'size': file_size
+                                                })
+                                        
+                                        # Include the .m3u file itself in the download
+                                        # The .m3u file should be saved to roms directory, not save directory
+                                        # Get the normalized game path for roms directory (same logic as get_next_download)
+                                        m3u_rel_path = os.path.relpath(base_path, source_dir)
+                                        m3u_file_size = os.path.getsize(base_path)
+                                        
+                                        # Get normalized rom_path (without system prefix and snapshot path) for client destination
+                                        # Use the same normalization method as get_next_download for consistency
+                                        normalized_rom_path = download_service._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
+                                        # Remove system prefix if present (client will add it back with batocera_system)
+                                        if normalized_rom_path.startswith(f"{system}/"):
+                                            normalized_rom_path = normalized_rom_path[len(system) + 1:]
+                                        
+                                        # Get target system (batocera_system) from queue_item's download info or derive from game
+                                        # This should match what's in download_info['batocera_system']
+                                        target_system = system
+                                        try:
+                                            game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+                                            if game:
+                                                # Use the same logic as get_next_download to determine target_system
+                                                game_system = game.get('system', '')
+                                                if game_system:
+                                                    target_system = game_system
+                                        except Exception as e:
+                                            logger.debug(f"Could not get game for target_system: {e}")
+                                        
+                                        # Include destination info: relative path for API calls, destination_rom_path for saving to roms
+                                        files_list.append({
+                                            'relative_path': m3u_rel_path.replace('\\', '/'),  # For API calls to download_file endpoint
+                                            'size': m3u_file_size,
+                                            'destination_rom_path': normalized_rom_path,  # Path relative to ROMS_PATH/system/ for saving
+                                            'destination_system': target_system  # System name for destination path (batocera_system)
+                                        })
+                                    else:
+                                        logger.warning(f"Directory {dir_full_path} is outside games directory, skipping")
+                                except ValueError:
+                                    logger.warning(f"Directory {dir_full_path} path validation failed, skipping")
+                            else:
+                                logger.warning(f"PS3 save directory listed in {source_file} does not exist: {dir_full_path}")
                     else:
                         # For .m3u and .cue files: files are relative to the source file's directory
                         for rel_file in parsed_files:
@@ -1310,7 +1376,7 @@ async def download_file(
             # Check if base_path is a special file type - if so, relative_path handling depends on base_path_type
             if os.path.isfile(base_path):
                 from app.services.download import detect_and_parse_special_file
-                parsed_info = detect_and_parse_special_file(base_path)
+                parsed_info = detect_and_parse_special_file(base_path, system=system)
                 
                 if parsed_info:
                     if parsed_info['base_path_type'] == 'file':
@@ -1345,6 +1411,23 @@ async def download_file(
                                 # In that case, serve it from its original location (base_path), not from save directory
                                 if relative_path == os.path.basename(base_path):
                                     # This is the .psn file itself, serve from original location
+                                    file_path = base_path
+                                else:
+                                    # This is a file from the save directory
+                                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game', directory_name)
+                                    file_path = os.path.normpath(os.path.join(save_dir_path, relative_path))
+                            else:
+                                # Fallback: treat as regular file
+                                file_path = os.path.join(base_path, relative_path)
+                        elif source_file_name.lower().endswith('.m3u') and system and system.lower() == 'ps3':
+                            # For PS3 .m3u files: parsed_files contains the directory name
+                            # Source directory is at {GAMES_PATH}/_saves_/ps3/rpcs3/dev_hdd0/game/{directory_name}
+                            if parsed_info['files']:
+                                directory_name = parsed_info['files'][0]
+                                # Check if relative_path is the .m3u file itself (it will be just the filename)
+                                # In that case, serve it from its original location (base_path), not from save directory
+                                if relative_path == os.path.basename(base_path):
+                                    # This is the .m3u file itself, serve from original location
                                     file_path = base_path
                                 else:
                                     # This is a file from the save directory

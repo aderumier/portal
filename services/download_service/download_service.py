@@ -77,7 +77,7 @@ if platform.system() == 'Windows':
     else:
         # Default Windows location
         appdata = os.getenv('APPDATA', os.path.expanduser('~'))
-        log_dir = os.path.join(appdata, 'RGS', 'logs')
+        log_dir = '../../../'
         log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
 else:
     # Linux/Batocera paths
@@ -1623,12 +1623,109 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
             
     except requests.exceptions.ConnectionError:
         logger.warning(f"Could not connect to Batocera HTTP server at http://127.0.0.1:1234 (EmulationStation may not be running)")
-        return False
+        logger.info(f"Falling back to manual gamelist.xml update")
+        return _update_gamelist_xml_manually(batocera_system, game_id, xml_content)
     except requests.exceptions.Timeout:
         logger.warning(f"Request to Batocera HTTP server timed out")
-        return False
+        logger.info(f"Falling back to manual gamelist.xml update")
+        return _update_gamelist_xml_manually(batocera_system, game_id, xml_content)
     except Exception as e:
         logger.error(f"Error adding game to Batocera via API: {e}", exc_info=True)
+        return False
+
+
+def _update_gamelist_xml_manually(batocera_system, game_id, xml_content):
+    """Fallback: Manually update gamelist.xml file when API is unavailable.
+    
+    Args:
+        batocera_system: Batocera system directory name (e.g., "atari2600")
+        game_id: Game ID (rompath, e.g., "apshai.zip")
+        xml_content: Full XML content for the game entry (includes <gameList><game>...</game></gameList>)
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        from xml.etree import ElementTree as ET
+        from xml.dom import minidom
+        
+        # Build path to gamelist.xml file
+        gamelist_path = os.path.join(ROMS_PATH, batocera_system, 'gamelist.xml')
+        
+        # Parse the provided XML content to extract the game element
+        # xml_content contains: <gameList><game>...</game></gameList>
+        root_from_content = ET.fromstring(xml_content)
+        new_game_elem = root_from_content.find('game')
+        if new_game_elem is None:
+            logger.error(f"Could not find <game> element in provided XML content")
+            return False
+        
+        # Get the path from the new game element (this is the key for matching)
+        path_elem = new_game_elem.find('path')
+        if path_elem is None or not path_elem.text:
+            logger.error(f"Game entry missing 'path' field, cannot update gamelist.xml")
+            return False
+        
+        game_path = path_elem.text.strip()
+        logger.info(f"Updating gamelist.xml manually for game path: '{game_path}'")
+        
+        # Parse existing gamelist.xml or create new one
+        if os.path.exists(gamelist_path):
+            try:
+                tree = ET.parse(gamelist_path)
+                root = tree.getroot()
+            except ET.ParseError as e:
+                logger.error(f"Error parsing existing gamelist.xml: {e}. Creating new file.")
+                root = ET.Element("gameList")
+        else:
+            # Create new gamelist.xml
+            root = ET.Element("gameList")
+            logger.info(f"Creating new gamelist.xml at {gamelist_path}")
+        
+        # Find existing game with same path
+        existing_game = None
+        for game in root.findall('game'):
+            path_elem_existing = game.find('path')
+            if path_elem_existing is not None and path_elem_existing.text:
+                existing_path = path_elem_existing.text.strip()
+                # Compare paths directly
+                if existing_path == game_path:
+                    existing_game = game
+                    logger.info(f"Found existing game entry with path '{existing_path}', will update it")
+                    break
+        
+        if existing_game is not None:
+            # Update existing game: replace all children with new game's children
+            root.remove(existing_game)
+            root.append(new_game_elem)
+            logger.info(f"Updated existing game entry in gamelist.xml")
+        else:
+            # Add new game at the end
+            root.append(new_game_elem)
+            logger.info(f"Added new game entry to gamelist.xml")
+        
+        # Pretty print the XML
+        def prettify_xml(elem):
+            """Return a pretty-printed XML string for the Element."""
+            rough_string = ET.tostring(elem, encoding='unicode')
+            reparsed = minidom.parseString(rough_string)
+            return reparsed.toprettyxml(indent="  ")
+        
+        # Write to file
+        pretty_xml = prettify_xml(root)
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(gamelist_path), exist_ok=True)
+        
+        # Write with UTF-8 encoding
+        with open(gamelist_path, 'w', encoding='utf-8') as f:
+            f.write(pretty_xml)
+        
+        logger.info(f"Successfully updated gamelist.xml manually at {gamelist_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error updating gamelist.xml manually: {e}", exc_info=True)
         return False
 
 def download_game(download_info):

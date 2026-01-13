@@ -58,6 +58,45 @@ def parse_m3u_file(m3u_file_path: str) -> List[str]:
         return [os.path.basename(m3u_file_path)]
 
 
+def parse_m3u_ps3_directory(m3u_file_path: str) -> Optional[str]:
+    """Parse a PS3 .m3u file and extract the directory name from paths like \dev_hdd0\game\{directory_name}\...
+    
+    Args:
+        m3u_file_path: Full path to the .m3u file
+        
+    Returns:
+        Directory name (e.g., "NPUA30032") or None if not found
+    """
+    try:
+        if not os.path.exists(m3u_file_path):
+            logger.warning(f".m3u file not found: {m3u_file_path}")
+            return None
+        
+        import re
+        with open(m3u_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines and lines starting with # (comments)
+                if not line or line.startswith('#'):
+                    continue
+                
+                # Look for pattern: \dev_hdd0\game\{directory_name}\ or /dev_hdd0/game/{directory_name}/
+                # Match both Windows (\) and Unix (/) path separators
+                pattern = r'[\\/]dev_hdd0[\\/]game[\\/]([^\\/]+)[\\/]'
+                match = re.search(pattern, line)
+                if match:
+                    directory_name = match.group(1)
+                    logger.info(f"Parsed PS3 .m3u file {m3u_file_path}: found directory '{directory_name}'")
+                    return directory_name
+        
+        logger.warning(f"No directory name found in PS3 .m3u file: {m3u_file_path}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error parsing PS3 .m3u file {m3u_file_path}: {e}", exc_info=True)
+        return None
+
+
 def parse_cue_file(cue_file_path: str) -> List[str]:
     """Parse a .cue file and return list of file paths (relative to cue file location).
     
@@ -224,16 +263,17 @@ def parse_psn_file(psn_file_path: str) -> str:
         return None
 
 
-def detect_and_parse_special_file(file_path: str) -> Optional[Dict]:
+def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) -> Optional[Dict]:
     """Detect and parse special file types that require additional files to be downloaded.
     
     Args:
         file_path: Full path to the file
+        system: Optional system name (e.g., 'ps3') to enable system-specific handling
         
     Returns:
         Dict with parsed information, or None if not a special file type:
         {
-            'files': List[str],  # List of relative file paths
+            'files': List[str],  # List of relative file paths or directory name for special cases
             'base_path_type': str,  # 'file' for .m3u/.cue (files relative to file's dir), 'directory' for .xbox360/regular dirs
             'source_file': str  # Original file that was parsed (e.g., "game.cue")
         }
@@ -246,6 +286,17 @@ def detect_and_parse_special_file(file_path: str) -> Optional[Dict]:
     
     # Check for .m3u files
     if file_lower.endswith('.m3u'):
+        # Special handling for PS3 system .m3u files
+        if system and system.lower() == 'ps3':
+            directory_name = parse_m3u_ps3_directory(file_path)
+            if directory_name:
+                # Return structure similar to .psn files
+                return {
+                    'files': [directory_name],  # This will be treated as a directory path
+                    'base_path_type': 'file',
+                    'source_file': source_filename
+                }
+        # Regular .m3u file handling
         files = parse_m3u_file(file_path)
         return {
             'files': files,
@@ -709,7 +760,7 @@ class DownloadService:
                 
                 if game_path and os.path.exists(game_path):
                     # Check if it's a special file type that needs parsing
-                    parsed_info = detect_and_parse_special_file(game_path)
+                    parsed_info = detect_and_parse_special_file(game_path, system=game.get('system', ''))
                     
                     if parsed_info:
                         # It's a special file type (.m3u, .cue, .xbox360)
@@ -796,6 +847,33 @@ class DownloadService:
                                         logger.warning(f"PS3 save directory not found: {dir_full_path}")
                                     
                                     # Include the .psn file itself in the total size
+                                    if os.path.exists(game_path) and os.path.isfile(game_path):
+                                        total_size += os.path.getsize(game_path)
+                            elif source_file.lower().endswith('.m3u') and system and system.lower() == 'ps3':
+                                # For PS3 .m3u files: parsed_files contains the directory name
+                                # Source directory is at {GAMES_PATH}/_saves_/ps3/rpcs3/dev_hdd0/game/{directory_name}
+                                if parsed_files:
+                                    directory_name = parsed_files[0]
+                                    # Build path to save directory (same as .psn)
+                                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game', directory_name)
+                                    dir_full_path = os.path.normpath(save_dir_path)
+                                    
+                                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                                        # Security check: ensure directory is within games directory
+                                        try:
+                                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                                # Walk the directory and sum all file sizes
+                                                for root, dirs, files in os.walk(dir_full_path):
+                                                    for filename in files:
+                                                        file_full_path = os.path.join(root, filename)
+                                                        if os.path.isfile(file_full_path):
+                                                            total_size += os.path.getsize(file_full_path)
+                                        except ValueError:
+                                            logger.warning(f"Directory {dir_full_path} path validation failed, skipping from size calculation")
+                                    else:
+                                        logger.warning(f"PS3 save directory not found: {dir_full_path}")
+                                    
+                                    # Include the .m3u file itself in the total size
                                     if os.path.exists(game_path) and os.path.isfile(game_path):
                                         total_size += os.path.getsize(game_path)
                             else:
@@ -1511,6 +1589,15 @@ class DownloadService:
                             config_location = location_path
                             logger.info(f"Detected .psn file, config_location: {config_location} (platform: linux)")
                 
+                # Check if this is a PS3 .m3u file and calculate save_location
+                if resolved_game_id.lower().endswith('.m3u') and system and system.lower() == 'ps3':
+                    # Parse the PS3 .m3u file to get directory name
+                    directory_name = parse_m3u_ps3_directory(file_path)
+                    if directory_name:
+                        # Build save_location path (same for both Linux and Windows, uses SAVEDIR)
+                        save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
+                        logger.info(f"Detected PS3 .m3u file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
+                
                 download_info = {
                     'download_id': resumable_download.id,
                     'game_id': resolved_game_id,  # Use resolved game_id (unified key already resolved)
@@ -1765,6 +1852,16 @@ class DownloadService:
                     else:
                         config_location = location_path
                         logger.info(f"Detected .psn file, config_location: {config_location} (platform: linux)")
+            
+            # Check if this is a PS3 .m3u file and calculate save_location
+            if resolved_game_id.lower().endswith('.m3u') and system and system.lower() == 'ps3':
+                # Parse the PS3 .m3u file to get directory name
+                directory_name = parse_m3u_ps3_directory(file_path)
+                if directory_name:
+                    # Build save_location path (same for both Linux and Windows, uses SAVEDIR)
+                    save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
+                    is_windows_platform = is_windows
+                    logger.info(f"Detected PS3 .m3u file, save_location: {save_location} (platform: {'windows' if is_windows_platform else 'linux'})")
             
             download_info = {
                 'download_id': pending_download.id,
