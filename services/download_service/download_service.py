@@ -10,6 +10,7 @@ import subprocess
 import logging
 import platform
 import configparser
+import re
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 import asyncio
@@ -2491,7 +2492,6 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
         bool: True if successful, False otherwise
     """
     try:
-        from xml.dom import minidom
         
         # Build game metadata dict for Batocera API
         # Include ALL fields from game_data (except system-specific metadata)
@@ -2533,12 +2533,21 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
                 elem = ET.SubElement(game_elem, key)
                 elem.text = str(value)
         
-        # Pretty print XML
+        # Pretty print XML using only ElementTree
         def prettify_xml(elem):
-            """Return a pretty-printed XML string for the Element."""
-            rough_string = ET.tostring(elem, encoding='unicode')
-            reparsed = minidom.parseString(rough_string)
-            return reparsed.toprettyxml(indent="  ")
+            """Return a pretty-printed XML string for the Element using only ElementTree."""
+            # Create a copy to avoid modifying the original element
+            from copy import deepcopy
+            root = deepcopy(elem)
+            
+            # Use ET.indent() (Python 3.9+) for pretty printing
+            ET.indent(root, space="  ")
+            
+            # Convert to string
+            xml_str = ET.tostring(root, encoding='unicode')
+            
+            # Add XML declaration with UTF-8 encoding
+            return '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
         
         xml_content = prettify_xml(root)
         
@@ -2614,7 +2623,6 @@ def _update_gamelist_xml_manually(batocera_system, game_id, xml_content):
     """
     try:
         from xml.etree import ElementTree as ET
-        from xml.dom import minidom
         
         # Build path to gamelist.xml file
         gamelist_path = os.path.join(ROMS_PATH, batocera_system, 'gamelist.xml')
@@ -2671,12 +2679,21 @@ def _update_gamelist_xml_manually(batocera_system, game_id, xml_content):
             root.append(new_game_elem)
             logger.info(f"Added new game entry to gamelist.xml")
         
-        # Pretty print the XML
+        # Pretty print the XML using only ElementTree
         def prettify_xml(elem):
-            """Return a pretty-printed XML string for the Element."""
-            rough_string = ET.tostring(elem, encoding='unicode')
-            reparsed = minidom.parseString(rough_string)
-            return reparsed.toprettyxml(indent="  ")
+            """Return a pretty-printed XML string for the Element using only ElementTree."""
+            # Create a copy to avoid modifying the original element
+            from copy import deepcopy
+            root = deepcopy(elem)
+            
+            # Use ET.indent() (Python 3.9+) for pretty printing
+            ET.indent(root, space="  ")
+            
+            # Convert to string
+            xml_str = ET.tostring(root, encoding='unicode')
+            
+            # Add XML declaration with UTF-8 encoding
+            return '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
         
         # Write to file
         pretty_xml = prettify_xml(root)
