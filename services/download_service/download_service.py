@@ -305,13 +305,22 @@ async def process_websocket_archive_stream(
     files_with_errors = []
     extracted_files = set()
     
-    # Add progress reporting thread (same as HTTP version)
+    # Add progress reporting thread (more frequent than HTTP version)
     progress_thread_running = True
     
     def progress_reporter():
-        """Background thread to report progress periodically."""
+        """Background thread to report progress periodically.
+        
+        Reports more frequently for WebSocket (every 1-2 seconds) to match HTTP stream responsiveness.
+        """
         nonlocal last_report_time, progress_thread_running, total_bytes_downloaded
-        interval = BANDWIDTH_UPDATE_INTERVAL if BANDWIDTH_UPDATE_INTERVAL is not None else 5
+        # Use shorter interval for WebSocket (1-2 seconds) for more frequent updates
+        # Still respect BANDWIDTH_UPDATE_INTERVAL if it's set to a shorter value
+        if BANDWIDTH_UPDATE_INTERVAL is not None:
+            interval = min(BANDWIDTH_UPDATE_INTERVAL, 2)  # Use BANDWIDTH_UPDATE_INTERVAL if <= 2, otherwise cap at 2
+        else:
+            interval = 2  # Default to 2 seconds for WebSocket (more frequent than HTTP's 5 seconds)
+        
         while progress_thread_running:
             time.sleep(interval)
             elapsed = time.time() - last_report_time
