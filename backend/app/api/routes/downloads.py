@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 import tarfile
 import io
+import struct
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ class MarkCompletedRequest(BaseModel):
     client_version: Optional[str] = None  # Download client version
     log_content: Optional[str] = None  # Download task log content
 
+class ArchiveDownloadRequest(BaseModel):
+    download_id: int
+    files: Optional[list[str]] = None  # List of relative paths to include (optional, if not provided includes all files)
+
 class MarkErrorRequest(BaseModel):
     download_id: int
     error_message: str
@@ -58,6 +63,520 @@ def get_download_service(db: Session = Depends(get_db)) -> DownloadService:
     """Get download service instance."""
     game_service = get_game_service()  # Use shared singleton instance
     return DownloadService(db, game_service)
+
+async def discover_download_files(
+    download_id: int,
+    token_id: str,
+    user_id: int,
+    requested_files: Optional[set[str]],
+    db: Session
+) -> tuple[list[dict], str, str]:
+    """Discover all files for a download.
+    
+    Returns:
+        Tuple of (all_files_list, system, resolved_game_id)
+    """
+    download_service = DownloadService(db, get_game_service())
+    
+    # Get queue item
+    queue_item = db.query(DownloadQueue).filter(
+        DownloadQueue.id == download_id,
+        DownloadQueue.user_id == user_id,
+        DownloadQueue.token_id == token_id
+    ).first()
+    
+    if not queue_item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Download not found"
+        )
+    
+    # Check if download is paused
+    db.refresh(queue_item)
+    if queue_item.status == 'paused':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Download is paused"
+        )
+    
+    # Get platform from Redis
+    platform = 'linux'
+    try:
+        ws_manager = get_websocket_manager()
+        redis_client = await ws_manager._get_redis_client()
+        if redis_client and token_id:
+            redis_key = f"ws_client:{token_id}"
+            conn_data = await redis_client.get(redis_key)
+            if conn_data:
+                conn_info = json.loads(conn_data)
+                platform = conn_info.get('platform', 'linux')
+    except Exception as e:
+        logger.debug(f"Could not get platform from Redis: {e}")
+    
+    # Get system and resolved game_id
+    catalog_version = queue_item.catalog_version
+    catalog_type = 'releases' if catalog_version else 'wip'
+    
+    # Resolve unified ROM key
+    resolved_game_id = queue_item.game_id
+    system = ''  # Initialize system to avoid UnboundLocalError
+    try:
+        game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+        if game:
+            system = game.get('system', '')
+            resolved_game_id = download_service._resolve_unified_rom_key(queue_item.game_id, system, platform, catalog_type)
+        else:
+            logger.warning(f"Game not found for game_id: {queue_item.game_id} (catalog_type: {catalog_type})")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Game not found"
+            )
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to resolve unified ROM key: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to resolve game path"
+        )
+    
+    # Build base path
+    if not settings.GAMES_PATH:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="GAMES_PATH not configured"
+        )
+    
+    base_path = os.path.join(settings.GAMES_PATH, system, resolved_game_id)
+    
+    # Get all files for this download
+    all_files_list = []
+    if os.path.isfile(base_path):
+        from app.services.download import detect_and_parse_special_file
+        parsed_info = detect_and_parse_special_file(base_path, system=system)
+        
+        if parsed_info and parsed_info.get('files'):
+            # This is a special file (.m3u, .cue, .xbox360, .psvita, .psn, .m3u ps3)
+            source_dir = os.path.dirname(base_path)
+            parsed_files = parsed_info['files']
+            source_file = parsed_info.get('source_file', '')
+            
+            # Handle different special file types
+            if source_file.lower().endswith('.xbox360'):
+                if parsed_files:
+                    directory_name = parsed_files[0]
+                    dir_full_path = os.path.normpath(os.path.join(source_dir, directory_name))
+                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                        try:
+                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                for root, dirs, files in os.walk(dir_full_path):
+                                    for filename in files:
+                                        file_full_path = os.path.join(root, filename)
+                                        rel_path_from_dir = os.path.relpath(file_full_path, dir_full_path)
+                                        rel_path = os.path.join(directory_name, rel_path_from_dir).replace('\\', '/')
+                                        if requested_files is None or rel_path in requested_files:
+                                            all_files_list.append({
+                                                'source_path': file_full_path,
+                                                'relative_path': rel_path,
+                                                'size': os.path.getsize(file_full_path)
+                                            })
+                                xbox360_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                                if requested_files is None or xbox360_rel_path in requested_files:
+                                    all_files_list.append({
+                                        'source_path': base_path,
+                                        'relative_path': xbox360_rel_path,
+                                        'size': os.path.getsize(base_path)
+                                    })
+                        except ValueError:
+                            pass
+            elif source_file.lower().endswith('.psvita'):
+                if parsed_files:
+                    directory_name = parsed_files[0]
+                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'psvita', 'vita3k', 'ux0', 'app', directory_name)
+                    dir_full_path = os.path.normpath(save_dir_path)
+                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                        try:
+                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                for root, dirs, files in os.walk(dir_full_path):
+                                    for filename in files:
+                                        file_full_path = os.path.join(root, filename)
+                                        rel_path = os.path.relpath(file_full_path, dir_full_path).replace('\\', '/')
+                                        if requested_files is None or rel_path in requested_files:
+                                            all_files_list.append({
+                                                'source_path': file_full_path,
+                                                'relative_path': rel_path,
+                                                'size': os.path.getsize(file_full_path)
+                                            })
+                                psvita_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                                if requested_files is None or psvita_rel_path in requested_files:
+                                    all_files_list.append({
+                                        'source_path': base_path,
+                                        'relative_path': psvita_rel_path,
+                                        'size': os.path.getsize(base_path)
+                                    })
+                        except ValueError:
+                            pass
+            elif source_file.lower().endswith('.psn'):
+                if parsed_files:
+                    directory_name = parsed_files[0]
+                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game', directory_name)
+                    dir_full_path = os.path.normpath(save_dir_path)
+                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                        try:
+                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                for root, dirs, files in os.walk(dir_full_path):
+                                    for filename in files:
+                                        file_full_path = os.path.join(root, filename)
+                                        rel_path = os.path.relpath(file_full_path, dir_full_path).replace('\\', '/')
+                                        if requested_files is None or rel_path in requested_files:
+                                            all_files_list.append({
+                                                'source_path': file_full_path,
+                                                'relative_path': rel_path,
+                                                'size': os.path.getsize(file_full_path)
+                                            })
+                                psn_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                                if requested_files is None or psn_rel_path in requested_files:
+                                    all_files_list.append({
+                                        'source_path': base_path,
+                                        'relative_path': psn_rel_path,
+                                        'size': os.path.getsize(base_path)
+                                    })
+                        except ValueError:
+                            pass
+            elif source_file.lower().endswith('.m3u') and system and system.lower() == 'ps3':
+                if parsed_files:
+                    directory_name = parsed_files[0]
+                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game', directory_name)
+                    dir_full_path = os.path.normpath(save_dir_path)
+                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                        try:
+                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                for root, dirs, files in os.walk(dir_full_path):
+                                    for filename in files:
+                                        file_full_path = os.path.join(root, filename)
+                                        rel_path = os.path.relpath(file_full_path, dir_full_path).replace('\\', '/')
+                                        if requested_files is None or rel_path in requested_files:
+                                            all_files_list.append({
+                                                'source_path': file_full_path,
+                                                'relative_path': rel_path,
+                                                'size': os.path.getsize(file_full_path)
+                                            })
+                                m3u_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                                if requested_files is None or m3u_rel_path in requested_files:
+                                    all_files_list.append({
+                                        'source_path': base_path,
+                                        'relative_path': m3u_rel_path,
+                                        'size': os.path.getsize(base_path)
+                                    })
+                        except ValueError:
+                            pass
+            else:
+                # For .m3u and .cue files: files are relative to the source file's directory
+                for rel_file in parsed_files:
+                    file_full_path = os.path.normpath(os.path.join(source_dir, rel_file))
+                    if os.path.exists(file_full_path) and os.path.isfile(file_full_path):
+                        try:
+                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                rel_path = rel_file.replace('\\', '/')
+                                if requested_files is None or rel_path in requested_files:
+                                    all_files_list.append({
+                                        'source_path': file_full_path,
+                                        'relative_path': rel_path,
+                                        'size': os.path.getsize(file_full_path)
+                                    })
+                        except ValueError:
+                            pass
+                if source_file:
+                    rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                    if requested_files is None or rel_path in requested_files:
+                        all_files_list.append({
+                            'source_path': base_path,
+                            'relative_path': rel_path,
+                            'size': os.path.getsize(base_path)
+                        })
+    elif os.path.isdir(base_path):
+        # Regular directory
+        for root, dirs, filenames in os.walk(base_path):
+            for filename in filenames:
+                file_full_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(file_full_path, base_path).replace('\\', '/')
+                if requested_files is None or rel_path in requested_files:
+                    all_files_list.append({
+                        'source_path': file_full_path,
+                        'relative_path': rel_path,
+                        'size': os.path.getsize(file_full_path)
+                    })
+    
+    return all_files_list, system, resolved_game_id
+
+async def stream_archive_via_websocket(
+    websocket: WebSocket,
+    download_id: int,
+    token_id: str,
+    user_id: int,
+    requested_files: Optional[list[str]],
+    db: Session
+):
+    """Stream archive files via WebSocket using binary format with bandwidth throttling.
+    
+    Binary format:
+    - For each file:
+      - 4 bytes (uint32 BE): path_length
+      - N bytes: path (UTF-8)
+      - 8 bytes (uint64 BE): file_size
+      - M bytes: file_data
+    - End marker: 4 zero bytes
+    """
+    import time
+    
+    try:
+        # Send start message
+        await websocket.send_json({
+            "type": "archive_start",
+            "download_id": download_id
+        })
+        
+        # Get queue item for bandwidth allocation
+        queue_item = db.query(DownloadQueue).filter(
+            DownloadQueue.id == download_id,
+            DownloadQueue.user_id == user_id,
+            DownloadQueue.token_id == token_id
+        ).first()
+        
+        if not queue_item:
+            await websocket.send_json({
+                "type": "archive_error",
+                "download_id": download_id,
+                "error": "Download not found"
+            })
+            return
+        
+        # Get allocated bandwidth for throttling
+        allocated_bandwidth = 0
+        bandwidth_manager = None
+        
+        if queue_item.status in ['downloading'] and queue_item.queue_type:
+            from app.services.bandwidth import BandwidthManager
+            bandwidth_manager = BandwidthManager(db)
+            allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
+            
+            # Apply user's custom bandwidth limit if set
+            from app.database import User
+            db_user = db.query(User).filter(User.user_id == queue_item.user_id).first()
+            if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
+                allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
+                logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
+            
+            logger.info(f"Allocated bandwidth for WebSocket archive download: {allocated_bandwidth} bytes/s ({allocated_bandwidth / 125000:.2f} Mbits/s)")
+        
+        # Convert requested_files list to set for helper function
+        requested_files_set = None
+        if requested_files:
+            requested_files_set = set(requested_files)
+        
+        # Discover files using helper function
+        all_files_list, system, resolved_game_id = await discover_download_files(
+            download_id, token_id, user_id, requested_files_set, db
+        )
+        
+        if not all_files_list:
+            await websocket.send_json({
+                "type": "archive_error",
+                "download_id": download_id,
+                "error": "No files found to archive"
+            })
+            return
+        
+        # Throttling setup
+        if allocated_bandwidth > 0:
+            chunk_size = 64 * 1024  # 64KB chunks for throttling
+            bytes_per_second = allocated_bandwidth
+            seconds_per_chunk = chunk_size / bytes_per_second
+            logger.info(f"Starting throttled WebSocket archive stream: chunk_size={chunk_size}, bytes_per_second={bytes_per_second}, seconds_per_chunk={seconds_per_chunk:.3f}s")
+            
+            chunk_count = 0
+            total_bytes = 0
+            start_time = time.time()
+            last_chunk_time = start_time
+            last_user_count_check = start_time
+            user_count_check_interval = 2.0
+            last_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
+            pause_check_interval = 2.0
+            last_pause_check = start_time
+            bandwidth_changed = False
+        else:
+            chunk_size = 1024 * 1024  # 1MB chunks
+            bytes_per_second = 0
+            seconds_per_chunk = 0
+            logger.info("WebSocket archive stream: no throttling (allocated_bandwidth is 0)")
+        
+        # Stream files in binary format with throttling
+        for file_info in all_files_list:
+            source_path = file_info['source_path']
+            relative_path = file_info['relative_path']
+            file_size = file_info['size']
+            
+            # Check if download is paused
+            if allocated_bandwidth > 0:
+                current_time = time.time()
+                if current_time - last_pause_check >= pause_check_interval:
+                    db.refresh(queue_item)
+                    if queue_item.status == 'paused':
+                        logger.info(f"Download {download_id} was paused during WebSocket archive streaming - stopping")
+                        await websocket.send_json({
+                            "type": "archive_error",
+                            "download_id": download_id,
+                            "error": "Download paused"
+                        })
+                        return
+                    last_pause_check = current_time
+            
+            # Encode path as UTF-8
+            path_bytes = relative_path.encode('utf-8')
+            path_length = len(path_bytes)
+            
+            # Build header: path_length (4 bytes) + path + file_size (8 bytes)
+            header = struct.pack('>I', path_length)  # 4 bytes, big-endian uint32
+            header += path_bytes  # path as UTF-8
+            header += struct.pack('>Q', file_size)  # 8 bytes, big-endian uint64
+            
+            # Send header with throttling if needed
+            if allocated_bandwidth > 0:
+                current_time = time.time()
+                expected_time = last_chunk_time + (len(header) / bytes_per_second)
+                if current_time < expected_time:
+                    sleep_time = expected_time - current_time
+                    if sleep_time > 0.5:
+                        sleep_time = 0.5
+                    if sleep_time > 0:
+                        await asyncio.sleep(sleep_time)
+                await websocket.send_bytes(header)
+                last_chunk_time = time.time()
+                total_bytes += len(header)
+            else:
+                await websocket.send_bytes(header)
+            
+            # Stream file data in chunks with throttling
+            with open(source_path, 'rb') as f:
+                while True:
+                    # Check if download is paused
+                    if allocated_bandwidth > 0:
+                        current_time = time.time()
+                        if current_time - last_pause_check >= pause_check_interval:
+                            db.refresh(queue_item)
+                            if queue_item.status == 'paused':
+                                logger.info(f"Download {download_id} was paused during WebSocket archive streaming - stopping")
+                                await websocket.send_json({
+                                    "type": "archive_error",
+                                    "download_id": download_id,
+                                    "error": "Download paused"
+                                })
+                                return
+                            last_pause_check = current_time
+                        
+                        # Check for bandwidth changes
+                        if current_time - last_user_count_check >= user_count_check_interval:
+                            bandwidth_changed = False
+                            current_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
+                            
+                            # Recompute bandwidth allocation
+                            new_allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
+                            
+                            # Re-apply user's custom bandwidth limit
+                            from app.database import SessionLocal
+                            fresh_db = SessionLocal()
+                            try:
+                                # Use fresh session to get latest user bandwidth_limit
+                                fresh_user = fresh_db.query(User).filter(User.user_id == queue_item.user_id).first()
+                                if fresh_user and fresh_user.bandwidth_limit is not None and fresh_user.bandwidth_limit > 0:
+                                    new_allocated_bandwidth = min(new_allocated_bandwidth, fresh_user.bandwidth_limit)
+                            finally:
+                                fresh_db.close()
+                            
+                            # Update bandwidth if changed
+                            if new_allocated_bandwidth > 0 and new_allocated_bandwidth != bytes_per_second:
+                                bandwidth_changed = True
+                                old_bytes_per_second = bytes_per_second
+                                bytes_per_second = new_allocated_bandwidth
+                                old_seconds_per_chunk = seconds_per_chunk
+                                seconds_per_chunk = chunk_size / bytes_per_second
+                                
+                                if current_active_user_count != last_active_user_count:
+                                    logger.info(f"WebSocket archive stream: user count changed ({last_active_user_count} -> {current_active_user_count}), recomputed bandwidth: {old_bytes_per_second} -> {bytes_per_second} bytes/s")
+                                else:
+                                    logger.info(f"WebSocket archive stream: user bandwidth limit changed, recomputed bandwidth: {old_bytes_per_second} -> {bytes_per_second} bytes/s")
+                                last_active_user_count = current_active_user_count
+                            
+                            last_user_count_check = current_time
+                            
+                            if bandwidth_changed:
+                                last_chunk_time = time.time()
+                    
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    
+                    # Apply throttling if needed
+                    if allocated_bandwidth > 0:
+                        current_time = time.time()
+                        expected_time = last_chunk_time + seconds_per_chunk
+                        
+                        # Sleep to throttle
+                        if current_time < expected_time:
+                            sleep_time = expected_time - current_time
+                            if sleep_time > 0.5:
+                                sleep_time = 0.5
+                            if sleep_time > 0:
+                                await asyncio.sleep(sleep_time)
+                        
+                        await websocket.send_bytes(chunk)
+                        last_chunk_time = time.time()
+                        chunk_count += 1
+                        total_bytes += len(chunk)
+                        
+                        # Log progress every 100 chunks
+                        if chunk_count % 100 == 0:
+                            elapsed_total = time.time() - start_time
+                            current_rate = total_bytes / elapsed_total if elapsed_total > 0 else 0
+                            logger.debug(f"WebSocket archive stream: {total_bytes} bytes ({chunk_count} chunks), rate: {current_rate / 125000:.2f} Mbits/s (target: {bytes_per_second / 125000:.2f} Mbits/s)")
+                    else:
+                        await websocket.send_bytes(chunk)
+        
+        # Send end marker (4 zero bytes) with throttling if needed
+        end_marker = struct.pack('>I', 0)
+        if allocated_bandwidth > 0:
+            current_time = time.time()
+            expected_time = last_chunk_time + (len(end_marker) / bytes_per_second)
+            if current_time < expected_time:
+                sleep_time = expected_time - current_time
+                if sleep_time > 0.5:
+                    sleep_time = 0.5
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
+        
+        await websocket.send_bytes(end_marker)
+        
+        # Send completion message
+        await websocket.send_json({
+            "type": "archive_complete",
+            "download_id": download_id
+        })
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error streaming archive via WebSocket: {e}", exc_info=True)
+        try:
+            await websocket.send_json({
+                "type": "archive_error",
+                "download_id": download_id,
+                "error": str(e)
+            })
+        except:
+            pass
+        raise
 
 @router.get("/queue")
 async def get_queue(
@@ -403,6 +922,35 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
                         elif message.get("type") == "pong":
                             # Client responded to our ping
                             logger.debug(f"Received pong from token_id {token_id}")
+                        elif message.get("type") == "request_archive":
+                            # Handle archive download request via WebSocket
+                            download_id = message.get("download_id")
+                            requested_files = message.get("files")  # Optional list of files
+                            
+                            if not download_id:
+                                await websocket.send_json({
+                                    "type": "archive_error",
+                                    "error": "download_id required"
+                                })
+                                continue
+                            
+                            logger.info(f"Received archive request via WebSocket: download_id={download_id}, files={len(requested_files) if requested_files else 'all'}")
+                            try:
+                                # Stream archive via WebSocket
+                                await stream_archive_via_websocket(
+                                    websocket, download_id, token_id, user_id, 
+                                    requested_files, db
+                                )
+                            except Exception as e:
+                                logger.error(f"Error streaming archive via WebSocket: {e}", exc_info=True)
+                                try:
+                                    await websocket.send_json({
+                                        "type": "archive_error",
+                                        "download_id": download_id,
+                                        "error": str(e)
+                                    })
+                                except:
+                                    pass
                     except json.JSONDecodeError:
                         # Non-JSON message, ignore
                         pass
@@ -1853,6 +2401,290 @@ async def upload_gamelist(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while uploading gamelist.tar.gz"
+        )
+
+
+@router.post("/file/archive")
+async def download_files_as_binary(
+    request: Request,
+    body: ArchiveDownloadRequest,
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Stream multiple files using a custom binary format.
+    
+    Binary format:
+    - For each file:
+      - 4 bytes (uint32 BE): path_length
+      - N bytes: path (UTF-8 encoded)
+      - 8 bytes (uint64 BE): file_size
+      - M bytes: file_data (raw bytes)
+    - End marker: 4 zero bytes (path_length = 0)
+    
+    If 'files' parameter is provided, only those files will be included.
+    Otherwise, all files for the download will be included.
+    """
+    try:
+        download_id = body.download_id
+        requested_files_list = body.files
+        
+        # Get token_id from request state
+        token_id = getattr(request.state, 'token_id', None)
+        if token_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="API token authentication required"
+            )
+        
+        user_id = current_user['id']
+        
+        # Get list of files to include
+        requested_files = None
+        if requested_files_list:
+            requested_files = set(requested_files_list)
+        
+        # Get queue item for bandwidth allocation
+        queue_item = db.query(DownloadQueue).filter(
+            DownloadQueue.id == download_id,
+            DownloadQueue.user_id == user_id,
+            DownloadQueue.token_id == token_id
+        ).first()
+        
+        if not queue_item:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Download not found"
+            )
+        
+        # Discover files using helper function
+        all_files_list, system, resolved_game_id = await discover_download_files(
+            download_id, token_id, user_id, requested_files, db
+        )
+        
+        if not all_files_list:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No files found to archive"
+            )
+        
+        # Get allocated bandwidth for throttling
+        allocated_bandwidth = 0
+        bandwidth_manager = None
+        
+        if queue_item.status in ['downloading'] and queue_item.queue_type:
+            from app.services.bandwidth import BandwidthManager
+            bandwidth_manager = BandwidthManager(db)
+            allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
+            
+            # Apply user's custom bandwidth limit if set
+            from app.database import User
+            db_user = db.query(User).filter(User.user_id == queue_item.user_id).first()
+            if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
+                allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
+                logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
+            
+            logger.info(f"Allocated bandwidth for archive download: {allocated_bandwidth} bytes/s ({allocated_bandwidth / 125000:.2f} Mbits/s)")
+        
+        # Async generator to stream binary format
+        async def generate_binary_stream():
+            """Stream files in custom binary format with bandwidth throttling.
+            
+            Format per file:
+            - 4 bytes (uint32 BE): path_length
+            - N bytes: path (UTF-8)
+            - 8 bytes (uint64 BE): file_size
+            - M bytes: file_data
+            End marker: 4 zero bytes
+            """
+            import time
+            
+            try:
+                # Throttling setup
+                if allocated_bandwidth > 0:
+                    chunk_size = 64 * 1024  # 64KB chunks for throttling
+                    bytes_per_second = allocated_bandwidth
+                    seconds_per_chunk = chunk_size / bytes_per_second
+                    logger.info(f"Starting throttled binary archive stream: chunk_size={chunk_size}, bytes_per_second={bytes_per_second}, seconds_per_chunk={seconds_per_chunk:.3f}s")
+                    
+                    chunk_count = 0
+                    total_bytes = 0
+                    start_time = time.time()
+                    last_chunk_time = start_time
+                    last_user_count_check = start_time
+                    user_count_check_interval = 2.0
+                    last_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type) if bandwidth_manager else 0
+                    pause_check_interval = 2.0
+                    last_pause_check = start_time
+                    bandwidth_changed = False
+                else:
+                    # No throttling
+                    chunk_size = 1024 * 1024  # 1MB chunks
+                    bytes_per_second = 0
+                    seconds_per_chunk = 0
+                    chunk_count = 0
+                    total_bytes = 0
+                    start_time = time.time()
+                    last_chunk_time = start_time
+                    pause_check_interval = 2.0
+                    last_pause_check = start_time
+                    logger.info("Binary archive stream: no throttling (allocated_bandwidth is 0)")
+                
+                for file_info in all_files_list:
+                    source_path = file_info['source_path']
+                    relative_path = file_info['relative_path']
+                    file_size = file_info['size']
+                    
+                    # Check if download is paused
+                    if allocated_bandwidth > 0:
+                        current_time = time.time()
+                        if current_time - last_pause_check >= pause_check_interval:
+                            db.refresh(queue_item)
+                            if queue_item.status == 'paused':
+                                logger.info(f"Download {download_id} was paused during archive streaming - stopping")
+                                return
+                            last_pause_check = current_time
+                    
+                    # Encode path as UTF-8
+                    path_bytes = relative_path.encode('utf-8')
+                    path_length = len(path_bytes)
+                    
+                    # Build header: path_length (4 bytes) + path + file_size (8 bytes)
+                    header = struct.pack('>I', path_length)  # 4 bytes, big-endian uint32
+                    header += path_bytes  # path as UTF-8
+                    header += struct.pack('>Q', file_size)  # 8 bytes, big-endian uint64
+                    
+                    # Yield header (throttle if needed)
+                    if allocated_bandwidth > 0:
+                        # Throttle header sending
+                        current_time = time.time()
+                        expected_time = last_chunk_time + (len(header) / bytes_per_second)
+                        if current_time < expected_time:
+                            sleep_time = expected_time - current_time
+                            if sleep_time > 0.5:
+                                sleep_time = 0.5
+                            if sleep_time > 0:
+                                await asyncio.sleep(sleep_time)
+                        yield header
+                        last_chunk_time = time.time()
+                        total_bytes += len(header)
+                    else:
+                        yield header
+                    
+                    # Stream file data in chunks with throttling
+                    with open(source_path, 'rb') as f:
+                        while True:
+                            # Check if download is paused
+                            if allocated_bandwidth > 0:
+                                current_time = time.time()
+                                if current_time - last_pause_check >= pause_check_interval:
+                                    db.refresh(queue_item)
+                                    if queue_item.status == 'paused':
+                                        logger.info(f"Download {download_id} was paused during archive streaming - stopping")
+                                        return
+                                    last_pause_check = current_time
+                                
+                                # Check for bandwidth changes
+                                if current_time - last_user_count_check >= user_count_check_interval:
+                                    bandwidth_changed = False
+                                    current_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
+                                    
+                                    # Recompute bandwidth allocation
+                                    new_allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
+                                    
+                                    # Re-apply user's custom bandwidth limit
+                                    from app.database import SessionLocal, User
+                                    fresh_db = SessionLocal()
+                                    try:
+                                        fresh_user = fresh_db.query(User).filter(User.user_id == queue_item.user_id).first()
+                                        if fresh_user and fresh_user.bandwidth_limit is not None and fresh_user.bandwidth_limit > 0:
+                                            new_allocated_bandwidth = min(new_allocated_bandwidth, fresh_user.bandwidth_limit)
+                                    finally:
+                                        fresh_db.close()
+                                    
+                                    # Update bandwidth if changed
+                                    if new_allocated_bandwidth > 0 and new_allocated_bandwidth != bytes_per_second:
+                                        bandwidth_changed = True
+                                        old_bytes_per_second = bytes_per_second
+                                        bytes_per_second = new_allocated_bandwidth
+                                        old_seconds_per_chunk = seconds_per_chunk
+                                        seconds_per_chunk = chunk_size / bytes_per_second
+                                        
+                                        if current_active_user_count != last_active_user_count:
+                                            logger.info(f"Archive stream: user count changed ({last_active_user_count} -> {current_active_user_count}), recomputed bandwidth: {old_bytes_per_second} -> {bytes_per_second} bytes/s")
+                                        else:
+                                            logger.info(f"Archive stream: user bandwidth limit changed, recomputed bandwidth: {old_bytes_per_second} -> {bytes_per_second} bytes/s")
+                                        last_active_user_count = current_active_user_count
+                                    
+                                    last_user_count_check = current_time
+                                    
+                                    if bandwidth_changed:
+                                        last_chunk_time = time.time()
+                            
+                            chunk = f.read(chunk_size)
+                            if not chunk:
+                                break
+                            
+                            # Apply throttling if needed
+                            if allocated_bandwidth > 0:
+                                current_time = time.time()
+                                expected_time = last_chunk_time + seconds_per_chunk
+                                
+                                # Sleep to throttle
+                                if current_time < expected_time:
+                                    sleep_time = expected_time - current_time
+                                    if sleep_time > 0.5:
+                                        sleep_time = 0.5
+                                    if sleep_time > 0:
+                                        await asyncio.sleep(sleep_time)
+                                
+                                yield chunk
+                                last_chunk_time = time.time()
+                                chunk_count += 1
+                                total_bytes += len(chunk)
+                                
+                                # Log progress every 100 chunks
+                                if chunk_count % 100 == 0:
+                                    elapsed_total = time.time() - start_time
+                                    current_rate = total_bytes / elapsed_total if elapsed_total > 0 else 0
+                                    logger.debug(f"Archive stream: {total_bytes} bytes ({chunk_count} chunks), rate: {current_rate / 125000:.2f} Mbits/s (target: {bytes_per_second / 125000:.2f} Mbits/s)")
+                            else:
+                                yield chunk
+                
+                # End marker: 4 zero bytes
+                end_marker = struct.pack('>I', 0)
+                if allocated_bandwidth > 0:
+                    # Throttle end marker
+                    current_time = time.time()
+                    expected_time = last_chunk_time + (len(end_marker) / bytes_per_second)
+                    if current_time < expected_time:
+                        sleep_time = expected_time - current_time
+                        if sleep_time > 0.5:
+                            sleep_time = 0.5
+                        if sleep_time > 0:
+                            await asyncio.sleep(sleep_time)
+                
+                yield end_marker
+                    
+            except Exception as e:
+                logger.error(f"Error generating binary stream: {e}", exc_info=True)
+                raise
+        
+        return StreamingResponse(
+            generate_binary_stream(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="download_{download_id}.bin"',
+                "Content-Type": "application/octet-stream"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in download_files_as_binary: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating binary archive: {str(e)}"
         )
 
 
