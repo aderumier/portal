@@ -19,6 +19,7 @@ import tarfile
 import tempfile
 import io
 import random
+import struct
 
 # Client version
 CLIENT_VERSION = "0.3"
@@ -164,6 +165,335 @@ _download_log_handlers = {}
 # Global dictionary to track paused downloads (download_id -> paused_ref)
 # This allows WebSocket notifications to immediately pause downloads
 _active_download_pause_refs = {}
+_active_websocket = None  # Global reference to active WebSocket connection
+_websocket_lock = threading.Lock()  # Lock for thread-safe access
+_websocket_event_loop = None  # Event loop for WebSocket operations
+
+async def download_directory_via_websocket_async(
+    download_id, remaining_files_list, dest_base_path, system, 
+    files_list, bytes_already_transferred, paused_ref, download_info
+):
+    """Async function to download directory via WebSocket.
+    
+    This function handles the WebSocket communication and delegates to
+    a helper that processes binary data.
+    
+    Retries once for files with size mismatches.
+    """
+    import json
+    
+    with _websocket_lock:
+        websocket = _active_websocket
+    
+    if not websocket:
+        logger.warning("WebSocket not available, cannot use WebSocket for archive download")
+        return False
+    
+    try:
+        max_attempts = 2  # Original attempt + 1 retry
+        attempt = 0
+        files_to_download = remaining_files_list
+        all_failed_files = []  # Track all files that failed across attempts
+        current_files_list = files_list  # Files to process (may be filtered on retry)
+        
+        while attempt < max_attempts:
+            attempt += 1
+            if attempt > 1:
+                logger.info(f"Retrying WebSocket archive download for {len(files_to_download)} file(s) (attempt {attempt}/{max_attempts})")
+                # Filter files_list to only include files we're retrying (for path resolution)
+                retry_files_set = set(files_to_download)
+                current_files_list = [f for f in files_list if f['relative_path'] in retry_files_set]
+            
+            # Send request via WebSocket
+            request_msg = {
+                "type": "request_archive",
+                "download_id": download_id,
+                "files": files_to_download if files_to_download else None  # None means all files
+            }
+            await websocket.send(json.dumps(request_msg))
+            logger.info(f"Sent archive request via WebSocket for download_id={download_id}, files={len(files_to_download) if files_to_download else 'all'}")
+            
+            # Now wait for archive_start, then receive binary data, then archive_complete/error
+            # We'll parse the binary stream similar to HTTP version
+            success, failed_files = await process_websocket_archive_stream(
+                download_id, websocket, dest_base_path, system, 
+                current_files_list, bytes_already_transferred, paused_ref
+            )
+            
+            # Filter failed files to only those with size mismatches for retry
+            size_mismatch_files = [path for path, error in failed_files if 'Size mismatch' in error or 'size mismatch' in error.lower()]
+            other_errors = [(path, error) for path, error in failed_files if 'Size mismatch' not in error and 'size mismatch' not in error.lower()]
+            
+            # Add other errors to all_failed_files (these won't be retried)
+            all_failed_files.extend(other_errors)
+            
+            if success:
+                # Success - if we had retries, some files succeeded on retry
+                if all_failed_files:
+                    logger.warning(f"WebSocket download completed with {len(all_failed_files)} non-retryable error(s): {all_failed_files}")
+                    return False
+                return True
+            elif size_mismatch_files and attempt < max_attempts:
+                # Retry files with size mismatches
+                logger.info(f"Retrying {len(size_mismatch_files)} file(s) with size mismatches: {size_mismatch_files}")
+                files_to_download = size_mismatch_files
+                # Continue to retry loop
+            else:
+                # No more retries or no size mismatch files to retry
+                if size_mismatch_files:
+                    all_failed_files.extend([(path, error) for path, error in failed_files if path in size_mismatch_files])
+                break
+        
+        # All attempts exhausted - report all failures
+        if all_failed_files:
+            error_details = "; ".join([f"{path}: {error}" for path, error in all_failed_files])
+            logger.error(f"WebSocket download completed with errors after {max_attempts} attempts: {error_details}")
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error in WebSocket archive download: {e}", exc_info=True)
+        return False
+
+async def process_websocket_archive_stream(
+    download_id, websocket, dest_base_path, system, 
+    files_list, bytes_already_transferred, paused_ref
+):
+    """Process binary archive stream from WebSocket."""
+    import shutil
+    
+    # Wait for archive_start message
+    try:
+        start_message = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+        if isinstance(start_message, str):
+            start_data = json.loads(start_message)
+            if start_data.get("type") != "archive_start":
+                logger.error(f"Unexpected message type: {start_data.get('type')}")
+                return False, [("unknown", f"Unexpected message type: {start_data.get('type')}")]
+        else:
+            # Binary data received before archive_start - might be valid, continue
+            pass
+    except asyncio.TimeoutError:
+        logger.error("Timeout waiting for archive_start message")
+        return False, [("unknown", "Timeout waiting for archive_start message")]
+    
+    # Similar parsing logic to HTTP version but using async WebSocket receive
+    total_bytes_downloaded = bytes_already_transferred
+    bytes_transferred_this_session = [0]
+    start_time = time.time()
+    last_report_time = start_time
+    files_with_errors = []
+    extracted_files = set()
+    
+    # Buffer for parsing binary format
+    buffer = b''
+    current_file_info = None
+    current_file_relative_path = None
+    current_file_size = None
+    current_file_bytes_remaining = None
+    current_dest_file = None
+    current_file_skip = False
+    
+    # If we received binary data in start_message, add it to buffer
+    if isinstance(start_message, bytes):
+        buffer = start_message
+        bytes_transferred_this_session[0] += len(start_message)
+    
+    # Create a mapping of relative_path to file_info for quick lookup
+    files_dict = {f['relative_path']: f for f in files_list}
+    remaining_files_set = set(f['relative_path'] for f in files_list)
+    
+    try:
+        # Receive binary chunks from WebSocket
+        while True:
+            # Check for pause
+            if paused_ref and paused_ref[0]:
+                logger.info(f"Download {download_id} was paused during WebSocket streaming")
+                if current_dest_file:
+                    current_dest_file.close()
+                return False, [("unknown", "Download paused")]
+            
+            # Wait for next message (with timeout to check for pause)
+            try:
+                message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+            except asyncio.TimeoutError:
+                # Timeout - check pause and continue
+                continue
+            
+            # Check if it's a control message (JSON) or binary data
+            if isinstance(message, str):
+                try:
+                    data = json.loads(message)
+                    msg_type = data.get("type")
+                    if msg_type == "archive_complete":
+                        # Stream complete
+                        break
+                    elif msg_type == "archive_error":
+                        error = data.get("error", "Unknown error")
+                        logger.error(f"Archive error from server: {error}")
+                        return False, [("unknown", f"Server error: {error}")]
+                    # Other JSON messages can be ignored
+                    continue
+                except json.JSONDecodeError:
+                    # Not JSON, treat as binary (shouldn't happen but handle gracefully)
+                    pass
+            
+            # Binary message - add to buffer
+            if isinstance(message, bytes):
+                bytes_transferred_this_session[0] += len(message)
+                buffer += message
+                
+                # Parse buffer (same logic as HTTP version)
+                while True:
+                    if current_file_info is None:
+                        # Waiting for file header
+                        if len(buffer) < 4:
+                            break  # Not enough data
+                        
+                        path_length = struct.unpack('>I', buffer[:4])[0]
+                        
+                        # Check for end marker
+                        if path_length == 0:
+                            buffer = buffer[4:]
+                            break  # End of stream
+                        
+                        # Need full header
+                        if len(buffer) < 4 + path_length + 8:
+                            break
+                        
+                        # Extract path and file_size
+                        path_bytes = buffer[4:4+path_length]
+                        relative_path = path_bytes.decode('utf-8')
+                        file_size = struct.unpack('>Q', buffer[4+path_length:4+path_length+8])[0]
+                        
+                        # Consume header
+                        buffer = buffer[4+path_length+8:]
+                        
+                        # Find file info
+                        file_info = files_dict.get(relative_path)
+                        if not file_info:
+                            logger.warning(f"Unexpected file in stream: {relative_path}, skipping {file_size} bytes")
+                            current_file_info = None
+                            current_file_relative_path = relative_path
+                            current_file_size = file_size
+                            current_file_bytes_remaining = file_size
+                            current_file_skip = True
+                            continue
+                        
+                        # Determine destination path
+                        if 'destination_rom_path' in file_info:
+                            dest_rom_path = file_info['destination_rom_path']
+                            dest_system = file_info.get('destination_system', system)
+                            dest_file_path = os.path.join(ROMS_PATH, dest_system, dest_rom_path)
+                        else:
+                            dest_file_path = os.path.join(dest_base_path, relative_path)
+                        
+                        # Create directory and open file
+                        dest_file_dir = os.path.dirname(dest_file_path)
+                        os.makedirs(dest_file_dir, exist_ok=True)
+                        
+                        try:
+                            current_file_info = file_info
+                            current_file_relative_path = relative_path
+                            current_file_size = file_size
+                            current_file_bytes_remaining = file_size
+                            current_file_skip = False
+                            current_dest_file = open(dest_file_path, 'wb')
+                            logger.debug(f"Starting extraction via WebSocket: {relative_path} ({file_size} bytes)")
+                        except Exception as e:
+                            logger.error(f"Error opening destination file {dest_file_path}: {e}")
+                            files_with_errors.append((relative_path, f"File open error: {e}"))
+                            current_file_info = None
+                            current_file_relative_path = relative_path
+                            current_file_size = file_size
+                            current_file_bytes_remaining = file_size
+                            current_file_skip = True
+                            current_dest_file = None
+                    
+                    # Write file data
+                    if current_file_bytes_remaining is not None and current_file_bytes_remaining > 0:
+                        bytes_to_write = min(len(buffer), current_file_bytes_remaining)
+                        if bytes_to_write > 0:
+                            if current_file_skip:
+                                buffer = buffer[bytes_to_write:]
+                                current_file_bytes_remaining -= bytes_to_write
+                            else:
+                                if current_dest_file:
+                                    current_dest_file.write(buffer[:bytes_to_write])
+                                    buffer = buffer[bytes_to_write:]
+                                    current_file_bytes_remaining -= bytes_to_write
+                                else:
+                                    buffer = buffer[bytes_to_write:]
+                                    current_file_bytes_remaining -= bytes_to_write
+                            
+                            # File complete
+                            if current_file_bytes_remaining == 0:
+                                if current_dest_file:
+                                    current_dest_file.close()
+                                    current_dest_file = None
+                                
+                                if not current_file_skip and current_file_info:
+                                    # Verify file size
+                                    if 'destination_rom_path' in current_file_info:
+                                        dest_file_path = os.path.join(ROMS_PATH, current_file_info.get('destination_system', system), current_file_info['destination_rom_path'])
+                                    else:
+                                        dest_file_path = os.path.join(dest_base_path, current_file_relative_path)
+                                    
+                                    if os.path.exists(dest_file_path):
+                                        actual_size = os.path.getsize(dest_file_path)
+                                        expected_size = int(current_file_info['size'])
+                                        if actual_size == expected_size:
+                                            extracted_files.add(current_file_relative_path)
+                                            logger.debug(f"Extracted and verified via WebSocket: {current_file_relative_path} ({actual_size} bytes)")
+                                        else:
+                                            logger.warning(f"File size mismatch: {current_file_relative_path} - local={actual_size}, expected={expected_size}")
+                                            files_with_errors.append((current_file_relative_path, f"Size mismatch: {actual_size} != {expected_size}"))
+                                            try:
+                                                os.remove(dest_file_path)
+                                            except:
+                                                pass
+                                    else:
+                                        files_with_errors.append((current_file_relative_path, "File not created"))
+                                
+                                # Reset for next file
+                                current_file_info = None
+                                current_file_relative_path = None
+                                current_file_size = None
+                                current_file_bytes_remaining = None
+                                current_file_skip = False
+                        else:
+                            break
+                    else:
+                        break
+        
+        # Cleanup
+        if current_dest_file:
+            current_dest_file.close()
+        
+        # Verify all files were extracted
+        if len(extracted_files) != len(remaining_files_set):
+            missing = remaining_files_set - extracted_files
+            logger.warning(f"Not all files extracted. Missing: {missing}")
+            for missing_file in missing:
+                # Only add if not already in files_with_errors
+                if not any(path == missing_file for path, _ in files_with_errors):
+                    files_with_errors.append((missing_file, "Not extracted from stream"))
+        
+        if files_with_errors:
+            error_details = "; ".join([f"{path}: {error}" for path, error in files_with_errors])
+            logger.error(f"WebSocket download completed with errors: {error_details}")
+            # Return False with list of failed files for retry logic
+            return False, files_with_errors
+        
+        logger.info(f"Successfully downloaded and extracted {len(extracted_files)} files via WebSocket")
+        return True, []
+        
+    except Exception as e:
+        logger.error(f"Error in WebSocket archive stream processing: {e}", exc_info=True)
+        if current_dest_file:
+            current_dest_file.close()
+        # Return False with error info
+        error_info = [("unknown", f"Stream processing error: {str(e)}")]
+        return False, error_info
 
 # Configuration - read from config.ini first, then environment variables, then defaults
 # Priority: config.ini > environment variable > default
@@ -1040,13 +1370,440 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
     logger.error(f"Max retries ({max_retries}) exceeded for download")
     return False
 
+def download_directory_as_tar(download_id, system, game_id, base_url, dest_base_path, files_list, bytes_already_transferred, paused_ref, download_info=None):
+    """Download all files in a directory as a streaming binary archive (hybrid approach with file-level tracking).
+    
+    This function uses binary streaming to reduce HTTP overhead. It tracks which files are complete
+    and only requests remaining files on resume. Files are extracted on-the-fly as they arrive.
+    
+    Binary format:
+    - For each file:
+      - 4 bytes (uint32 BE): path_length
+      - N bytes: path (UTF-8)
+      - 8 bytes (uint64 BE): file_size
+      - M bytes: file_data
+    - End marker: 4 zero bytes
+    
+    Args:
+        download_id: Download ID for progress tracking
+        system: System name
+        game_id: Game ID
+        base_url: Base API URL
+        dest_base_path: Base destination path for files
+        files_list: List of file info dicts with 'relative_path' and 'size'
+        bytes_already_transferred: Bytes already downloaded (for progress tracking)
+        paused_ref: Reference to pause flag [False] or [True]
+        download_info: Optional download_info dict containing download_id for URL construction
+    """
+    import json
+    import shutil
+    
+    # Reset paused_ref to False at the start
+    if paused_ref:
+        paused_ref[0] = False
+    
+    # Step 1: Check which files already exist and are complete
+    completed_files = {}  # {relative_path: file_size}
+    remaining_files = []
+    
+    for file_info in files_list:
+        relative_path = file_info['relative_path']
+        expected_size = int(file_info['size'])
+        
+        # Determine destination path
+        if 'destination_rom_path' in file_info:
+            dest_rom_path = file_info['destination_rom_path']
+            dest_system = file_info.get('destination_system', system)
+            dest_file_path = os.path.join(ROMS_PATH, dest_system, dest_rom_path)
+        else:
+            dest_file_path = os.path.join(dest_base_path, relative_path)
+        
+        if os.path.exists(dest_file_path):
+            try:
+                existing_size = os.path.getsize(dest_file_path)
+                if existing_size == expected_size:
+                    # File is complete, skip it
+                    completed_files[relative_path] = existing_size
+                    logger.debug(f"File already complete: {relative_path}")
+                    continue
+                elif existing_size > expected_size:
+                    # File is larger than expected (corrupted), delete it
+                    logger.warning(f"File size mismatch for {relative_path}: local={existing_size} bytes, server={expected_size} bytes (too large, deleting)")
+                    try:
+                        os.remove(dest_file_path)
+                        logger.info(f"Deleted oversized file: {relative_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete oversized file {dest_file_path}: {e}")
+            except Exception as e:
+                logger.warning(f"Error checking file {relative_path}: {e}")
+        
+        # File is missing or incomplete, needs to be downloaded
+        remaining_files.append(file_info)
+    
+    if not remaining_files:
+        logger.info(f"All {len(completed_files)} files already complete!")
+        return True
+    
+    logger.info(f"Streaming binary archive: {len(completed_files)} files already complete, {len(remaining_files)} remaining")
+    
+    # Step 2: Request binary stream with ONLY remaining files
+    # Build list of relative paths for the request
+    remaining_paths = [f['relative_path'] for f in remaining_files]
+    
+    # Check if WebSocket is available and prefer it over HTTP
+    use_websocket = False
+    with _websocket_lock:
+        if _active_websocket is not None:
+            use_websocket = True
+            logger.info("Using WebSocket for archive download (avoids reverse proxy timeouts)")
+    
+    if use_websocket:
+        # Try to use WebSocket for download
+        try:
+            # Use the stored event loop from WebSocket connection
+            with _websocket_lock:
+                loop = _websocket_event_loop
+            
+            if loop and loop.is_running():
+                # Loop is running (in WebSocket thread), use run_coroutine_threadsafe
+                import concurrent.futures
+                future = asyncio.run_coroutine_threadsafe(
+                    download_directory_via_websocket_async(
+                        download_id, remaining_paths, dest_base_path, system,
+                        remaining_files, bytes_already_transferred, paused_ref, download_info
+                    ),
+                    loop
+                )
+                result = future.result(timeout=3600)  # 1 hour timeout
+                return result
+            else:
+                logger.warning("WebSocket event loop not available or not running, falling back to HTTP")
+                use_websocket = False
+        except Exception as e:
+            logger.warning(f"WebSocket archive download failed, falling back to HTTP: {e}", exc_info=True)
+            use_websocket = False
+    
+    # Fallback to HTTP POST (existing implementation)
+    if download_info and 'download_id' in download_info:
+        archive_url = f"{base_url}/api/download/file/archive"
+        request_body = {
+            "download_id": download_id,
+            "files": remaining_paths
+        }
+    else:
+        # Fallback if no download_id (shouldn't happen, but handle gracefully)
+        logger.warning("No download_id available, cannot use binary streaming")
+        return False
+    
+    # Step 3: Stream and extract binary archive on-the-fly
+    total_bytes_downloaded = bytes_already_transferred + sum(completed_files.values())
+    bytes_transferred_this_session = [0]
+    start_time = time.time()
+    last_report_time = start_time
+    progress_thread_running = True
+    files_with_errors = []
+    extracted_files = set()
+    
+    def progress_reporter():
+        """Background thread to report progress periodically."""
+        nonlocal last_report_time, progress_thread_running, total_bytes_downloaded
+        interval = BANDWIDTH_UPDATE_INTERVAL if BANDWIDTH_UPDATE_INTERVAL is not None else 5
+        while progress_thread_running:
+            time.sleep(interval)
+            elapsed = time.time() - last_report_time
+            if elapsed > 0:
+                total_bytes_downloaded += bytes_transferred_this_session[0]
+                bytes_per_second = int(bytes_transferred_this_session[0] / elapsed) if bytes_transferred_this_session[0] > 0 else 0
+                
+                if not progress_thread_running:
+                    break
+                
+                try:
+                    progress_result = report_progress(download_id, total_bytes_downloaded, bytes_per_second)
+                    if progress_result is None:
+                        logger.debug(f"Download {download_id} was removed from queue")
+                        paused_ref[0] = False
+                        progress_thread_running = False
+                        break
+                    elif progress_result is False:
+                        logger.info(f"Download {download_id} is paused")
+                        paused_ref[0] = True
+                        progress_thread_running = False
+                        break
+                except requests.exceptions.HTTPError as e:
+                    if e.response and e.response.status_code == 410:
+                        logger.debug(f"Progress report returned 410 Gone - download {download_id} removed")
+                        paused_ref[0] = False
+                        progress_thread_running = False
+                        break
+                    if not progress_thread_running:
+                        break
+                except Exception as e:
+                    logger.debug(f"Progress report failed: {e}")
+                    if not progress_thread_running:
+                        break
+                
+                last_report_time = time.time()
+                bytes_transferred_this_session[0] = 0
+    
+    progress_thread = threading.Thread(target=progress_reporter, daemon=True)
+    progress_thread.start()
+    
+    try:
+        # Make POST request for binary stream
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        response = requests.post(archive_url, json=request_body, headers=headers, stream=True, timeout=300)
+        response.raise_for_status()
+        
+        # Buffer for parsing binary format (need to read headers atomically)
+        buffer = b''
+        current_file_info = None
+        current_file_relative_path = None
+        current_file_size = None
+        current_file_bytes_remaining = None
+        current_dest_file = None
+        current_file_skip = False  # Flag to skip current file
+        
+        # Stream and parse binary format on-the-fly
+        for chunk in response.iter_content(chunk_size=1024*1024):  # 1MB chunks
+            if paused_ref[0]:
+                logger.info(f"Download {download_id} was paused during binary streaming")
+                if current_dest_file:
+                    current_dest_file.close()
+                progress_thread_running = False
+                progress_thread.join(timeout=1)
+                return False
+            
+            if not chunk:
+                continue
+            
+            bytes_transferred_this_session[0] += len(chunk)
+            buffer += chunk
+            
+            # Parse buffer while we have enough data
+            while True:
+                if current_file_info is None:
+                    # Waiting for file header
+                    # Need: 4 bytes (path_length) + path + 8 bytes (file_size)
+                    if len(buffer) < 4:
+                        break  # Not enough data for path_length
+                    
+                    path_length = struct.unpack('>I', buffer[:4])[0]
+                    
+                    # Check for end marker (path_length = 0)
+                    if path_length == 0:
+                        buffer = buffer[4:]  # Consume end marker
+                        if len(buffer) > 0:
+                            logger.warning(f"Unexpected data after end marker: {len(buffer)} bytes")
+                        break  # End of stream
+                    
+                    # Need path_length bytes for path + 8 bytes for file_size
+                    if len(buffer) < 4 + path_length + 8:
+                        break  # Not enough data for full header
+                    
+                    # Extract path
+                    path_bytes = buffer[4:4+path_length]
+                    relative_path = path_bytes.decode('utf-8')
+                    
+                    # Extract file_size
+                    file_size = struct.unpack('>Q', buffer[4+path_length:4+path_length+8])[0]
+                    
+                    # Consume header from buffer
+                    header_size = 4 + path_length + 8
+                    buffer = buffer[header_size:]
+                    
+                    # Find file info
+                    file_info = next((f for f in remaining_files if f['relative_path'] == relative_path), None)
+                    if not file_info:
+                        logger.warning(f"Unexpected file in binary stream: {relative_path}, skipping {file_size} bytes")
+                        # Skip this file - read and discard file data
+                        current_file_info = None
+                        current_file_relative_path = relative_path
+                        current_file_size = file_size
+                        current_file_bytes_remaining = file_size
+                        current_file_skip = True
+                        continue
+                    
+                    # Determine destination path
+                    if 'destination_rom_path' in file_info:
+                        dest_rom_path = file_info['destination_rom_path']
+                        dest_system = file_info.get('destination_system', system)
+                        dest_file_path = os.path.join(ROMS_PATH, dest_system, dest_rom_path)
+                    else:
+                        dest_file_path = os.path.join(dest_base_path, relative_path)
+                    
+                    # Create directory if needed
+                    dest_file_dir = os.path.dirname(dest_file_path)
+                    os.makedirs(dest_file_dir, exist_ok=True)
+                    
+                    # Open destination file
+                    try:
+                        current_file_info = file_info
+                        current_file_relative_path = relative_path
+                        current_file_size = file_size
+                        current_file_bytes_remaining = file_size
+                        current_file_skip = False
+                        current_dest_file = open(dest_file_path, 'wb')
+                        logger.debug(f"Starting extraction: {relative_path} ({file_size} bytes)")
+                    except Exception as e:
+                        logger.error(f"Error opening destination file {dest_file_path}: {e}")
+                        files_with_errors.append((relative_path, f"File open error: {e}"))
+                        # Skip this file
+                        current_file_info = None
+                        current_file_relative_path = relative_path
+                        current_file_size = file_size
+                        current_file_bytes_remaining = file_size
+                        current_file_skip = True
+                        current_dest_file = None
+                
+                # Writing file data (or skipping if current_file_skip is True)
+                if current_file_bytes_remaining is not None and current_file_bytes_remaining > 0:
+                    bytes_to_write = min(len(buffer), current_file_bytes_remaining)
+                    if bytes_to_write > 0:
+                        if current_file_skip:
+                            # Skip this file - discard data
+                            buffer = buffer[bytes_to_write:]
+                            current_file_bytes_remaining -= bytes_to_write
+                        else:
+                            # Write to file
+                            if current_dest_file:
+                                current_dest_file.write(buffer[:bytes_to_write])
+                                buffer = buffer[bytes_to_write:]
+                                current_file_bytes_remaining -= bytes_to_write
+                            else:
+                                # No file handle, skip
+                                buffer = buffer[bytes_to_write:]
+                                current_file_bytes_remaining -= bytes_to_write
+                        
+                        # File complete
+                        if current_file_bytes_remaining == 0:
+                            if current_dest_file:
+                                current_dest_file.close()
+                                current_dest_file = None
+                            
+                            if not current_file_skip and current_file_info:
+                                # Verify file size
+                                if 'destination_rom_path' in current_file_info:
+                                    dest_file_path = os.path.join(ROMS_PATH, current_file_info.get('destination_system', system), current_file_info['destination_rom_path'])
+                                else:
+                                    dest_file_path = os.path.join(dest_base_path, current_file_relative_path)
+                                
+                                if os.path.exists(dest_file_path):
+                                    actual_size = os.path.getsize(dest_file_path)
+                                    expected_size = int(current_file_info['size'])
+                                    if actual_size == expected_size:
+                                        extracted_files.add(current_file_relative_path)
+                                        logger.debug(f"Extracted and verified: {current_file_relative_path} ({actual_size} bytes)")
+                                    else:
+                                        logger.warning(f"File size mismatch after extraction: {current_file_relative_path} - local={actual_size}, expected={expected_size}")
+                                        files_with_errors.append((current_file_relative_path, f"Size mismatch: {actual_size} != {expected_size}"))
+                                        try:
+                                            os.remove(dest_file_path)
+                                        except:
+                                            pass
+                                else:
+                                    files_with_errors.append((current_file_relative_path, "File not created"))
+                            
+                            # Reset for next file
+                            current_file_info = None
+                            current_file_relative_path = None
+                            current_file_size = None
+                            current_file_bytes_remaining = None
+                            current_file_skip = False
+                    else:
+                        break  # Not enough data in buffer
+                else:
+                    break  # No current file
+        
+        # Close any open file
+        if current_dest_file:
+            current_dest_file.close()
+        
+        # Check if stream ended properly
+        if current_file_bytes_remaining is not None and current_file_bytes_remaining > 0:
+            logger.error(f"Stream ended unexpectedly while processing file: {current_file_relative_path or 'unknown'}, {current_file_bytes_remaining} bytes remaining")
+            if not current_file_skip and current_file_info:
+                files_with_errors.append((current_file_relative_path or "unknown", f"Stream ended unexpectedly, {current_file_bytes_remaining} bytes missing"))
+            # Clean up partial file
+            if current_dest_file:
+                current_dest_file.close()
+            if current_file_relative_path and not current_file_skip and current_file_info:
+                if 'destination_rom_path' in current_file_info:
+                    dest_file_path = os.path.join(ROMS_PATH, current_file_info.get('destination_system', system), current_file_info['destination_rom_path'])
+                else:
+                    dest_file_path = os.path.join(dest_base_path, current_file_relative_path)
+                try:
+                    if os.path.exists(dest_file_path):
+                        os.remove(dest_file_path)
+                except:
+                    pass
+        
+        # Check if all files were extracted
+        if len(extracted_files) != len(remaining_files):
+            missing = [f['relative_path'] for f in remaining_files if f['relative_path'] not in extracted_files]
+            logger.warning(f"Not all files were extracted. Missing: {missing}")
+            for missing_file in missing:
+                files_with_errors.append((missing_file, "Not extracted from binary stream"))
+        
+        progress_thread_running = False
+        progress_thread.join(timeout=2)
+        
+        if files_with_errors:
+            error_details = "; ".join([f"{path}: {error}" for path, error in files_with_errors])
+            logger.error(f"Download completed with errors for {len(files_with_errors)} file(s): {error_details}")
+            return False
+        
+        logger.info(f"Successfully downloaded and extracted {len(extracted_files)} files from binary archive")
+        return True
+        
+    except requests.exceptions.HTTPError as e:
+        progress_thread_running = False
+        progress_thread.join(timeout=1)
+        if e.response and e.response.status_code == 410:
+            logger.error(f"Download {download_id} was removed from queue")
+        elif e.response and e.response.status_code == 403:
+            logger.error(f"Download {download_id} is paused")
+            paused_ref[0] = True
+        else:
+            logger.error(f"HTTP error downloading tar archive: {e}")
+        return False
+    except Exception as e:
+        progress_thread_running = False
+        progress_thread.join(timeout=1)
+        logger.error(f"Error downloading tar archive: {e}", exc_info=True)
+        return False
+
 def download_directory_recursive(download_id, system, game_id, base_url, dest_base_path, files_list, bytes_already_transferred, paused_ref, download_info=None):
     """Download all files in a directory recursively.
+    
+    Uses tar streaming for better performance when multiple files need to be downloaded.
+    Falls back to individual file downloads if tar streaming fails.
     
     Args:
         download_info: Optional download_info dict containing download_id for URL construction
     """
     import urllib.parse
+    
+    # Try binary streaming for directory downloads (always, as it's more efficient)
+    if download_info and 'download_id' in download_info and len(files_list) > 0:
+        logger.info(f"Attempting binary streaming for {len(files_list)} files")
+        try:
+            result = download_directory_as_tar(
+                download_id, system, game_id, base_url, dest_base_path, 
+                files_list, bytes_already_transferred, paused_ref, download_info
+            )
+            if result:
+                return result
+            # If binary streaming returns False, fall through to individual downloads
+            logger.warning("Binary streaming failed, falling back to individual file downloads")
+        except Exception as e:
+            logger.error(f"Error in binary streaming, falling back to individual downloads: {e}", exc_info=True)
+    
+    # Fallback to individual file downloads
+    logger.info("Using individual file downloads")
     
     # Reset paused_ref to False at the start (in case this is a resumed download)
     if paused_ref:
@@ -1255,84 +2012,128 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
             
             logger.info(f"Downloading file: {relative_path} ({file_size} bytes)")
             
-            # Download this file
-            success = download_file_via_http(
-                file_url,
-                dest_file_path,
-                resume_from=resume_from,
-                expected_size=file_size,
-                bytes_transferred_ref=bytes_transferred_this_session,
-                chunk_size=1024 * 1024,
-                paused_ref=paused_ref
-            )
+            # Retry logic for file size mismatches (retry once)
+            max_attempts = 2  # Original attempt + 1 retry
+            attempt = 0
+            file_downloaded_successfully = False
+            current_resume_from = resume_from
             
-            # Check if file not found (404), removed from queue (410), or size mismatch (None)
-            if success is None:
-                # None can mean 404, 410 (removed), or size mismatch
-                # Check if file exists to determine which case
+            while attempt < max_attempts and not file_downloaded_successfully:
+                attempt += 1
+                if attempt > 1:
+                    logger.info(f"Retrying download for {relative_path} (attempt {attempt}/{max_attempts})")
+                    # On retry, start from beginning (delete partial file if it exists)
+                    if os.path.exists(dest_file_path):
+                        try:
+                            os.remove(dest_file_path)
+                            logger.info(f"Deleted partial/corrupted file before retry: {dest_file_path}")
+                        except Exception as e:
+                            logger.error(f"Failed to delete file before retry {dest_file_path}: {e}")
+                    current_resume_from = 0
+                
+                # Download this file
+                success = download_file_via_http(
+                    file_url,
+                    dest_file_path,
+                    resume_from=current_resume_from,
+                    expected_size=file_size,
+                    bytes_transferred_ref=bytes_transferred_this_session,
+                    chunk_size=1024 * 1024,
+                    paused_ref=paused_ref
+                )
+                
+                # Check if file not found (404), removed from queue (410), or size mismatch (None)
+                if success is None:
+                    # None can mean 404, 410 (removed), or size mismatch
+                    # Check if file exists to determine which case
+                    if os.path.exists(dest_file_path):
+                        # Size mismatch case - file exists but wrong size
+                        final_size = os.path.getsize(dest_file_path)
+                        # Ensure both are integers for proper comparison
+                        final_size_int = int(final_size)
+                        file_size_int = int(file_size)
+                        if final_size_int != file_size_int:
+                            logger.error(f"File size mismatch for {relative_path}: downloaded {final_size} bytes, expected {file_size} bytes (attempt {attempt}/{max_attempts})")
+                            
+                            # Delete only this corrupted file
+                            try:
+                                os.remove(dest_file_path)
+                                logger.info(f"Deleted corrupted file: {dest_file_path}")
+                            except Exception as e:
+                                logger.error(f"Failed to delete corrupted file {dest_file_path}: {e}")
+                            
+                            # Retry once if this is the first attempt
+                            if attempt < max_attempts:
+                                continue  # Retry
+                            else:
+                                # Track this error after all retries exhausted
+                                files_with_errors.append((relative_path, f"File size mismatch: {final_size} != {file_size} (after {max_attempts} attempts)"))
+                                break  # Exit retry loop
+                        else:
+                            # Sizes match but download_file_via_http returned None - likely a different issue (404/410)
+                            # Don't treat as size mismatch, don't retry
+                            logger.warning(f"download_file_via_http returned None for {relative_path} but file size matches ({final_size} bytes) - may be 404/410")
+                            break  # Exit retry loop, will continue to next file
+                    else:
+                        # 404 or 410 case - file not found or download removed
+                        # For 410 (removed from queue), we should abort immediately
+                        # For 404 (file not found), we should also abort as the file doesn't exist
+                        logger.error(f"File not available (404/410) for {relative_path} in download {download_id} - download was likely removed from queue or file doesn't exist")
+                        logger.info(f"Aborting download as file is no longer available")
+                        # Stop progress reporter thread immediately
+                        progress_thread_running = False
+                        progress_thread.join(timeout=1)
+                        return False  # Abort the entire download
+                
+                if not success:
+                    # Check if this was a pause - only log if not already completed
+                    if paused_ref and paused_ref[0]:
+                        # Check if download is still in queue (not completed)
+                        # If paused, stop progress reporter and return
+                        logger.info(f"Download {download_id} was paused")
+                        progress_thread_running = False
+                        progress_thread.join(timeout=1)
+                        return False
+                    # Not paused, just failed - don't retry for non-size-mismatch failures
+                    logger.error(f"Failed to download file: {relative_path} (attempt {attempt}/{max_attempts})")
+                    if attempt >= max_attempts:
+                        files_with_errors.append((relative_path, "Download failed"))
+                    break  # Exit retry loop
+                
+                # Verify file size after successful download
                 if os.path.exists(dest_file_path):
-                    # Size mismatch case - file exists but wrong size
-                    final_size = os.path.getsize(dest_file_path)
+                    actual_size = os.path.getsize(dest_file_path)
                     # Ensure both are integers for proper comparison
-                    final_size_int = int(final_size)
-                    file_size_int = int(file_size)
-                    if final_size_int != file_size_int:
-                        logger.error(f"File size mismatch for {relative_path}: downloaded {final_size} bytes, expected {file_size} bytes")
-                        
-                        # Delete only this corrupted file
+                    if int(actual_size) != int(file_size):
+                        logger.error(f"File size mismatch for {relative_path} after download: {actual_size} bytes, expected {file_size} bytes (attempt {attempt}/{max_attempts})")
                         try:
                             os.remove(dest_file_path)
                             logger.info(f"Deleted corrupted file: {dest_file_path}")
                         except Exception as e:
                             logger.error(f"Failed to delete corrupted file {dest_file_path}: {e}")
                         
-                        # Track this error but continue with other files
-                        files_with_errors.append((relative_path, f"File size mismatch: {final_size} != {file_size}"))
+                        # Retry once if this is the first attempt
+                        if attempt < max_attempts:
+                            continue  # Retry
+                        else:
+                            # Track this error after all retries exhausted
+                            files_with_errors.append((relative_path, f"File size mismatch: {actual_size} != {file_size} (after {max_attempts} attempts)"))
+                            break  # Exit retry loop
                     else:
-                        # Sizes match but download_file_via_http returned None - likely a different issue (404/410)
-                        # Don't treat as size mismatch
-                        logger.warning(f"download_file_via_http returned None for {relative_path} but file size matches ({final_size} bytes) - may be 404/410")
-                    continue
+                        # File size is correct - download successful
+                        logger.debug(f"File size verified for {relative_path}: {actual_size} bytes")
+                        file_downloaded_successfully = True
+                        break  # Exit retry loop
                 else:
-                    # 404 or 410 case - file not found or download removed
-                    # For 410 (removed from queue), we should abort immediately
-                    # For 404 (file not found), we should also abort as the file doesn't exist
-                    logger.error(f"File not available (404/410) for {relative_path} in download {download_id} - download was likely removed from queue or file doesn't exist")
-                    logger.info(f"Aborting download as file is no longer available")
-                    # Stop progress reporter thread immediately
-                    progress_thread_running = False
-                    progress_thread.join(timeout=1)
-                    return False  # Abort the entire download
+                    # File doesn't exist after successful download - shouldn't happen, but handle it
+                    logger.warning(f"File {relative_path} doesn't exist after successful download notification")
+                    if attempt >= max_attempts:
+                        files_with_errors.append((relative_path, "File missing after download"))
+                    break  # Exit retry loop
             
-            if not success:
-                # Check if this was a pause - only log if not already completed
-                if paused_ref and paused_ref[0]:
-                    # Check if download is still in queue (not completed)
-                    # If paused, stop progress reporter and return
-                    logger.info(f"Download {download_id} was paused")
-                    progress_thread_running = False
-                    progress_thread.join(timeout=1)
-                    return False
-                # Not paused, just failed
-                logger.error(f"Failed to download file: {relative_path}")
-                files_with_errors.append((relative_path, "Download failed"))
+            # Continue to next file if this one didn't succeed after all retries
+            if not file_downloaded_successfully:
                 continue
-            
-            # Verify file size after successful download
-            if os.path.exists(dest_file_path):
-                actual_size = os.path.getsize(dest_file_path)
-                # Ensure both are integers for proper comparison
-                if int(actual_size) != int(file_size):
-                    logger.error(f"File size mismatch for {relative_path} after download: {actual_size} bytes, expected {file_size} bytes")
-                    try:
-                        os.remove(dest_file_path)
-                        logger.info(f"Deleted corrupted file: {dest_file_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to delete corrupted file {dest_file_path}: {e}")
-                    files_with_errors.append((relative_path, f"File size mismatch: {actual_size} != {file_size}"))
-                    continue
-                else:
-                    logger.debug(f"File size verified for {relative_path}: {actual_size} bytes")
         
         # Stop progress reporter thread immediately
         progress_thread_running = False
@@ -2597,83 +3398,135 @@ async def websocket_client():
                     logger.info("WebSocket connected successfully")
                     backoff_delay = 0  # Reset backoff to 0 on successful connection
                     
-                    # Handle messages
-                    while True:
-                        try:
-                            # Wait for messages with timeout for ping handling
-                            message = await asyncio.wait_for(websocket.recv(), timeout=30.0)
-                            
+                    # Store websocket and event loop globally for use by download functions
+                    with _websocket_lock:
+                        global _active_websocket, _websocket_event_loop
+                        _active_websocket = websocket
+                        _websocket_event_loop = asyncio.get_event_loop()
+                    
+                    try:
+                        # Handle messages
+                        while True:
                             try:
-                                data = json.loads(message)
-                                message_type = data.get("type")
+                                # Wait for messages with timeout for ping handling
+                                message = await asyncio.wait_for(websocket.recv(), timeout=30.0)
                                 
-                                if message_type == "connected":
-                                    logger.info(f"WebSocket connection confirmed: {data.get('message', '')}")
-                                    token_id = data.get("token_id")
-                                    if token_id:
-                                        logger.info(f"Connected with token_id: {token_id}")
+                                # Check if message is bytes (binary) or str (JSON)
+                                if isinstance(message, bytes):
+                                    # Binary message - could be archive data
+                                    # This will be handled by the archive download handler
+                                    # For now, we'll let download_directory_as_tar handle it directly
+                                    continue
+                                
+                                try:
+                                    data = json.loads(message)
+                                    message_type = data.get("type")
                                     
-                                    # Upload all gamelist.xml files only on first connection (not on reconnections)
-                                    if is_first_connection:
-                                        logger.info("First connection detected - uploading all local gamelist.xml files to server...")
-                                        try:
-                                            # Run in executor since it's a synchronous function
-                                            loop = asyncio.get_event_loop()
-                                            await loop.run_in_executor(None, upload_all_gamelist_files)
-                                        except Exception as e:
-                                            logger.error(f"Error uploading gamelist.xml files on first connection: {e}", exc_info=True)
-                                        is_first_connection = False  # Mark that first connection upload is done
-                                    else:
-                                        logger.debug("Reconnection detected - skipping gamelist.xml upload (will upload after 24h)")
+                                    if message_type == "connected":
+                                        logger.info(f"WebSocket connection confirmed: {data.get('message', '')}")
+                                        token_id = data.get("token_id")
+                                        if token_id:
+                                            logger.info(f"Connected with token_id: {token_id}")
+                                        
+                                        # Upload all gamelist.xml files only on first connection (not on reconnections)
+                                        if is_first_connection:
+                                            logger.info("First connection detected - uploading all local gamelist.xml files to server...")
+                                            try:
+                                                # Run in executor since it's a synchronous function
+                                                loop = asyncio.get_event_loop()
+                                                await loop.run_in_executor(None, upload_all_gamelist_files)
+                                            except Exception as e:
+                                                logger.error(f"Error uploading gamelist.xml files on first connection: {e}", exc_info=True)
+                                            is_first_connection = False  # Mark that first connection upload is done
+                                        else:
+                                            logger.debug("Reconnection detected - skipping gamelist.xml upload (will upload after 24h)")
+                                        
+                                        # Check if there are downloads available on connection
+                                        has_downloads = data.get("has_downloads", False)
+                                        has_user_queue = data.get("has_user_queue", False)
+                                        has_resumable = data.get("has_resumable", False)
+                                        
+                                        if has_downloads:
+                                            logger.info(f"Downloads available on connection: user_queue={has_user_queue}, resumable={has_resumable}")
+                                            # Trigger download request - use None for queue_type to search all queues
+                                            asyncio.create_task(handle_download_notification(None))
+                                        else:
+                                            logger.info("No downloads available on connection")
                                     
-                                    # Check if there are downloads available on connection
-                                    has_downloads = data.get("has_downloads", False)
-                                    has_user_queue = data.get("has_user_queue", False)
-                                    has_resumable = data.get("has_resumable", False)
+                                    elif message_type == "download_available":
+                                        queue_type = data.get("queue_type")
+                                        logger.info(f"Received download notification: queue_type={queue_type}")
+                                        # Request download in a separate thread to avoid blocking WebSocket
+                                        asyncio.create_task(handle_download_notification(queue_type))
                                     
-                                    if has_downloads:
-                                        logger.info(f"Downloads available on connection: user_queue={has_user_queue}, resumable={has_resumable}")
-                                        # Trigger download request - use None for queue_type to search all queues
-                                        asyncio.create_task(handle_download_notification(None))
+                                    elif message_type == "download_paused":
+                                        download_id = data.get("download_id")
+                                        logger.info(f"Received pause notification for download {download_id}")
+                                        # Immediately set pause flag if this download is active
+                                        if download_id in _active_download_pause_refs:
+                                            paused_ref = _active_download_pause_refs[download_id]
+                                            paused_ref[0] = True
+                                            logger.info(f"Immediately paused download {download_id} via WebSocket notification")
+                                        else:
+                                            logger.debug(f"Download {download_id} not found in active downloads (may have already stopped)")
+                                    
+                                    elif message_type == "ping":
+                                        # Respond to ping
+                                        await websocket.send(json.dumps({"type": "pong"}))
+                                    
+                                    elif message_type == "archive_start":
+                                        # Archive download started - client should prepare to receive binary data
+                                        download_id = data.get("download_id")
+                                        logger.info(f"Archive download started via WebSocket: download_id={download_id}")
+                                        # The binary data will come in subsequent binary messages
+                                    
+                                    elif message_type == "archive_complete":
+                                        # Archive download completed
+                                        download_id = data.get("download_id")
+                                        logger.info(f"Archive download completed via WebSocket: download_id={download_id}")
+                                    
+                                    elif message_type == "archive_error":
+                                        # Archive download error
+                                        download_id = data.get("download_id")
+                                        error = data.get("error", "Unknown error")
+                                        logger.error(f"Archive download error via WebSocket: download_id={download_id}, error={error}")
+                                    
                                     else:
-                                        logger.info("No downloads available on connection")
+                                        logger.debug(f"Received unknown message type: {message_type}")
                                 
-                                elif message_type == "download_available":
-                                    queue_type = data.get("queue_type")
-                                    logger.info(f"Received download notification: queue_type={queue_type}")
-                                    # Request download in a separate thread to avoid blocking WebSocket
-                                    asyncio.create_task(handle_download_notification(queue_type))
+                                except json.JSONDecodeError:
+                                    logger.warning(f"Received non-JSON message: {message[:100]}")
+                            
+                            except asyncio.TimeoutError:
+                                # Send ping to keep connection alive
+                                try:
+                                    await websocket.send(json.dumps({"type": "ping"}))
+                                except Exception as e:
+                                    logger.debug(f"Error sending ping: {e}")
+                                    break  # Connection may be dead
+                            except (websockets.exceptions.ConnectionClosed, websockets.exceptions.ConnectionClosedError) as e:
+                                # Connection closed - handle gracefully
+                                close_code = getattr(e, 'code', None)
+                                close_reason = getattr(e, 'reason', 'Unknown reason')
                                 
-                                elif message_type == "download_paused":
-                                    download_id = data.get("download_id")
-                                    logger.info(f"Received pause notification for download {download_id}")
-                                    # Immediately set pause flag if this download is active
-                                    if download_id in _active_download_pause_refs:
-                                        paused_ref = _active_download_pause_refs[download_id]
-                                        paused_ref[0] = True
-                                        logger.info(f"Immediately paused download {download_id} via WebSocket notification")
-                                    else:
-                                        logger.debug(f"Download {download_id} not found in active downloads (may have already stopped)")
-                                
-                                elif message_type == "ping":
-                                    # Respond to ping
-                                    await websocket.send(json.dumps({"type": "pong"}))
-                                
+                                # 1012 (service restart) is expected when server restarts - not an error
+                                if close_code == 1012:
+                                    logger.info(f"WebSocket connection closed by server (service restart) - will reconnect")
                                 else:
-                                    logger.debug(f"Received unknown message type: {message_type}")
-                            
-                            except json.JSONDecodeError:
-                                logger.warning(f"Received non-JSON message: {message[:100]}")
-                        
-                        except asyncio.TimeoutError:
-                            # Send ping to keep connection alive
-                            try:
-                                await websocket.send(json.dumps({"type": "ping"}))
-                            except Exception as e:
-                                logger.debug(f"Error sending ping: {e}")
-                                break  # Connection may be dead
-                
+                                    logger.info(f"WebSocket connection closed (code: {close_code}, reason: {close_reason})")
+                                break  # Exit inner loop to trigger reconnection
+                    finally:
+                        # Ensure websocket and event loop are cleared on exit
+                        with _websocket_lock:
+                            _active_websocket = None
+                            _websocket_event_loop = None
             except websockets.exceptions.InvalidStatusCode as e:
+                # Handle HTTP status codes from WebSocket handshake
+                # Clear websocket references
+                with _websocket_lock:
+                    _active_websocket = None
+                    _websocket_event_loop = None
+                
                 if e.status_code == 4001:
                     logger.critical("=" * 80)
                     logger.critical("FATAL ERROR: WebSocket authentication failed (invalid token)")
@@ -2690,21 +3543,32 @@ async def websocket_client():
                     logger.critical("Please stop the other instance before starting this one.")
                     logger.critical("=" * 80)
                     sys.exit(1)
+                elif e.status_code in [502, 503, 504]:
+                    # 502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout
+                    # These are retryable errors (server/reverse proxy issues)
+                    logger.warning(f"WebSocket connection failed with HTTP {e.status_code} (server temporarily unavailable) - will retry")
                 else:
-                    logger.error(f"WebSocket connection failed with status {e.status_code}")
-            except websockets.exceptions.ConnectionClosed as e:
+                    # Other HTTP errors - log and retry (not fatal unless authentication-related)
+                    logger.warning(f"WebSocket connection failed with HTTP {e.status_code} - will retry")
+            except (websockets.exceptions.ConnectionClosed, websockets.exceptions.ConnectionClosedError) as e:
                 # Check if connection was closed due to rejection (code 4002)
-                if e.code == 4002:
+                close_code = getattr(e, 'code', None)
+                close_reason = getattr(e, 'reason', 'Unknown reason')
+                
+                if close_code == 4002:
                     logger.critical("=" * 80)
                     logger.critical("FATAL ERROR: Connection rejected by server")
                     logger.critical("=" * 80)
-                    logger.critical(f"Reason: {e.reason or 'Another instance is already connected'}")
+                    logger.critical(f"Reason: {close_reason or 'Another instance is already connected'}")
                     logger.critical("Only one download service instance can be connected with this token at a time.")
                     logger.critical("Please stop the other instance before starting this one.")
                     logger.critical("=" * 80)
                     sys.exit(1)
+                elif close_code == 1012:
+                    # 1012 (service restart) is expected when server restarts - not an error, just reconnect
+                    logger.info(f"WebSocket connection closed by server (service restart, code 1012) - will reconnect")
                 else:
-                    logger.warning(f"WebSocket connection closed (code: {e.code}, reason: {e.reason})")
+                    logger.info(f"WebSocket connection closed (code: {close_code}, reason: {close_reason}) - will reconnect")
             except Exception as e:
                 logger.error(f"WebSocket error: {e}", exc_info=True)
             
