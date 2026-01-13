@@ -1595,35 +1595,49 @@ class GameService:
             
             if aggregated_stats:
                 logger.info(f"Found aggregated stats for {len(aggregated_stats)} systems, merging into catalogs...")
+                
+                # Get system mappings from database (batocera_system/retrobat_system -> catalog system IDs)
+                system_mappings = self._get_system_mappings()
+                
                 # Merge aggregated stats into both catalogs (this will overwrite any cached stats with latest)
                 catalog_types = ['WIP', 'Releases']
                 for catalog_type_idx, catalog in enumerate([self.catalog_wip, self.catalog_releases]):
                     catalog_type = catalog_types[catalog_type_idx]
                     merged_count = 0
                     
-                    for system_id, games_stats in aggregated_stats.items():
-                        if system_id not in catalog:
-                            continue
+                    for user_system_id, games_stats in aggregated_stats.items():
+                        # Find catalog systems that match this user system via batocera_system/retrobat_system
+                        catalog_system_ids = system_mappings.get(user_system_id, [])
                         
-                        for rompath, stats in games_stats.items():
-                            # Try to find the game in catalog
-                            matched = False
-                            if rompath in catalog[system_id]:
-                                catalog[system_id][rompath]['playcount'] = stats['playcount']
-                                catalog[system_id][rompath]['gametime'] = stats['gametime']
-                                merged_count += 1
-                                matched = True
-                            else:
-                                # Try to match by normalized path
-                                catalog_normalized = rompath.lstrip('./')
-                                for catalog_rompath, game_data in catalog[system_id].items():
-                                    cat_normalized = catalog_rompath.lstrip('./')
-                                    if catalog_normalized == cat_normalized:
-                                        game_data['playcount'] = stats['playcount']
-                                        game_data['gametime'] = stats['gametime']
-                                        merged_count += 1
-                                        matched = True
-                                        break
+                        # Also try direct match (in case user system name matches catalog system name)
+                        if user_system_id in catalog:
+                            if user_system_id not in catalog_system_ids:
+                                catalog_system_ids.append(user_system_id)
+                        
+                        # Merge stats into all matching catalog systems
+                        for catalog_system_id in catalog_system_ids:
+                            if catalog_system_id not in catalog:
+                                continue
+                            
+                            for rompath, stats in games_stats.items():
+                                # Try to find the game in catalog
+                                matched = False
+                                if rompath in catalog[catalog_system_id]:
+                                    catalog[catalog_system_id][rompath]['playcount'] = stats['playcount']
+                                    catalog[catalog_system_id][rompath]['gametime'] = stats['gametime']
+                                    merged_count += 1
+                                    matched = True
+                                else:
+                                    # Try to match by normalized path
+                                    catalog_normalized = rompath.lstrip('./')
+                                    for catalog_rompath, game_data in catalog[catalog_system_id].items():
+                                        cat_normalized = catalog_rompath.lstrip('./')
+                                        if catalog_normalized == cat_normalized:
+                                            game_data['playcount'] = stats['playcount']
+                                            game_data['gametime'] = stats['gametime']
+                                            merged_count += 1
+                                            matched = True
+                                            break
                     
                     logger.info(f"  {catalog_type} catalog: merged stats for {merged_count} games")
                 logger.info("Finished updating aggregated user stats in cached catalog")
@@ -1674,6 +1688,40 @@ class GameService:
             logger.warning(f"Failed to save catalog to cache: {e}")
             import traceback
             logger.debug(traceback.format_exc())
+    
+    def _get_system_mappings(self) -> Dict[str, List[str]]:
+        """Get mapping from batocera_system/retrobat_system to catalog system IDs.
+        
+        Returns:
+            Dictionary mapping user system names to list of catalog system IDs.
+            Example: {'nesicax': ['batocera_nesicax', 'retrobat_nesicax']}
+        """
+        from app.database import SessionLocal, System
+        
+        mapping = {}  # {user_system: [catalog_system_ids]}
+        
+        try:
+            db = SessionLocal()
+            try:
+                systems = db.query(System).filter(System.enabled == True).all()
+                for system in systems:
+                    # Map batocera_system to this catalog system
+                    if system.batocera_system:
+                        if system.batocera_system not in mapping:
+                            mapping[system.batocera_system] = []
+                        mapping[system.batocera_system].append(system.id)
+                    
+                    # Map retrobat_system to this catalog system
+                    if system.retrobat_system:
+                        if system.retrobat_system not in mapping:
+                            mapping[system.retrobat_system] = []
+                        mapping[system.retrobat_system].append(system.id)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"Failed to load system mappings from database: {e}")
+        
+        return mapping
     
     def _get_enabled_systems_set(self) -> set:
         """Get set of enabled system IDs from database."""
@@ -2118,6 +2166,10 @@ class GameService:
             total_gametime = sum(s['gametime'] for s in games_stats.values())
             logger.info(f"  System {system_id}: {len(games_stats)} games, total playcount={total_playcount}, total gametime={total_gametime}")
         
+        # Get system mappings from database (batocera_system/retrobat_system -> catalog system IDs)
+        system_mappings = self._get_system_mappings()
+        logger.info(f"Loaded system mappings: {len(system_mappings)} user systems mapped to catalog systems")
+        
         # Merge aggregated stats into both catalogs
         catalog_types = ['WIP', 'Releases']
         for catalog_type_idx, catalog in enumerate([self.catalog_wip, self.catalog_releases]):
@@ -2127,43 +2179,57 @@ class GameService:
             skipped_system_count = 0
             skipped_game_count = 0
             
-            for system_id, games_stats in aggregated_stats.items():
-                if system_id not in catalog:
-                    logger.warning(f"  System {system_id} not found in {catalog_type} catalog, skipping {len(games_stats)} games")
+            for user_system_id, games_stats in aggregated_stats.items():
+                # Find catalog systems that match this user system via batocera_system/retrobat_system
+                catalog_system_ids = system_mappings.get(user_system_id, [])
+                
+                # Also try direct match (in case user system name matches catalog system name)
+                if user_system_id in catalog:
+                    if user_system_id not in catalog_system_ids:
+                        catalog_system_ids.append(user_system_id)
+                
+                if not catalog_system_ids:
+                    logger.warning(f"  User system '{user_system_id}' not mapped to any catalog systems, skipping {len(games_stats)} games")
                     skipped_system_count += 1
                     continue
                 
-                logger.info(f"  Processing system {system_id} ({len(games_stats)} games with stats)...")
+                logger.info(f"  User system '{user_system_id}' mapped to {len(catalog_system_ids)} catalog system(s): {catalog_system_ids}")
                 
-                for rompath, stats in games_stats.items():
-                    # Try to find the game in catalog
-                    # rompath might match directly or might need normalization
-                    matched = False
-                    if rompath in catalog[system_id]:
-                        catalog[system_id][rompath]['playcount'] = stats['playcount']
-                        catalog[system_id][rompath]['gametime'] = stats['gametime']
-                        merged_count += 1
-                        matched = True
-                    else:
-                        # Try to match by normalized path (handle variations)
-                        # Check all games in this system
-                        catalog_normalized = rompath.lstrip('./')
-                        
-                        for catalog_rompath, game_data in catalog[system_id].items():
-                            # Normalize both paths for comparison
-                            cat_normalized = catalog_rompath.lstrip('./')
+                # Merge stats into all matching catalog systems
+                for catalog_system_id in catalog_system_ids:
+                    if catalog_system_id not in catalog:
+                        logger.debug(f"    Catalog system '{catalog_system_id}' not found in {catalog_type} catalog, skipping")
+                        continue
+                    
+                    logger.debug(f"    Processing catalog system '{catalog_system_id}' ({len(games_stats)} games with stats)...")
+                    
+                    for rompath, stats in games_stats.items():
+                        # Try to find the game in catalog
+                        # rompath might match directly or might need normalization
+                        matched = False
+                        if rompath in catalog[catalog_system_id]:
+                            catalog[catalog_system_id][rompath]['playcount'] = stats['playcount']
+                            catalog[catalog_system_id][rompath]['gametime'] = stats['gametime']
+                            merged_count += 1
+                            matched = True
+                        else:
+                            # Try to match by normalized path (handle variations)
+                            # Check all games in this system
+                            catalog_normalized = rompath.lstrip('./')
                             
-                            if catalog_normalized == cat_normalized:
-                                game_data['playcount'] = stats['playcount']
-                                game_data['gametime'] = stats['gametime']
-                                merged_count += 1
-                                matched = True
-                                break
-                        
-                        if not matched:
-                            skipped_game_count += 1
-                
-                logger.info(f"    System {system_id}: merged {sum(1 for rp in games_stats.keys() if rp in catalog.get(system_id, {}))} games")
+                            for catalog_rompath, game_data in catalog[catalog_system_id].items():
+                                # Normalize both paths for comparison
+                                cat_normalized = catalog_rompath.lstrip('./')
+                                
+                                if catalog_normalized == cat_normalized:
+                                    game_data['playcount'] = stats['playcount']
+                                    game_data['gametime'] = stats['gametime']
+                                    merged_count += 1
+                                    matched = True
+                                    break
+                            
+                            if not matched:
+                                skipped_game_count += 1
             
             logger.info(f"  {catalog_type} catalog merge complete: {merged_count} games merged, {skipped_system_count} systems skipped, {skipped_game_count} games not matched")
         
