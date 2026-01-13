@@ -93,7 +93,7 @@ class RedisSessionMiddleware(BaseHTTPMiddleware):
                 else:
                     data_str = data
                 result = json.loads(data_str)
-                logger.info(f"✓ Loaded session from Redis (JSON): {redis_key}, {len(result)} keys")
+                logger.debug(f"✓ Loaded session from Redis (JSON): {redis_key}, {len(result)} keys")
                 return result
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 logger.debug(f"JSON deserialization failed: {e}, trying pickle")
@@ -101,7 +101,7 @@ class RedisSessionMiddleware(BaseHTTPMiddleware):
                 if isinstance(data, str):
                     data = data.encode('utf-8')
                 result = pickle.loads(data)
-                logger.info(f"✓ Loaded session from Redis (pickle): {redis_key}, {len(result)} keys")
+                logger.debug(f"✓ Loaded session from Redis (pickle): {redis_key}, {len(result)} keys")
                 return result
         except Exception as e:
             logger.error(f"Error loading session from Redis: {e}", exc_info=True)
@@ -137,7 +137,7 @@ class RedisSessionMiddleware(BaseHTTPMiddleware):
                 self.max_age,
                 data
             )
-            logger.info(f"✓ Session saved to Redis: {redis_key}, result: {result}, TTL: {self.max_age}s, size: {len(data)} bytes")
+            logger.debug(f"✓ Session saved to Redis: {redis_key}, result: {result}, TTL: {self.max_age}s, size: {len(data)} bytes")
         except Exception as e:
             logger.error(f"Error saving session to Redis: {e}", exc_info=True)
     

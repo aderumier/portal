@@ -1,11 +1,11 @@
 """Download queue routes."""
-from fastapi import APIRouter, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect, Form, File, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse, ORJSONResponse
 from starlette.requests import Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
-from app.database import get_db, DownloadQueue
+from app.database import get_db, DownloadQueue, User
 from app.services.download import DownloadService
 from app.services.websocket_manager import get_websocket_manager
 from app.api.middleware.api_token import require_auth_user
@@ -19,6 +19,8 @@ import os
 import asyncio
 import time
 from pathlib import Path
+import tarfile
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -1757,6 +1759,102 @@ async def get_all_queues(
     """Get all active downloads from all queues (admin only)."""
     queues = download_service.get_all_active_downloads()
     return queues
+
+@router.post("/gamelist/upload")
+async def upload_gamelist(
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Upload a tar.bz2 archive containing all gamelist.xml files.
+    
+    Stores the archive at: data/users_gamelist/<token_id>/gamelists.tar.bz2
+    """
+    try:
+        # Get token_id from request state (set by API token middleware)
+        token_id = getattr(request.state, 'token_id', None)
+        
+        if token_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token ID not found. API token authentication required."
+            )
+        
+        # Validate file is tar.bz2
+        filename = file.filename or ''
+        if not (filename.endswith('.tar.bz2') or filename.endswith('.tbz2') or filename.endswith('.tbz')):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File must be a .tar.bz2 archive"
+            )
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Validate it's a valid tar.bz2 file
+        try:
+            tar_buffer = io.BytesIO(file_content)
+            with tarfile.open(fileobj=tar_buffer, mode='r:bz2') as tar:
+                # Just verify it can be opened, count files
+                file_count = len(tar.getmembers())
+            tar_buffer.seek(0)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid tar.bz2 archive: {str(e)}"
+            )
+        
+        # Check file size (max 100MB for archive)
+        max_size = 100 * 1024 * 1024  # 100MB
+        if len(file_content) > max_size:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Archive size exceeds 100MB limit"
+            )
+        
+        # Build destination path: data/users_gamelist/<token_id>/gamelists.tar.bz2
+        if not settings.USERS_GAMELIST_PATH:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="USERS_GAMELIST_PATH not configured"
+            )
+        
+        # If path is relative, make it relative to project root
+        # From backend/app/api/routes/downloads.py, go up 4 levels to reach project root
+        if not os.path.isabs(settings.USERS_GAMELIST_PATH):
+            project_root = Path(__file__).parent.parent.parent.parent
+            dest_dir = project_root / settings.USERS_GAMELIST_PATH / str(token_id)
+        else:
+            dest_dir = Path(settings.USERS_GAMELIST_PATH) / str(token_id)
+        
+        # Ensure directory exists
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Write archive file
+        dest_file = dest_dir / 'gamelists.tar.bz2'
+        with open(dest_file, 'wb') as f:
+            f.write(file_content)
+        
+        logger.info(f"Uploaded gamelist.tar.bz2 for token_id '{token_id}' ({file_count} files, {len(file_content)} bytes) to {dest_file}")
+        
+        return {
+            "success": True,
+            "message": f"Gamelist.tar.bz2 uploaded successfully ({file_count} files)",
+            "path": str(dest_file),
+            "file_count": file_count,
+            "size_bytes": len(file_content)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading gamelist.tar.bz2: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while uploading gamelist.tar.bz2"
+        )
+
 
 @router.get("/clients/connected")
 async def get_connected_clients(

@@ -28,6 +28,7 @@ class Settings:
     # Application settings
     GAMES_PATH: str = os.getenv('GAMES_PATH', '')
     USERS_MEDIA_PATH: str = os.getenv('USERS_MEDIA_PATH', '')
+    USERS_GAMELIST_PATH: str = os.getenv('USERS_GAMELIST_PATH', 'data/users_gamelist')  # Path for storing user gamelist.xml files
     DATABASE_URL: str = os.getenv('DATABASE_URL', 'sqlite:///./data/database.sqlite')
     SECRET_KEY: str = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
     FRONTEND_URL: str = os.getenv('FRONTEND_URL', 'http://localhost:3000')
@@ -51,7 +52,7 @@ class Settings:
     POLLING_INTERVAL: int = int(os.getenv('POLLING_INTERVAL', '10'))  # Seconds between queue checks
     
     # Catalog settings
-    ENABLE_RELEASES_CATALOG: bool = os.getenv('ENABLE_RELEASES_CATALOG', 'true').lower() in ('true', '1', 'yes', 'on')  # Enable Releases catalog (scan .zfs snapshots)
+    # Note: Releases catalog is always enabled
     
     # Per-user bandwidth limits for testing (optional, in Mbits/s)
     # If not set, no per-user limit is applied (users share available bandwidth equally)

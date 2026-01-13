@@ -55,7 +55,7 @@ async def get_current_user(
     if user:
         request.state.user = user
         request.state.auth_method = 'session'
-        logger.info(f"Session authentication for user: {user.get('id')}")
+        logger.debug(f"Session authentication for user: {user.get('id')}")
         return user
     
     return None

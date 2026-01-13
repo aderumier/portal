@@ -15,9 +15,13 @@ from logging.handlers import RotatingFileHandler
 import asyncio
 import websockets
 from urllib.parse import urlparse
+import tarfile
+import tempfile
+import io
+import random
 
 # Client version
-CLIENT_VERSION = "0.2"
+CLIENT_VERSION = "0.3"
 
 def read_config_ini(config_path):
     """Read config.ini file and return a dictionary of settings.
@@ -267,6 +271,80 @@ def update_bandwidth_update_interval(new_interval):
             BANDWIDTH_UPDATE_INTERVAL = new_interval
     else:
         logger.warning(f"Invalid bandwidth update interval received: {new_interval}, keeping current value: {BANDWIDTH_UPDATE_INTERVAL}")
+
+def upload_all_gamelist_files():
+    """Scan ROMS_PATH for all gamelist.xml files, create a tar.bz2 archive, and upload it to the server.
+    
+    Creates a single tar.bz2 archive containing all gamelist.xml files from all systems
+    and uploads it to data/users_gamelist/<token_id>/gamelists.tar.bz2
+    """
+    try:
+        if not ROMS_PATH or not os.path.exists(ROMS_PATH):
+            logger.warning(f"ROMS_PATH does not exist: {ROMS_PATH}, skipping gamelist.xml upload")
+            return
+        
+        logger.info(f"Scanning for gamelist.xml files in {ROMS_PATH}")
+        
+        # Create tar.bz2 archive in memory with maximum compression
+        tar_buffer = io.BytesIO()
+        files_added = 0
+        
+        with tarfile.open(fileobj=tar_buffer, mode='w:bz2', compresslevel=9) as tar:
+            # Scan all system directories in ROMS_PATH
+            for system_dir in os.listdir(ROMS_PATH):
+                system_path = os.path.join(ROMS_PATH, system_dir)
+                
+                # Skip if not a directory
+                if not os.path.isdir(system_path):
+                    continue
+                
+                # Check for gamelist.xml in this system directory
+                gamelist_path = os.path.join(system_path, 'gamelist.xml')
+                
+                if os.path.exists(gamelist_path) and os.path.isfile(gamelist_path):
+                    try:
+                        # Add file to archive with path: <system>/gamelist.xml
+                        tar.add(gamelist_path, arcname=f"{system_dir}/gamelist.xml")
+                        files_added += 1
+                        logger.debug(f"Added gamelist.xml for system '{system_dir}' to archive")
+                    except Exception as e:
+                        logger.error(f"Error adding gamelist.xml for system '{system_dir}' to archive: {e}")
+        
+        if files_added == 0:
+            logger.info("No gamelist.xml files found, skipping upload")
+            return
+        
+        # Get the tar.bz2 content
+        tar_buffer.seek(0)
+        tar_content = tar_buffer.getvalue()
+        tar_buffer.close()
+        
+        logger.info(f"Created tar.bz2 archive with {files_added} gamelist.xml files ({len(tar_content)} bytes)")
+        
+        # Upload to server
+        try:
+            url = f"{API_URL}/api/download/gamelist/upload"
+            files = {
+                'file': ('gamelists.tar.bz2', tar_content, 'application/x-bzip2')
+            }
+            # No system parameter needed since all files are in one archive
+            
+            response = http_session.post(url, files=files, timeout=120)  # Increased timeout for larger files
+            response.raise_for_status()
+            
+            result = response.json()
+            if result.get('success'):
+                logger.info(f"Successfully uploaded gamelist.tar.bz2 archive ({files_added} files, {len(tar_content)} bytes)")
+            else:
+                logger.warning(f"Failed to upload gamelist.tar.bz2: {result.get('message', 'Unknown error')}")
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error uploading gamelist.tar.bz2 archive: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error uploading gamelist.tar.bz2 archive: {e}", exc_info=True)
+        
+    except Exception as e:
+        logger.error(f"Error creating and uploading gamelist.tar.bz2 archive: {e}", exc_info=True)
 
 def request_download(queue_type=None):
     """Request next available download from the API.
@@ -2385,131 +2463,181 @@ def process_queue():
     except Exception as e:
         logger.error(f"Error in process_queue: {e}", exc_info=True)
 
-async def websocket_client():
-    """WebSocket client for receiving download notifications."""
-    # Build WebSocket URL
-    parsed_url = urlparse(API_URL)
-    ws_scheme = "wss" if parsed_url.scheme == "https" else "ws"
-    # Use netloc if available (includes host:port), otherwise use path
-    ws_host = parsed_url.netloc if parsed_url.netloc else parsed_url.path
-    ws_path = "/api/download/ws"
-    # Determine platform based on system
-    client_platform = 'windows' if platform.system() == 'Windows' else 'linux'
-    ws_url = f"{ws_scheme}://{ws_host}{ws_path}?token={API_TOKEN}&version={CLIENT_VERSION}&platform={client_platform}"
-    
-    logger.info(f"Connecting to WebSocket: {ws_url.replace(API_TOKEN, '***')}")
-    
-    reconnect_delay = 60  # Start with 60 seconds (1 minute) - gives backend time to clean up old connection
-    max_reconnect_delay = 300  # Max 5 minutes
-    
+async def periodic_gamelist_upload():
+    """Periodically upload gamelist.xml files every 24 hours."""
     while True:
         try:
-            async with websockets.connect(ws_url) as websocket:
-                logger.info("WebSocket connected successfully")
-                reconnect_delay = 60  # Reset to minimum 60 seconds on successful connection
-                
-                # Handle messages
-                while True:
-                    try:
-                        # Wait for messages with timeout for ping handling
-                        message = await asyncio.wait_for(websocket.recv(), timeout=30.0)
-                        
-                        try:
-                            data = json.loads(message)
-                            message_type = data.get("type")
-                            
-                            if message_type == "connected":
-                                logger.info(f"WebSocket connection confirmed: {data.get('message', '')}")
-                                token_id = data.get("token_id")
-                                if token_id:
-                                    logger.info(f"Connected with token_id: {token_id}")
-                                
-                                # Check if there are downloads available on connection
-                                has_downloads = data.get("has_downloads", False)
-                                has_user_queue = data.get("has_user_queue", False)
-                                has_resumable = data.get("has_resumable", False)
-                                
-                                if has_downloads:
-                                    logger.info(f"Downloads available on connection: user_queue={has_user_queue}, resumable={has_resumable}")
-                                    # Trigger download request - use None for queue_type to search all queues
-                                    asyncio.create_task(handle_download_notification(None))
-                                else:
-                                    logger.info("No downloads available on connection")
-                            
-                            elif message_type == "download_available":
-                                queue_type = data.get("queue_type")
-                                logger.info(f"Received download notification: queue_type={queue_type}")
-                                # Request download in a separate thread to avoid blocking WebSocket
-                                asyncio.create_task(handle_download_notification(queue_type))
-                            
-                            elif message_type == "download_paused":
-                                download_id = data.get("download_id")
-                                logger.info(f"Received pause notification for download {download_id}")
-                                # Immediately set pause flag if this download is active
-                                if download_id in _active_download_pause_refs:
-                                    paused_ref = _active_download_pause_refs[download_id]
-                                    paused_ref[0] = True
-                                    logger.info(f"Immediately paused download {download_id} via WebSocket notification")
-                                else:
-                                    logger.debug(f"Download {download_id} not found in active downloads (may have already stopped)")
-                            
-                            elif message_type == "ping":
-                                # Respond to ping
-                                await websocket.send(json.dumps({"type": "pong"}))
-                            
-                            else:
-                                logger.debug(f"Received unknown message type: {message_type}")
-                        
-                        except json.JSONDecodeError:
-                            logger.warning(f"Received non-JSON message: {message[:100]}")
-                    
-                    except asyncio.TimeoutError:
-                        # Send ping to keep connection alive
-                        try:
-                            await websocket.send(json.dumps({"type": "ping"}))
-                        except Exception as e:
-                            logger.debug(f"Error sending ping: {e}")
-                            break  # Connection may be dead
-                
-        except websockets.exceptions.InvalidStatusCode as e:
-            if e.status_code == 4001:
-                logger.critical("=" * 80)
-                logger.critical("FATAL ERROR: WebSocket authentication failed (invalid token)")
-                logger.critical("=" * 80)
-                logger.critical("The download service will now stop.")
-                logger.critical("Please verify your API_TOKEN.txt file contains a valid token.")
-                logger.critical("=" * 80)
-                sys.exit(1)
-            elif e.status_code == 4002:
-                logger.critical("=" * 80)
-                logger.critical("FATAL ERROR: Another download service instance is already connected")
-                logger.critical("=" * 80)
-                logger.critical("Only one instance can be connected with this token at a time.")
-                logger.critical("Please stop the other instance before starting this one.")
-                logger.critical("=" * 80)
-                sys.exit(1)
-            else:
-                logger.error(f"WebSocket connection failed with status {e.status_code}")
-        except websockets.exceptions.ConnectionClosed as e:
-            # Check if connection was closed due to rejection (code 4002)
-            if e.code == 4002:
-                logger.critical("=" * 80)
-                logger.critical("FATAL ERROR: Connection rejected by server")
-                logger.critical("=" * 80)
-                logger.critical(f"Reason: {e.reason or 'Another instance is already connected'}")
-                logger.critical("Only one download service instance can be connected with this token at a time.")
-                logger.critical("Please stop the other instance before starting this one.")
-                logger.critical("=" * 80)
-                sys.exit(1)
-            else:
-                logger.warning(f"WebSocket connection closed (code: {e.code}, reason: {e.reason})")
+            # Wait 24 hours (86400 seconds)
+            await asyncio.sleep(86400)
+            logger.info("Starting periodic gamelist.xml upload (24h interval)")
+            # Run upload in executor since it's synchronous
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, upload_all_gamelist_files)
+        except asyncio.CancelledError:
+            logger.info("Periodic gamelist upload task cancelled")
+            break
         except Exception as e:
-            logger.error(f"WebSocket error: {e}", exc_info=True)
+            logger.error(f"Error in periodic gamelist upload: {e}", exc_info=True)
+
+async def websocket_client():
+    """WebSocket client for receiving download notifications."""
+    # Start periodic upload task (runs every 24 hours) when WebSocket client starts
+    periodic_task = asyncio.create_task(periodic_gamelist_upload())
+    
+    try:
+        # Build WebSocket URL
+        parsed_url = urlparse(API_URL)
+        ws_scheme = "wss" if parsed_url.scheme == "https" else "ws"
+        # Use netloc if available (includes host:port), otherwise use path
+        ws_host = parsed_url.netloc if parsed_url.netloc else parsed_url.path
+        ws_path = "/api/download/ws"
+        # Determine platform based on system
+        client_platform = 'windows' if platform.system() == 'Windows' else 'linux'
+        ws_url = f"{ws_scheme}://{ws_host}{ws_path}?token={API_TOKEN}&version={CLIENT_VERSION}&platform={client_platform}"
         
-        # Reconnect with exponential backoff
-        logger.info(f"Reconnecting in {reconnect_delay} seconds...")
-        await asyncio.sleep(reconnect_delay)
-        reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+        logger.info(f"Connecting to WebSocket: {ws_url.replace(API_TOKEN, '***')}")
+        
+        base_delay = 60  # Base delay of 60 seconds
+        backoff_delay = 0  # Backoff starts at 0, will increase on each reconnection
+        max_backoff_delay = 240  # Max backoff of 240 seconds (4 minutes), total max will be 60+240=300s
+        random_jitter_max = 30  # Random jitter up to 30 seconds
+        is_first_connection = True  # Track if this is the first connection (upload gamelist only on first connection)
+        
+        while True:
+            try:
+                async with websockets.connect(ws_url) as websocket:
+                    logger.info("WebSocket connected successfully")
+                    backoff_delay = 0  # Reset backoff to 0 on successful connection
+                    
+                    # Handle messages
+                    while True:
+                        try:
+                            # Wait for messages with timeout for ping handling
+                            message = await asyncio.wait_for(websocket.recv(), timeout=30.0)
+                            
+                            try:
+                                data = json.loads(message)
+                                message_type = data.get("type")
+                                
+                                if message_type == "connected":
+                                    logger.info(f"WebSocket connection confirmed: {data.get('message', '')}")
+                                    token_id = data.get("token_id")
+                                    if token_id:
+                                        logger.info(f"Connected with token_id: {token_id}")
+                                    
+                                    # Upload all gamelist.xml files only on first connection (not on reconnections)
+                                    if is_first_connection:
+                                        logger.info("First connection detected - uploading all local gamelist.xml files to server...")
+                                        try:
+                                            # Run in executor since it's a synchronous function
+                                            loop = asyncio.get_event_loop()
+                                            await loop.run_in_executor(None, upload_all_gamelist_files)
+                                        except Exception as e:
+                                            logger.error(f"Error uploading gamelist.xml files on first connection: {e}", exc_info=True)
+                                        is_first_connection = False  # Mark that first connection upload is done
+                                    else:
+                                        logger.debug("Reconnection detected - skipping gamelist.xml upload (will upload after 24h)")
+                                    
+                                    # Check if there are downloads available on connection
+                                    has_downloads = data.get("has_downloads", False)
+                                    has_user_queue = data.get("has_user_queue", False)
+                                    has_resumable = data.get("has_resumable", False)
+                                    
+                                    if has_downloads:
+                                        logger.info(f"Downloads available on connection: user_queue={has_user_queue}, resumable={has_resumable}")
+                                        # Trigger download request - use None for queue_type to search all queues
+                                        asyncio.create_task(handle_download_notification(None))
+                                    else:
+                                        logger.info("No downloads available on connection")
+                                
+                                elif message_type == "download_available":
+                                    queue_type = data.get("queue_type")
+                                    logger.info(f"Received download notification: queue_type={queue_type}")
+                                    # Request download in a separate thread to avoid blocking WebSocket
+                                    asyncio.create_task(handle_download_notification(queue_type))
+                                
+                                elif message_type == "download_paused":
+                                    download_id = data.get("download_id")
+                                    logger.info(f"Received pause notification for download {download_id}")
+                                    # Immediately set pause flag if this download is active
+                                    if download_id in _active_download_pause_refs:
+                                        paused_ref = _active_download_pause_refs[download_id]
+                                        paused_ref[0] = True
+                                        logger.info(f"Immediately paused download {download_id} via WebSocket notification")
+                                    else:
+                                        logger.debug(f"Download {download_id} not found in active downloads (may have already stopped)")
+                                
+                                elif message_type == "ping":
+                                    # Respond to ping
+                                    await websocket.send(json.dumps({"type": "pong"}))
+                                
+                                else:
+                                    logger.debug(f"Received unknown message type: {message_type}")
+                            
+                            except json.JSONDecodeError:
+                                logger.warning(f"Received non-JSON message: {message[:100]}")
+                        
+                        except asyncio.TimeoutError:
+                            # Send ping to keep connection alive
+                            try:
+                                await websocket.send(json.dumps({"type": "ping"}))
+                            except Exception as e:
+                                logger.debug(f"Error sending ping: {e}")
+                                break  # Connection may be dead
+                
+            except websockets.exceptions.InvalidStatusCode as e:
+                if e.status_code == 4001:
+                    logger.critical("=" * 80)
+                    logger.critical("FATAL ERROR: WebSocket authentication failed (invalid token)")
+                    logger.critical("=" * 80)
+                    logger.critical("The download service will now stop.")
+                    logger.critical("Please verify your API_TOKEN.txt file contains a valid token.")
+                    logger.critical("=" * 80)
+                    sys.exit(1)
+                elif e.status_code == 4002:
+                    logger.critical("=" * 80)
+                    logger.critical("FATAL ERROR: Another download service instance is already connected")
+                    logger.critical("=" * 80)
+                    logger.critical("Only one instance can be connected with this token at a time.")
+                    logger.critical("Please stop the other instance before starting this one.")
+                    logger.critical("=" * 80)
+                    sys.exit(1)
+                else:
+                    logger.error(f"WebSocket connection failed with status {e.status_code}")
+            except websockets.exceptions.ConnectionClosed as e:
+                # Check if connection was closed due to rejection (code 4002)
+                if e.code == 4002:
+                    logger.critical("=" * 80)
+                    logger.critical("FATAL ERROR: Connection rejected by server")
+                    logger.critical("=" * 80)
+                    logger.critical(f"Reason: {e.reason or 'Another instance is already connected'}")
+                    logger.critical("Only one download service instance can be connected with this token at a time.")
+                    logger.critical("Please stop the other instance before starting this one.")
+                    logger.critical("=" * 80)
+                    sys.exit(1)
+                else:
+                    logger.warning(f"WebSocket connection closed (code: {e.code}, reason: {e.reason})")
+            except Exception as e:
+                logger.error(f"WebSocket error: {e}", exc_info=True)
+            
+            # Reconnect with exponential backoff + random jitter
+            # Calculate delay: base (60s) + backoff + random jitter
+            random_jitter = random.uniform(0, random_jitter_max)
+            reconnect_delay = base_delay + backoff_delay + random_jitter
+            
+            logger.info(f"Reconnecting in {reconnect_delay:.1f} seconds (base: {base_delay}s, backoff: {backoff_delay:.1f}s, jitter: {random_jitter:.1f}s)...")
+            await asyncio.sleep(reconnect_delay)
+            
+            # Increase backoff exponentially (double it) up to max_backoff_delay
+            backoff_delay = min(backoff_delay * 2 if backoff_delay > 0 else base_delay, max_backoff_delay)
+    
+    finally:
+        # Cancel periodic task when exiting
+        periodic_task.cancel()
+        try:
+            await periodic_task
+        except asyncio.CancelledError:
+            pass
 
 
 async def handle_download_notification(queue_type):
