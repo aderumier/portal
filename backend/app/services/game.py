@@ -393,19 +393,11 @@ class GameService:
         subdirectory_counts[system_id] = subdirectory_counts_dict
         
         # Pre-compute system name for response structure
-        base_system_id_temp = system_id
-        if system_id.endswith('_batocera'):
-            base_system_id_temp = system_id[:-9]
-        elif system_id.endswith('_retrobat'):
-            base_system_id_temp = system_id[:-9]
-        elif system_id.endswith('_lite'):
-            base_system_id_temp = system_id[:-5]
-        
-        fullname_temp = self.system_fullname.get(base_system_id_temp, None)
+        fullname_temp = self.system_fullname.get(system_id, None)
         if not fullname_temp and len(self.system_fullname) > 0:
             fullname_temp = self.system_fullname.get(system_id, None)
         
-        system_name_temp = fullname_temp if fullname_temp else self.get_system_name(base_system_id_temp)
+        system_name_temp = fullname_temp if fullname_temp else self.get_system_name(system_id)
         
         # Pre-compute response structures for all games (ready to return, no dict building needed)
         catalog_responses[system_id] = {}
@@ -753,46 +745,17 @@ class GameService:
                 # Use WIP game count for system list display
                 game_count = game_count_wip
                 
-                # Handle systems with _batocera, _retrobat, or _lite suffix
-                # Map to base system name in es_systems.cfg
-                base_system_id = dir_name
-                suffix = None
-                suffix_display = None
-                
-                if dir_name.endswith('_batocera'):
-                    base_system_id = dir_name[:-9]  # Remove '_batocera' suffix
-                    suffix = 'batocera'
-                    suffix_display = '(Batocera)'
-                elif dir_name.endswith('_retrobat'):
-                    base_system_id = dir_name[:-9]  # Remove '_retrobat' suffix
-                    suffix = 'retrobat'
-                    suffix_display = '(Retrobat)'
-                elif dir_name.endswith('_lite'):
-                    base_system_id = dir_name[:-5]  # Remove '_lite' suffix
-                    suffix = 'lite'
-                    suffix_display = '(Lite)'
-                
                 # Get hardware category, manufacturer, release year, and full name from in-memory mapping
-                # Try base system name first (for _batocera/_retrobat systems)
-                hardware = self.system_hardware.get(base_system_id, 'unknown')
-                manufacturer = self.system_manufacturer.get(base_system_id, 'Unknown')
-                release = self.system_release.get(base_system_id, 'Unknown')
-                fullname = self.system_fullname.get(base_system_id, None)
-                
-                # If not found with base name, try original dir_name
-                if hardware == 'unknown' and len(self.system_hardware) > 0:
-                    hardware = self.system_hardware.get(dir_name, 'unknown')
-                    if hardware != 'unknown':
-                        manufacturer = self.system_manufacturer.get(dir_name, 'Unknown')
-                        release = self.system_release.get(dir_name, 'Unknown')
-                        fullname = self.system_fullname.get(dir_name, None)
+                hardware = self.system_hardware.get(dir_name, 'unknown')
+                manufacturer = self.system_manufacturer.get(dir_name, 'Unknown')
+                release = self.system_release.get(dir_name, 'Unknown')
+                fullname = self.system_fullname.get(dir_name, None)
                 
                 # Log if hardware not found (for debugging)
                 if hardware == 'unknown' and len(self.system_hardware) > 0:
                     # Check if there's a similar name (case-insensitive)
                     dir_name_lower = dir_name.lower()
-                    base_system_id_lower = base_system_id.lower()
-                    matching_systems = [k for k in self.system_hardware.keys() if k.lower() == dir_name_lower or k.lower() == base_system_id_lower]
+                    matching_systems = [k for k in self.system_hardware.keys() if k.lower() == dir_name_lower]
                     if matching_systems:
                         matched_id = matching_systems[0]
                         logger.warning(f"System '{dir_name}' not found in hardware map, but found case-insensitive match: {matched_id}")
@@ -801,14 +764,10 @@ class GameService:
                         release = self.system_release.get(matched_id, 'Unknown')
                         fullname = self.system_fullname.get(matched_id, None)
                     else:
-                        logger.debug(f"Hardware not found for system '{dir_name}' (base: '{base_system_id}'). Available systems (first 20): {list(self.system_hardware.keys())[:20]}")
+                        logger.debug(f"Hardware not found for system '{dir_name}'. Available systems (first 20): {list(self.system_hardware.keys())[:20]}")
                 
                 # Use fullname if available, otherwise fall back to get_system_name
-                display_name = fullname if fullname else self.get_system_name(base_system_id)
-                
-                # Append suffix to fullname if system has _batocera, _retrobat, or _lite suffix
-                if suffix_display and display_name:
-                    display_name = f"{display_name} {suffix_display}"
+                display_name = fullname if fullname else self.get_system_name(dir_name)
                 
                 # Skip systems with hardware category "library"
                 if hardware.lower() == 'library':
@@ -2140,6 +2099,15 @@ class GameService:
         self.system_manufacturer = {}
         self.system_release = {}
         self.system_fullname = {}
+        
+        # Delete cache file to force full reload (ensures enabled systems are re-queried from database)
+        catalog_file = self._get_catalog_file_path()
+        if os.path.exists(catalog_file):
+            try:
+                os.remove(catalog_file)
+                logger.info(f"Deleted catalog cache file: {catalog_file}")
+            except Exception as e:
+                logger.warning(f"Could not delete catalog cache file {catalog_file}: {e}")
         
         # Reload everything
         self.preload_all_gamelists()
