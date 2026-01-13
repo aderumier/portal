@@ -271,6 +271,7 @@ async def process_websocket_archive_stream(
 ):
     """Process binary archive stream from WebSocket."""
     import shutil
+    import threading
     
     # Get the async receive lock to coordinate with websocket_client
     with _websocket_lock:
@@ -304,6 +305,54 @@ async def process_websocket_archive_stream(
     files_with_errors = []
     extracted_files = set()
     
+    # Add progress reporting thread (same as HTTP version)
+    progress_thread_running = True
+    
+    def progress_reporter():
+        """Background thread to report progress periodically."""
+        nonlocal last_report_time, progress_thread_running, total_bytes_downloaded
+        interval = BANDWIDTH_UPDATE_INTERVAL if BANDWIDTH_UPDATE_INTERVAL is not None else 5
+        while progress_thread_running:
+            time.sleep(interval)
+            elapsed = time.time() - last_report_time
+            if elapsed > 0:
+                total_bytes_downloaded += bytes_transferred_this_session[0]
+                bytes_per_second = int(bytes_transferred_this_session[0] / elapsed) if bytes_transferred_this_session[0] > 0 else 0
+                
+                if not progress_thread_running:
+                    break
+                
+                try:
+                    progress_result = report_progress(download_id, total_bytes_downloaded, bytes_per_second)
+                    if progress_result is None:
+                        logger.debug(f"Download {download_id} was removed from queue")
+                        paused_ref[0] = False
+                        progress_thread_running = False
+                        break
+                    elif progress_result is False:
+                        logger.info(f"Download {download_id} is paused")
+                        paused_ref[0] = True
+                        progress_thread_running = False
+                        break
+                except requests.exceptions.HTTPError as e:
+                    if e.response and e.response.status_code == 410:
+                        logger.debug(f"Progress report returned 410 Gone - download {download_id} removed")
+                        paused_ref[0] = False
+                        progress_thread_running = False
+                        break
+                    if not progress_thread_running:
+                        break
+                except Exception as e:
+                    logger.debug(f"Progress report failed: {e}")
+                    if not progress_thread_running:
+                        break
+                
+                last_report_time = time.time()
+                bytes_transferred_this_session[0] = 0
+    
+    progress_thread = threading.Thread(target=progress_reporter, daemon=True)
+    progress_thread.start()
+    
     # Buffer for parsing binary format
     buffer = b''
     current_file_info = None
@@ -330,6 +379,8 @@ async def process_websocket_archive_stream(
                 logger.info(f"Download {download_id} was paused during WebSocket streaming")
                 if current_dest_file:
                     current_dest_file.close()
+                progress_thread_running = False
+                progress_thread.join(timeout=10)
                 return False, [("unknown", "Download paused")]
             
             # Wait for next message (with timeout to check for pause)
@@ -352,6 +403,8 @@ async def process_websocket_archive_stream(
                     elif msg_type == "archive_error":
                         error = data.get("error", "Unknown error")
                         logger.error(f"Archive error from server: {error}")
+                        progress_thread_running = False
+                        progress_thread.join(timeout=10)
                         return False, [("unknown", f"Server error: {error}")]
                     # Other JSON messages can be ignored
                     continue
@@ -420,9 +473,9 @@ async def process_websocket_archive_stream(
                             current_file_bytes_remaining = file_size
                             current_file_skip = False
                             current_dest_file = open(dest_file_path, 'wb')
-                            logger.debug(f"Starting extraction via WebSocket: {relative_path} ({file_size} bytes)")
+                            # Removed debug log - only log failures
                         except Exception as e:
-                            logger.error(f"Error opening destination file {dest_file_path}: {e}")
+                            logger.error(f"Failed to open file {relative_path}: {e}")
                             files_with_errors.append((relative_path, f"File open error: {e}"))
                             current_file_info = None
                             current_file_relative_path = relative_path
@@ -465,15 +518,16 @@ async def process_websocket_archive_stream(
                                         expected_size = int(current_file_info['size'])
                                         if actual_size == expected_size:
                                             extracted_files.add(current_file_relative_path)
-                                            logger.debug(f"Extracted and verified via WebSocket: {current_file_relative_path} ({actual_size} bytes)")
+                                            # Removed debug log - only log failures
                                         else:
-                                            logger.warning(f"File size mismatch: {current_file_relative_path} - local={actual_size}, expected={expected_size}")
+                                            logger.error(f"Failed file {current_file_relative_path}: Size mismatch (local={actual_size}, expected={expected_size})")
                                             files_with_errors.append((current_file_relative_path, f"Size mismatch: {actual_size} != {expected_size}"))
                                             try:
                                                 os.remove(dest_file_path)
                                             except:
                                                 pass
                                     else:
+                                        logger.error(f"Failed file {current_file_relative_path}: File not created")
                                         files_with_errors.append((current_file_relative_path, "File not created"))
                                 
                                 # Reset for next file
@@ -491,18 +545,32 @@ async def process_websocket_archive_stream(
         if current_dest_file:
             current_dest_file.close()
         
+        # Stop progress reporter
+        progress_thread_running = False
+        progress_thread.join(timeout=10)
+        
+        # Final progress report
+        if total_bytes_downloaded > 0:
+            try:
+                final_bytes_per_second = int(total_bytes_downloaded / (time.time() - start_time)) if (time.time() - start_time) > 0 else 0
+                report_progress(download_id, total_bytes_downloaded, final_bytes_per_second)
+            except Exception as e:
+                logger.debug(f"Final progress report failed: {e}")
+        
         # Verify all files were extracted
         if len(extracted_files) != len(remaining_files_set):
             missing = remaining_files_set - extracted_files
-            logger.warning(f"Not all files extracted. Missing: {missing}")
             for missing_file in missing:
                 # Only add if not already in files_with_errors
                 if not any(path == missing_file for path, _ in files_with_errors):
+                    logger.error(f"Failed file {missing_file}: Not extracted from stream")
                     files_with_errors.append((missing_file, "Not extracted from stream"))
         
+        # Log failed files only (one per line for clarity)
         if files_with_errors:
-            error_details = "; ".join([f"{path}: {error}" for path, error in files_with_errors])
-            logger.error(f"WebSocket download completed with errors: {error_details}")
+            logger.error(f"WebSocket download completed with {len(files_with_errors)} failed file(s):")
+            for path, error in files_with_errors:
+                logger.error(f"  - {path}: {error}")
             # Return False with list of failed files for retry logic
             return False, files_with_errors
         
@@ -511,11 +579,17 @@ async def process_websocket_archive_stream(
         
     except Exception as e:
         logger.error(f"Error in WebSocket archive stream processing: {e}", exc_info=True)
+        progress_thread_running = False
+        progress_thread.join(timeout=10)
         if current_dest_file:
             current_dest_file.close()
         # Return False with error info
         error_info = [("unknown", f"Stream processing error: {str(e)}")]
         return False, error_info
+    finally:
+        # Ensure progress thread is stopped
+        progress_thread_running = False
+        progress_thread.join(timeout=10)
 
 # Configuration - read from config.ini first, then environment variables, then defaults
 # Priority: config.ini > environment variable > default
