@@ -1767,9 +1767,9 @@ async def upload_gamelist(
     current_user: dict = Depends(require_auth_user),
     db: Session = Depends(get_db)
 ):
-    """Upload a tar.bz2 archive containing all gamelist.xml files.
+    """Upload a tar.gz archive containing all gamelist.xml files.
     
-    Stores the archive at: data/users_gamelist/<token_id>/gamelists.tar.bz2
+    Stores the archive at: data/users_gamelist/<token_id>/gamelists.tar.gz
     """
     try:
         # Get token_id from request state (set by API token middleware)
@@ -1781,28 +1781,28 @@ async def upload_gamelist(
                 detail="Token ID not found. API token authentication required."
             )
         
-        # Validate file is tar.bz2
+        # Validate file is tar.gz
         filename = file.filename or ''
-        if not (filename.endswith('.tar.bz2') or filename.endswith('.tbz2') or filename.endswith('.tbz')):
+        if not (filename.endswith('.tar.gz') or filename.endswith('.tgz')):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File must be a .tar.bz2 archive"
+                detail="File must be a .tar.gz archive"
             )
         
         # Read file content
         file_content = await file.read()
         
-        # Validate it's a valid tar.bz2 file
+        # Validate it's a valid tar.gz file
         try:
             tar_buffer = io.BytesIO(file_content)
-            with tarfile.open(fileobj=tar_buffer, mode='r:bz2') as tar:
+            with tarfile.open(fileobj=tar_buffer, mode='r:gz') as tar:
                 # Just verify it can be opened, count files
                 file_count = len(tar.getmembers())
             tar_buffer.seek(0)
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid tar.bz2 archive: {str(e)}"
+                detail=f"Invalid tar.gz archive: {str(e)}"
             )
         
         # Check file size (max 100MB for archive)
@@ -1813,7 +1813,7 @@ async def upload_gamelist(
                 detail="Archive size exceeds 100MB limit"
             )
         
-        # Build destination path: data/users_gamelist/<token_id>/gamelists.tar.bz2
+        # Build destination path: data/users_gamelist/<token_id>/gamelists.tar.gz
         if not settings.USERS_GAMELIST_PATH:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1832,15 +1832,15 @@ async def upload_gamelist(
         dest_dir.mkdir(parents=True, exist_ok=True)
         
         # Write archive file
-        dest_file = dest_dir / 'gamelists.tar.bz2'
+        dest_file = dest_dir / 'gamelists.tar.gz'
         with open(dest_file, 'wb') as f:
             f.write(file_content)
         
-        logger.info(f"Uploaded gamelist.tar.bz2 for token_id '{token_id}' ({file_count} files, {len(file_content)} bytes) to {dest_file}")
+        logger.info(f"Uploaded gamelist.tar.gz for token_id '{token_id}' ({file_count} files, {len(file_content)} bytes) to {dest_file}")
         
         return {
             "success": True,
-            "message": f"Gamelist.tar.bz2 uploaded successfully ({file_count} files)",
+            "message": f"Gamelist.tar.gz uploaded successfully ({file_count} files)",
             "path": str(dest_file),
             "file_count": file_count,
             "size_bytes": len(file_content)
@@ -1849,10 +1849,10 @@ async def upload_gamelist(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error uploading gamelist.tar.bz2: {e}", exc_info=True)
+        logger.error(f"Error uploading gamelist.tar.gz: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred while uploading gamelist.tar.bz2"
+            detail="An error occurred while uploading gamelist.tar.gz"
         )
 
 

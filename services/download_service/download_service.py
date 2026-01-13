@@ -272,11 +272,76 @@ def update_bandwidth_update_interval(new_interval):
     else:
         logger.warning(f"Invalid bandwidth update interval received: {new_interval}, keeping current value: {BANDWIDTH_UPDATE_INTERVAL}")
 
-def upload_all_gamelist_files():
-    """Scan ROMS_PATH for all gamelist.xml files, create a tar.bz2 archive, and upload it to the server.
+def filter_gamelist_for_upload(gamelist_path):
+    """Parse gamelist.xml and filter games with playcount > 0, keeping only specific fields.
     
-    Creates a single tar.bz2 archive containing all gamelist.xml files from all systems
-    and uploads it to data/users_gamelist/<token_id>/gamelists.tar.bz2
+    Args:
+        gamelist_path: Path to the gamelist.xml file
+        
+    Returns:
+        BytesIO object containing filtered XML, or None if no games match
+    """
+    try:
+        # Parse the original gamelist.xml
+        tree = ET.parse(gamelist_path)
+        root = tree.getroot()
+        
+        # Find all game elements
+        games = root.findall('game')
+        
+        # Filter games: only those with playcount > 0
+        filtered_games = []
+        fields_to_keep = ['path', 'playcount', 'gametime', 'lastplayed']
+        
+        for game in games:
+            # Check if playcount exists and is > 0
+            playcount_elem = game.find('playcount')
+            if playcount_elem is not None and playcount_elem.text:
+                try:
+                    playcount_value = int(playcount_elem.text)
+                    if playcount_value > 0:
+                        # Create a new game element with only the fields we want
+                        new_game = ET.Element('game')
+                        for field in fields_to_keep:
+                            field_elem = game.find(field)
+                            if field_elem is not None:
+                                # Copy the field element
+                                new_field = ET.SubElement(new_game, field)
+                                new_field.text = field_elem.text
+                                # Copy attributes if any (like <path> might have special characters)
+                                if field_elem.attrib:
+                                    new_field.attrib.update(field_elem.attrib)
+                        filtered_games.append(new_game)
+                except (ValueError, TypeError):
+                    # Invalid playcount value, skip this game
+                    continue
+        
+        # If no games match, return None
+        if not filtered_games:
+            return None
+        
+        # Create new XML structure
+        new_root = ET.Element('gameList')
+        for game in filtered_games:
+            new_root.append(game)
+        
+        # Convert to XML string
+        xml_str = ET.tostring(new_root, encoding='utf-8', xml_declaration=True)
+        
+        # Return as BytesIO
+        return io.BytesIO(xml_str)
+        
+    except Exception as e:
+        logger.error(f"Error filtering gamelist.xml from {gamelist_path}: {e}")
+        return None
+
+def upload_all_gamelist_files():
+    """Scan ROMS_PATH for all gamelist.xml files, filter games with playcount > 0, 
+    create a tar.gz archive, and upload it to the server.
+    
+    Only includes games with playcount > 0, keeping only fields: path, playcount, gametime, lastplayed.
+    Creates a single tar.gz archive containing filtered gamelist.xml files from all systems
+    and uploads it to data/users_gamelist/<token_id>/gamelists.tar.gz
     """
     try:
         if not ROMS_PATH or not os.path.exists(ROMS_PATH):
@@ -285,11 +350,12 @@ def upload_all_gamelist_files():
         
         logger.info(f"Scanning for gamelist.xml files in {ROMS_PATH}")
         
-        # Create tar.bz2 archive in memory with maximum compression
+        # Create tar.gz archive in memory with default compression
         tar_buffer = io.BytesIO()
         files_added = 0
+        total_games_filtered = 0
         
-        with tarfile.open(fileobj=tar_buffer, mode='w:bz2', compresslevel=9) as tar:
+        with tarfile.open(fileobj=tar_buffer, mode='w:gz') as tar:
             # Scan all system directories in ROMS_PATH
             for system_dir in os.listdir(ROMS_PATH):
                 system_path = os.path.join(ROMS_PATH, system_dir)
@@ -303,29 +369,51 @@ def upload_all_gamelist_files():
                 
                 if os.path.exists(gamelist_path) and os.path.isfile(gamelist_path):
                     try:
-                        # Add file to archive with path: <system>/gamelist.xml
-                        tar.add(gamelist_path, arcname=f"{system_dir}/gamelist.xml")
-                        files_added += 1
-                        logger.debug(f"Added gamelist.xml for system '{system_dir}' to archive")
+                        # Filter the gamelist.xml to only include games with playcount > 0
+                        filtered_xml = filter_gamelist_for_upload(gamelist_path)
+                        
+                        if filtered_xml is not None:
+                            # Count games in filtered XML
+                            filtered_xml.seek(0)
+                            filtered_tree = ET.parse(filtered_xml)
+                            game_count = len(filtered_tree.getroot().findall('game'))
+                            total_games_filtered += game_count
+                            
+                            # Reset to beginning for tarfile
+                            filtered_xml.seek(0)
+                            
+                            # Create tarinfo for the file
+                            tarinfo = tarfile.TarInfo(name=f"{system_dir}/gamelist.xml")
+                            filtered_xml.seek(0, 2)  # Seek to end to get size
+                            tarinfo.size = filtered_xml.tell()
+                            filtered_xml.seek(0)  # Reset to beginning
+                            
+                            # Add filtered XML to archive
+                            tar.addfile(tarinfo, filtered_xml)
+                            files_added += 1
+                            logger.debug(f"Added filtered gamelist.xml for system '{system_dir}' ({game_count} games with playcount > 0)")
+                        else:
+                            logger.debug(f"No games with playcount > 0 in system '{system_dir}', skipping")
+                            
                     except Exception as e:
-                        logger.error(f"Error adding gamelist.xml for system '{system_dir}' to archive: {e}")
+                        logger.error(f"Error processing gamelist.xml for system '{system_dir}': {e}")
         
         if files_added == 0:
-            logger.info("No gamelist.xml files found, skipping upload")
+            logger.info("No gamelist.xml files with games (playcount > 0) found, skipping upload")
             return
         
-        # Get the tar.bz2 content
+        # Get the tar.gz content
         tar_buffer.seek(0)
         tar_content = tar_buffer.getvalue()
         tar_buffer.close()
         
-        logger.info(f"Created tar.bz2 archive with {files_added} gamelist.xml files ({len(tar_content)} bytes)")
+        logger.info(f"Created tar.gz archive with {files_added} gamelist.xml files ({total_games_filtered} total games with playcount > 0, {len(tar_content)} bytes)")
         
         # Upload to server
         try:
             url = f"{API_URL}/api/download/gamelist/upload"
             files = {
-                'file': ('gamelists.tar.bz2', tar_content, 'application/x-bzip2')
+                'file': ('gamelists.tar.gz', tar_content, 'application/gzip')
             }
             # No system parameter needed since all files are in one archive
             
@@ -334,17 +422,17 @@ def upload_all_gamelist_files():
             
             result = response.json()
             if result.get('success'):
-                logger.info(f"Successfully uploaded gamelist.tar.bz2 archive ({files_added} files, {len(tar_content)} bytes)")
+                logger.info(f"Successfully uploaded gamelist.tar.gz archive ({files_added} files, {total_games_filtered} games, {len(tar_content)} bytes)")
             else:
-                logger.warning(f"Failed to upload gamelist.tar.bz2: {result.get('message', 'Unknown error')}")
+                logger.warning(f"Failed to upload gamelist.tar.gz: {result.get('message', 'Unknown error')}")
                 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error uploading gamelist.tar.bz2 archive: {e}")
+            logger.error(f"Error uploading gamelist.tar.gz archive: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error uploading gamelist.tar.bz2 archive: {e}", exc_info=True)
+            logger.error(f"Unexpected error uploading gamelist.tar.gz archive: {e}", exc_info=True)
         
     except Exception as e:
-        logger.error(f"Error creating and uploading gamelist.tar.bz2 archive: {e}", exc_info=True)
+        logger.error(f"Error creating and uploading gamelist.tar.gz archive: {e}", exc_info=True)
 
 def request_download(queue_type=None):
     """Request next available download from the API.
