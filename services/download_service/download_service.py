@@ -169,6 +169,8 @@ _active_download_pause_refs = {}
 _active_websocket = None  # Global reference to active WebSocket connection
 _websocket_lock = threading.Lock()  # Lock for thread-safe access
 _websocket_event_loop = None  # Event loop for WebSocket operations
+_websocket_recv_lock = None  # Async lock for coordinating message reception (initialized in websocket_client)
+_archive_download_active = False  # Flag to indicate if archive download is in progress
 
 async def download_directory_via_websocket_async(
     download_id, remaining_files_list, dest_base_path, system, 
@@ -205,21 +207,29 @@ async def download_directory_via_websocket_async(
                 retry_files_set = set(files_to_download)
                 current_files_list = [f for f in files_list if f['relative_path'] in retry_files_set]
             
-            # Send request via WebSocket
-            request_msg = {
-                "type": "request_archive",
-                "download_id": download_id,
-                "files": files_to_download if files_to_download else None  # None means all files
-            }
-            await websocket.send(json.dumps(request_msg))
-            logger.info(f"Sent archive request via WebSocket for download_id={download_id}, files={len(files_to_download) if files_to_download else 'all'}")
+            # Set flag to indicate archive download is active (prevents websocket_client from receiving)
+            global _archive_download_active
+            _archive_download_active = True
             
-            # Now wait for archive_start, then receive binary data, then archive_complete/error
-            # We'll parse the binary stream similar to HTTP version
-            success, failed_files = await process_websocket_archive_stream(
-                download_id, websocket, dest_base_path, system, 
-                current_files_list, bytes_already_transferred, paused_ref
-            )
+            try:
+                # Send request via WebSocket
+                request_msg = {
+                    "type": "request_archive",
+                    "download_id": download_id,
+                    "files": files_to_download if files_to_download else None  # None means all files
+                }
+                await websocket.send(json.dumps(request_msg))
+                logger.info(f"Sent archive request via WebSocket for download_id={download_id}, files={len(files_to_download) if files_to_download else 'all'}")
+                
+                # Now wait for archive_start, then receive binary data, then archive_complete/error
+                # We'll parse the binary stream similar to HTTP version
+                success, failed_files = await process_websocket_archive_stream(
+                    download_id, websocket, dest_base_path, system, 
+                    current_files_list, bytes_already_transferred, paused_ref
+                )
+            finally:
+                # Always clear the flag when done
+                _archive_download_active = False
             
             # Filter failed files to only those with size mismatches for retry
             size_mismatch_files = [path for path, error in failed_files if 'Size mismatch' in error or 'size mismatch' in error.lower()]
@@ -262,9 +272,18 @@ async def process_websocket_archive_stream(
     """Process binary archive stream from WebSocket."""
     import shutil
     
-    # Wait for archive_start message
+    # Get the async receive lock to coordinate with websocket_client
+    with _websocket_lock:
+        recv_lock = _websocket_recv_lock
+    
+    if not recv_lock:
+        logger.error("WebSocket receive lock not available")
+        return False, [("unknown", "WebSocket receive lock not available")]
+    
+    # Wait for archive_start message (acquire lock to prevent websocket_client from receiving)
     try:
-        start_message = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+        async with recv_lock:
+            start_message = await asyncio.wait_for(websocket.recv(), timeout=10.0)
         if isinstance(start_message, str):
             start_data = json.loads(start_message)
             if start_data.get("type") != "archive_start":
@@ -314,8 +333,10 @@ async def process_websocket_archive_stream(
                 return False, [("unknown", "Download paused")]
             
             # Wait for next message (with timeout to check for pause)
+            # Use the receive lock to coordinate with websocket_client
             try:
-                message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                async with recv_lock:
+                    message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
             except asyncio.TimeoutError:
                 # Timeout - check pause and continue
                 continue
@@ -3417,16 +3438,26 @@ async def websocket_client():
                     
                     # Store websocket and event loop globally for use by download functions
                     with _websocket_lock:
-                        global _active_websocket, _websocket_event_loop
+                        global _active_websocket, _websocket_event_loop, _websocket_recv_lock
                         _active_websocket = websocket
                         _websocket_event_loop = asyncio.get_event_loop()
+                        # Initialize async lock for coordinating message reception
+                        if _websocket_recv_lock is None:
+                            _websocket_recv_lock = asyncio.Lock()
                     
                     try:
                         # Handle messages
                         while True:
                             try:
-                                # Wait for messages with timeout for ping handling
-                                message = await asyncio.wait_for(websocket.recv(), timeout=30.0)
+                                # Skip receiving if archive download is active (archive handler will receive)
+                                if _archive_download_active:
+                                    await asyncio.sleep(0.1)  # Short sleep to avoid busy waiting
+                                    continue
+                                
+                                # Acquire lock before receiving to coordinate with archive downloads
+                                async with _websocket_recv_lock:
+                                    # Wait for messages with timeout for ping handling
+                                    message = await asyncio.wait_for(websocket.recv(), timeout=30.0)
                                 
                                 # Check if message is bytes (binary) or str (JSON)
                                 if isinstance(message, bytes):
