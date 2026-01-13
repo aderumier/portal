@@ -545,7 +545,7 @@ async def process_websocket_archive_stream(
                             current_file_bytes_remaining = file_size
                             current_file_skip = False
                             current_dest_file = open(dest_file_path, 'wb')
-                            logger.info(f"WebSocket: Opened file for writing: {relative_path} (size: {file_size} bytes, dest: {dest_file_path})")
+                            # Removed info log - only log failures
                         except Exception as e:
                             logger.error(f"Failed to open file {relative_path}: {e}")
                             files_with_errors.append((relative_path, f"File open error: {e}"))
@@ -582,7 +582,7 @@ async def process_websocket_archive_stream(
                                     expected_size = int(current_file_info['size'])
                                     if actual_size == expected_size:
                                         extracted_files.add(current_file_relative_path)
-                                        logger.info(f"WebSocket: File verified successfully: {current_file_relative_path} ({actual_size} bytes)")
+                                        # Removed info log - only log failures
                                     else:
                                         logger.error(f"Failed file {current_file_relative_path}: Size mismatch (local={actual_size}, expected={expected_size})")
                                         files_with_errors.append((current_file_relative_path, f"Size mismatch: {actual_size} != {expected_size}"))
