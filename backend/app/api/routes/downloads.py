@@ -94,18 +94,12 @@ async def discover_download_files(
     # Check if download is paused (use Redis for active downloads)
     from app.services.redis_downloads import RedisDownloadTracker
     redis_status = await RedisDownloadTracker.get_download_status(queue_item.id)
-    if redis_status:
-        if redis_status.get('status') == 'paused':
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Download is paused"
-            )
-    elif queue_item.status == 'paused':
-        # Fallback to SQLite check (for user queues)
+    if redis_status and redis_status.get('status') == 'paused':
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Download is paused"
         )
+    # If not in Redis, it's a user_queue item (not active) - no pause check needed
     
     # Get platform from Redis
     platform = 'linux'
@@ -429,37 +423,17 @@ async def stream_archive_via_websocket(
             if allocated_bandwidth > 0:
                 current_time = time.time()
                 if current_time - last_pause_check >= pause_check_interval:
-                    # Check Redis first for active downloads, fallback to SQLite
+                    # Check Redis for active download pause status
                     from app.services.redis_downloads import RedisDownloadTracker
                     redis_status = await RedisDownloadTracker.get_download_status(download_id)
-                    if redis_status:
-                        if redis_status.get('status') == 'paused':
-                            logger.info(f"Download {download_id} was paused during WebSocket archive streaming - stopping")
-                            await websocket.send_json({
-                                "type": "archive_error",
-                                "download_id": download_id,
-                                "error": "Download paused"
-                            })
-                            return
-                    else:
-                        # Fallback to SQLite check (for user queues)
-                        try:
-                            from app.database import SessionLocal
-                            fresh_db = SessionLocal()
-                            try:
-                                fresh_item = fresh_db.query(DownloadQueue).filter(DownloadQueue.id == download_id).first()
-                                if fresh_item and fresh_item.status == 'paused':
-                                    logger.info(f"Download {download_id} was paused during WebSocket archive streaming - stopping")
-                                    await websocket.send_json({
-                                        "type": "archive_error",
-                                        "download_id": download_id,
-                                        "error": "Download paused"
-                                    })
-                                    return
-                            finally:
-                                fresh_db.close()
-                        except Exception as e:
-                            logger.warning(f"Error checking pause status from SQLite: {e}")
+                    if redis_status and redis_status.get('status') == 'paused':
+                        logger.info(f"Download {download_id} was paused during WebSocket archive streaming - stopping")
+                        await websocket.send_json({
+                            "type": "archive_error",
+                            "download_id": download_id,
+                            "error": "Download paused"
+                        })
+                        return
                     last_pause_check = current_time
             
             # Encode path as UTF-8
@@ -494,37 +468,17 @@ async def stream_archive_via_websocket(
                     if allocated_bandwidth > 0:
                         current_time = time.time()
                         if current_time - last_pause_check >= pause_check_interval:
-                            # Check Redis first for active downloads, fallback to SQLite
+                            # Check Redis for active download pause status
                             from app.services.redis_downloads import RedisDownloadTracker
                             redis_status = await RedisDownloadTracker.get_download_status(download_id)
-                            if redis_status:
-                                if redis_status.get('status') == 'paused':
-                                    logger.info(f"Download {download_id} was paused during WebSocket archive streaming - stopping")
-                                    await websocket.send_json({
-                                        "type": "archive_error",
-                                        "download_id": download_id,
-                                        "error": "Download paused"
-                                    })
-                                    return
-                            else:
-                                # Fallback to SQLite check (for user queues)
-                                try:
-                                    from app.database import SessionLocal
-                                    fresh_db = SessionLocal()
-                                    try:
-                                        fresh_item = fresh_db.query(DownloadQueue).filter(DownloadQueue.id == download_id).first()
-                                        if fresh_item and fresh_item.status == 'paused':
-                                            logger.info(f"Download {download_id} was paused during WebSocket archive streaming - stopping")
-                                            await websocket.send_json({
-                                                "type": "archive_error",
-                                                "download_id": download_id,
-                                                "error": "Download paused"
-                                            })
-                                            return
-                                    finally:
-                                        fresh_db.close()
-                                except Exception as e:
-                                    logger.warning(f"Error checking pause status from SQLite: {e}")
+                            if redis_status and redis_status.get('status') == 'paused':
+                                logger.info(f"Download {download_id} was paused during WebSocket archive streaming - stopping")
+                                await websocket.send_json({
+                                    "type": "archive_error",
+                                    "download_id": download_id,
+                                    "error": "Download paused"
+                                })
+                                return
                             last_pause_check = current_time
                         
                         # Check for bandwidth changes
@@ -1122,7 +1076,7 @@ async def report_progress(
             detail="Invalid download ID"
         )
     
-    # Check Redis first for active downloads
+    # Check Redis for active downloads (required for active downloads)
     from app.services.redis_downloads import RedisDownloadTracker
     redis_status = await RedisDownloadTracker.get_download_status(download_id)
     
@@ -1139,35 +1093,12 @@ async def report_progress(
         await RedisDownloadTracker.update_progress(download_id, bytes_transferred, bytes_per_second)
         return {"success": True}
     
-    # Fallback to SQLite check (for user queues)
-    from app.database import DownloadQueue
-    download = download_service.db.query(DownloadQueue).filter(DownloadQueue.id == download_id).first()
-    
-    if download and download.status == 'paused':
-        logger.info(f"Progress report received for paused download {download_id} - returning pause signal")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Download is paused"
-        )
-    
-    # Check if download exists before updating progress
-    if not download:
-        # Download was removed from queue - return 410 Gone to signal the download service to stop
-        logger.info(f"Progress report received for removed download {download_id} - returning 410 Gone")
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="Download was removed from queue"
-        )
-    
-    client_version = request.client_version
-    success = download_service.update_progress(download_id, bytes_transferred, bytes_per_second, client_version=client_version)
-    
-    if not success:
-        # This shouldn't happen if download exists, but handle it gracefully
-        logger.warning(f"Progress update failed for download {download_id}")
-        return {"success": True}
-    
-    return {"success": True}
+    # Not in Redis - download was removed from queue or doesn't exist
+    logger.info(f"Progress report received for removed/download not found {download_id} - returning 410 Gone")
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Download was removed from queue"
+    )
 
 @router.post("/complete")
 async def mark_completed(
@@ -1640,18 +1571,12 @@ async def download_file(
         # Check if download is paused (use Redis for active downloads)
         from app.services.redis_downloads import RedisDownloadTracker
         redis_status = await RedisDownloadTracker.get_download_status(queue_item.id)
-        is_paused = False
-        if redis_status:
-            is_paused = redis_status.get('status') == 'paused'
-        else:
-            # Fallback to SQLite check (for user queues)
-            is_paused = queue_item.status == 'paused'
-        
-        if is_paused:
+        if redis_status and redis_status.get('status') == 'paused':
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Download is paused"
             )
+        # If not in Redis, it's a user_queue item (not active) - no pause check needed
         
         # Get catalog_type from queue_item
         catalog_version = queue_item.catalog_version
@@ -2281,24 +2206,7 @@ async def download_file(
                         if current_time - last_pause_check >= pause_check_interval:
                             from app.services.redis_downloads import RedisDownloadTracker
                             redis_status = await RedisDownloadTracker.get_download_status(queue_item.id)
-                            is_paused = False
-                            if redis_status:
-                                is_paused = redis_status.get('status') == 'paused'
-                            else:
-                                # Fallback to SQLite check (for user queues)
-                                try:
-                                    from app.database import SessionLocal
-                                    fresh_db = SessionLocal()
-                                    try:
-                                        fresh_item = fresh_db.query(DownloadQueue).filter(DownloadQueue.id == queue_item.id).first()
-                                        if fresh_item:
-                                            is_paused = fresh_item.status == 'paused'
-                                    finally:
-                                        fresh_db.close()
-                                except Exception as e:
-                                    logger.warning(f"Error checking pause status from SQLite: {e}")
-                            
-                            if is_paused:
+                            if redis_status and redis_status.get('status') == 'paused':
                                 logger.info(f"Download {queue_item.id} was paused during streaming - stopping")
                                 return  # Stop streaming
                             last_pause_check = current_time
@@ -2667,24 +2575,7 @@ async def download_files_as_binary(
                         if current_time - last_pause_check >= pause_check_interval:
                             from app.services.redis_downloads import RedisDownloadTracker
                             redis_status = await RedisDownloadTracker.get_download_status(download_id)
-                            is_paused = False
-                            if redis_status:
-                                is_paused = redis_status.get('status') == 'paused'
-                            else:
-                                # Fallback to SQLite check (for user queues)
-                                try:
-                                    from app.database import SessionLocal
-                                    fresh_db = SessionLocal()
-                                    try:
-                                        fresh_item = fresh_db.query(DownloadQueue).filter(DownloadQueue.id == download_id).first()
-                                        if fresh_item:
-                                            is_paused = fresh_item.status == 'paused'
-                                    finally:
-                                        fresh_db.close()
-                                except Exception as e:
-                                    logger.warning(f"Error checking pause status from SQLite: {e}")
-                            
-                            if is_paused:
+                            if redis_status and redis_status.get('status') == 'paused':
                                 logger.info(f"Download {download_id} was paused during archive streaming - stopping")
                                 return
                             last_pause_check = current_time
@@ -2724,24 +2615,7 @@ async def download_files_as_binary(
                                 if current_time - last_pause_check >= pause_check_interval:
                                     from app.services.redis_downloads import RedisDownloadTracker
                                     redis_status = await RedisDownloadTracker.get_download_status(download_id)
-                                    is_paused = False
-                                    if redis_status:
-                                        is_paused = redis_status.get('status') == 'paused'
-                                    else:
-                                        # Fallback to SQLite check (for user queues)
-                                        try:
-                                            from app.database import SessionLocal
-                                            fresh_db = SessionLocal()
-                                            try:
-                                                fresh_item = fresh_db.query(DownloadQueue).filter(DownloadQueue.id == download_id).first()
-                                                if fresh_item:
-                                                    is_paused = fresh_item.status == 'paused'
-                                            finally:
-                                                fresh_db.close()
-                                        except Exception as e:
-                                            logger.warning(f"Error checking pause status from SQLite: {e}")
-                                    
-                                    if is_paused:
+                                    if redis_status and redis_status.get('status') == 'paused':
                                         logger.info(f"Download {download_id} was paused during archive streaming - stopping")
                                         return
                                     last_pause_check = current_time

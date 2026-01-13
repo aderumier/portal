@@ -989,14 +989,15 @@ class DownloadService:
                     status = item.status
                     
                     if item.status == 'downloading':
-                        # Try to get latest data from Redis (if no event loop is running)
+                        # Active downloads MUST be in Redis - get latest data from Redis
                         try:
                             import asyncio
                             from app.services.redis_downloads import RedisDownloadTracker
                             try:
                                 loop = asyncio.get_running_loop()
-                                # Event loop is running - can't use asyncio.run(), skip Redis
-                                # Progress will be updated via report_progress which updates both Redis and SQLite
+                                # Event loop is running - can't use asyncio.run()
+                                # Skip Redis check in this case (will use SQLite data)
+                                # This is OK for display purposes, but active downloads should be in Redis
                                 pass
                             except RuntimeError:
                                 # No event loop running, safe to use asyncio.run()
@@ -1008,10 +1009,13 @@ class DownloadService:
                                         bytes_transferred = redis_status.get('bytes_transferred', bytes_transferred)
                                         bandwidth_used = redis_status.get('bytes_per_second', bandwidth_used)
                                         status = redis_status.get('status', status)
+                                    else:
+                                        # Download marked as 'downloading' but not in Redis - log warning
+                                        logger.warning(f"Download {item.id} has status 'downloading' but not found in Redis")
                                 except Exception as redis_error:
-                                    logger.debug(f"Failed to get Redis status for download {item.id}: {redis_error}")
+                                    logger.warning(f"Failed to get Redis status for active download {item.id}: {redis_error}")
                         except Exception as e:
-                            logger.debug(f"Failed to check Redis for download {item.id}: {e}")
+                            logger.warning(f"Failed to check Redis for active download {item.id}: {e}")
                     
                     # Calculate progress for active downloads
                     progress_percent = 0
@@ -1963,56 +1967,14 @@ class DownloadService:
             return None
     
     def update_progress(self, download_id: int, bytes_transferred: int, bytes_per_second: int, client_version: Optional[str] = None) -> bool:
-        """Update download progress (uses Redis for active downloads, SQLite for user queues)."""
+        """Update download progress (Redis only for active downloads).
+        
+        Note: This method is only called for user_queue items now. Active downloads
+        are updated directly via Redis in the report_progress endpoint.
+        """
         try:
-            # Update Redis first for active downloads (faster)
-            try:
-                import asyncio
-                from app.services.redis_downloads import RedisDownloadTracker
-                redis_updated = False
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # If loop is running, create a task
-                        asyncio.create_task(RedisDownloadTracker.update_progress(
-                            download_id, bytes_transferred, bytes_per_second
-                        ))
-                        redis_updated = True
-                    else:
-                        # No loop running, run it
-                        loop.run_until_complete(RedisDownloadTracker.update_progress(
-                            download_id, bytes_transferred, bytes_per_second
-                        ))
-                        redis_updated = True
-                except RuntimeError:
-                    # No event loop, create one
-                    asyncio.run(RedisDownloadTracker.update_progress(
-                        download_id, bytes_transferred, bytes_per_second
-                    ))
-                    redis_updated = True
-                
-                # If Redis update succeeded, we're done (active downloads are in Redis)
-                if redis_updated:
-                    # Still update SQLite for persistence, but don't fail if it doesn't exist
-                    try:
-                        download = self.db.query(DownloadQueue).filter(
-                            DownloadQueue.id == download_id
-                        ).first()
-                        if download:
-                            download.bytes_transferred = bytes_transferred
-                            download.bandwidth_used = bytes_per_second
-                            download.last_progress_at = datetime.now(timezone.utc)
-                            if client_version:
-                                download.client_version = client_version
-                            self.db.commit()
-                    except Exception as sqlite_error:
-                        logger.debug(f"SQLite update failed (download may be in Redis only): {sqlite_error}")
-                    
-                    return True
-            except Exception as redis_error:
-                logger.debug(f"Redis update failed, falling back to SQLite: {redis_error}")
-            
-            # Fallback to SQLite (for user queues or if Redis fails)
+            # This should only be called for user_queue items (not active downloads)
+            # Active downloads are handled via Redis in report_progress endpoint
             download = self.db.query(DownloadQueue).filter(
                 DownloadQueue.id == download_id
             ).first()
@@ -2040,20 +2002,44 @@ class DownloadService:
                 logger.info(f"Download {download_id} resumed after being stuck, changing status to downloading")
                 download.status = 'downloading'
                 download.active_download = True
-                # Also update Redis
+                # Store in Redis when status changes to downloading
                 try:
                     import asyncio
                     from app.services.redis_downloads import RedisDownloadTracker
                     try:
                         loop = asyncio.get_event_loop()
                         if loop.is_running():
-                            asyncio.create_task(RedisDownloadTracker.update_status(download_id, 'downloading'))
+                            asyncio.create_task(RedisDownloadTracker.set_active_download(
+                                download_id,
+                                status='downloading',
+                                bytes_transferred=bytes_transferred,
+                                bytes_per_second=bytes_per_second,
+                                file_size=download.file_size,
+                                queue_type=download.queue_type,
+                                assigned_to_service=download.assigned_to_service
+                            ))
                         else:
-                            loop.run_until_complete(RedisDownloadTracker.update_status(download_id, 'downloading'))
+                            loop.run_until_complete(RedisDownloadTracker.set_active_download(
+                                download_id,
+                                status='downloading',
+                                bytes_transferred=bytes_transferred,
+                                bytes_per_second=bytes_per_second,
+                                file_size=download.file_size,
+                                queue_type=download.queue_type,
+                                assigned_to_service=download.assigned_to_service
+                            ))
                     except RuntimeError:
-                        asyncio.run(RedisDownloadTracker.update_status(download_id, 'downloading'))
-                except Exception:
-                    pass
+                        asyncio.run(RedisDownloadTracker.set_active_download(
+                            download_id,
+                            status='downloading',
+                            bytes_transferred=bytes_transferred,
+                            bytes_per_second=bytes_per_second,
+                            file_size=download.file_size,
+                            queue_type=download.queue_type,
+                            assigned_to_service=download.assigned_to_service
+                        ))
+                except Exception as e:
+                    logger.warning(f"Failed to store download in Redis: {e}")
             
             # Mark object as modified explicitly (though assignment should do this)
             from sqlalchemy.orm.attributes import flag_modified
