@@ -775,6 +775,11 @@ class GameService:
             logger.info("Gamelists already loaded")
             return
         
+        # Try loading from cache first
+        if self._load_catalog_from_cache():
+            logger.info("Catalog loaded from cache")
+            return
+        
         logger.info("Preloading all gamelist.xml files into memory (WIP and Releases)...")
         
         # Load system hardware mapping once (parsed and kept in memory)
@@ -864,34 +869,31 @@ class GameService:
                     if merged_count > 0:
                         logger.info(f"Merged {merged_count} WIP game pairs for {dir_name}")
                 
-                # Try to find and load Releases catalog (versioned gamelist.xml) if enabled
-                if settings.ENABLE_RELEASES_CATALOG:
-                    version_result = self._find_latest_versioned_gamelist(dir_path)
-                    if version_result:
-                        version_str, snapshot_dir_path, versioned_gamelist_path = version_result
-                        try:
-                            game_count_releases = self._load_catalog_from_gamelist(dir_name, versioned_gamelist_path, 'releases', snapshot_dir_path)
-                            self.system_versions[dir_name] = version_str
-                            self.system_snapshot_paths[dir_name] = snapshot_dir_path
-                            logger.info(f"Loaded Releases catalog for {dir_name} (version {version_str}, snapshot: {snapshot_dir_path}): {game_count_releases} games")
-                            
-                            # Merge games with extensions if both extensions are defined for this system
-                            if dir_name in system_extensions:
-                                ext_info = system_extensions[dir_name]
-                                merged_count = self._merge_games_with_extensions(
-                                    dir_name, 'releases',
-                                    ext_info['batocera_extension'],
-                                    ext_info['retrobat_extension']
-                                )
-                                if merged_count > 0:
-                                    logger.info(f"Merged {merged_count} Releases game pairs for {dir_name}")
-                        except Exception as e:
-                            logger.error(f"Error loading Releases catalog for {dir_name} (version {version_str}): {e}")
-                            # Continue with WIP catalog only
-                    else:
-                        logger.debug(f"No versioned gamelist found for {dir_name}")
+                # Try to find and load Releases catalog (versioned gamelist.xml)
+                version_result = self._find_latest_versioned_gamelist(dir_path)
+                if version_result:
+                    version_str, snapshot_dir_path, versioned_gamelist_path = version_result
+                    try:
+                        game_count_releases = self._load_catalog_from_gamelist(dir_name, versioned_gamelist_path, 'releases', snapshot_dir_path)
+                        self.system_versions[dir_name] = version_str
+                        self.system_snapshot_paths[dir_name] = snapshot_dir_path
+                        logger.info(f"Loaded Releases catalog for {dir_name} (version {version_str}, snapshot: {snapshot_dir_path}): {game_count_releases} games")
+                        
+                        # Merge games with extensions if both extensions are defined for this system
+                        if dir_name in system_extensions:
+                            ext_info = system_extensions[dir_name]
+                            merged_count = self._merge_games_with_extensions(
+                                dir_name, 'releases',
+                                ext_info['batocera_extension'],
+                                ext_info['retrobat_extension']
+                            )
+                            if merged_count > 0:
+                                logger.info(f"Merged {merged_count} Releases game pairs for {dir_name}")
+                    except Exception as e:
+                        logger.error(f"Error loading Releases catalog for {dir_name} (version {version_str}): {e}")
+                        # Continue with WIP catalog only
                 else:
-                    logger.debug(f"Releases catalog is disabled, skipping versioned gamelist.xml scan for {dir_name}")
+                    logger.debug(f"No versioned gamelist found for {dir_name}")
                 
                 # Use WIP game count for system list display
                 game_count = game_count_wip
@@ -1509,13 +1511,43 @@ class GameService:
         os.makedirs(data_dir, exist_ok=True)
         return os.path.join(data_dir, 'search_index.hash')
     
+    def _get_catalog_file_path(self) -> str:
+        """Get the path to the catalog pickle file."""
+        from app.config import settings
+        
+        # Get database path and extract the directory (same logic as database.py)
+        db_path = settings.DATABASE_URL.replace('sqlite:///', '')
+        if db_path.startswith('./'):
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+            db_path = os.path.join(project_root, db_path[2:])
+        elif not os.path.isabs(db_path):
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+            db_path = os.path.join(project_root, db_path)
+        
+        data_dir = os.path.dirname(db_path)
+        os.makedirs(data_dir, exist_ok=True)
+        return os.path.join(data_dir, 'catalog.pkl')
+    
     def _calculate_games_hash(self) -> str:
         """Calculate a hash of all gamelist.xml files to detect changes."""
-        systems = self.get_systems()
+        # If systems_list is already loaded, use it; otherwise scan filesystem
+        if hasattr(self, 'systems_list') and self.systems_list:
+            systems = self.systems_list
+        else:
+            # Scan filesystem for systems
+            systems = []
+            if os.path.isdir(self.games_path):
+                for dir_name in os.listdir(self.games_path):
+                    if dir_name in ['.', '..'] or dir_name.endswith('_spirit') or dir_name == 'radio':
+                        continue
+                    dir_path = os.path.join(self.games_path, dir_name)
+                    if os.path.isdir(dir_path):
+                        systems.append({'id': dir_name})
+        
         hash_data = []
         
         for system in systems:
-            system_id = system['id']
+            system_id = system['id'] if isinstance(system, dict) else system
             gamelist_path = os.path.join(self.games_path, system_id, 'gamelist.xml')
             
             if os.path.isfile(gamelist_path) and os.access(gamelist_path, os.R_OK):
@@ -1526,13 +1558,17 @@ class GameService:
         hash_string = '|'.join(sorted(hash_data))
         return hashlib.md5(hash_string.encode()).hexdigest()
     
-    def _load_index_from_cache(self) -> Optional[Dict]:
-        """Load search index from pickle file if it exists and is valid."""
+    def _load_index_from_cache(self, catalog_type: str = 'wip') -> Optional[Dict]:
+        """Load search index from pickle file if it exists and is valid.
+        
+        Args:
+            catalog_type: 'wip' or 'releases' (default: 'wip')
+        """
         index_file = self._get_index_file_path()
         hash_file = self._get_index_hash_file_path()
         
         if not os.path.isfile(index_file) or not os.path.isfile(hash_file):
-            logger.info("No cached search index found")
+            logger.info(f"No cached search index found ({catalog_type})")
             return None
         
         try:
@@ -1545,36 +1581,159 @@ class GameService:
                 logger.info("Games have changed, invalidating cached index")
                 return None
             
-            # Load index from pickle
+            # Load indexes from pickle (may contain both wip and releases)
             with open(index_file, 'rb') as f:
-                index = pickle.load(f)
+                index_data = pickle.load(f)
             
-            logger.info(f"Loaded search index from cache: {len(index)} letters")
-            return index
+            # If it's a dict with 'wip' and/or 'releases' keys, extract the requested one
+            if isinstance(index_data, dict) and (catalog_type in index_data or 'wip' in index_data or 'releases' in index_data):
+                if catalog_type in index_data:
+                    index = index_data[catalog_type]
+                    logger.info(f"Loaded search index from cache ({catalog_type}): {len(index)} letters")
+                    return index
+                else:
+                    # Old format or missing requested type
+                    logger.info(f"Index cache exists but doesn't contain {catalog_type} index")
+                    return None
+            else:
+                # Old format: single index (assumed to be wip)
+                if catalog_type == 'wip':
+                    logger.info(f"Loaded search index from cache (legacy format, WIP): {len(index_data)} letters")
+                    return index_data
+                else:
+                    logger.info(f"Index cache exists in legacy format (WIP only), but {catalog_type} requested")
+                    return None
             
         except Exception as e:
-            logger.warning(f"Failed to load cached index: {e}")
+            logger.warning(f"Failed to load cached index ({catalog_type}): {e}")
             return None
     
-    def _save_index_to_cache(self, index: Dict) -> None:
-        """Save search index to pickle file."""
+    def _save_index_to_cache(self, index: Dict, catalog_type: str = 'wip') -> None:
+        """Save search index to pickle file.
+        
+        Args:
+            index: The search index dictionary to save
+            catalog_type: 'wip' or 'releases' (default: 'wip')
+        """
         index_file = self._get_index_file_path()
         hash_file = self._get_index_hash_file_path()
         
         try:
-            # Save index
+            # Try to load existing indexes to merge with new one
+            index_data = {}
+            if os.path.isfile(index_file):
+                try:
+                    with open(index_file, 'rb') as f:
+                        existing_data = pickle.load(f)
+                    # If it's a dict with 'wip'/'releases' keys, use it
+                    if isinstance(existing_data, dict) and ('wip' in existing_data or 'releases' in existing_data):
+                        index_data = existing_data
+                except Exception:
+                    # If load fails, start fresh
+                    pass
+            
+            # Update with new index
+            index_data[catalog_type] = index
+            
+            # Save merged indexes
             with open(index_file, 'wb') as f:
-                pickle.dump(index, f)
+                pickle.dump(index_data, f)
             
             # Save hash for cache validation
             current_hash = self._calculate_games_hash()
             with open(hash_file, 'w') as f:
                 f.write(current_hash)
             
-            logger.info(f"Saved search index to cache: {index_file}")
+            logger.info(f"Saved search index to cache ({catalog_type}): {index_file}")
             
         except Exception as e:
-            logger.warning(f"Failed to save index to cache: {e}")
+            logger.warning(f"Failed to save index to cache ({catalog_type}): {e}")
+    
+    def _load_catalog_from_cache(self) -> bool:
+        """Load catalog from pickle file if it exists and is valid. Returns True if loaded successfully."""
+        catalog_file = self._get_catalog_file_path()
+        hash_file = self._get_index_hash_file_path()  # Reuse hash file for catalog validation
+        
+        if not os.path.isfile(catalog_file) or not os.path.isfile(hash_file):
+            logger.info("No cached catalog found")
+            return False
+        
+        try:
+            # Check if hash matches current games state
+            # Note: We need systems_list to calculate hash, but if catalog is not loaded yet,
+            # we'll calculate hash based on filesystem state
+            current_hash = self._calculate_games_hash()
+            with open(hash_file, 'r') as f:
+                cached_hash = f.read().strip()
+            
+            if current_hash != cached_hash:
+                logger.info("Games have changed, invalidating cached catalog")
+                return False
+            
+            # Load catalog from pickle
+            with open(catalog_file, 'rb') as f:
+                catalog_data = pickle.load(f)
+            
+            # Restore catalog structures
+            self.catalog_wip = catalog_data.get('catalog_wip', {})
+            self.catalog_releases = catalog_data.get('catalog_releases', {})
+            self.catalog_responses_wip = catalog_data.get('catalog_responses_wip', {})
+            self.catalog_responses_releases = catalog_data.get('catalog_responses_releases', {})
+            self.catalog_sorted_keys_wip = catalog_data.get('catalog_sorted_keys_wip', {})
+            self.catalog_sorted_keys_releases = catalog_data.get('catalog_sorted_keys_releases', {})
+            self.subdirectory_counts_wip = catalog_data.get('subdirectory_counts_wip', {})
+            self.subdirectory_counts_releases = catalog_data.get('subdirectory_counts_releases', {})
+            self.systems_list = catalog_data.get('systems_list', [])
+            self.system_versions = catalog_data.get('system_versions', {})
+            self.system_snapshot_paths = catalog_data.get('system_snapshot_paths', {})
+            self._gamelists_loaded = True
+            self._catalog_timestamp = catalog_data.get('_catalog_timestamp', time.time())
+            
+            logger.info(f"Loaded catalog from cache: {len(self.systems_list)} systems, WIP: {len(self.catalog_wip)}, Releases: {len(self.catalog_releases)}")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Failed to load cached catalog: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return False
+    
+    def _save_catalog_to_cache(self) -> None:
+        """Save catalog to pickle file."""
+        catalog_file = self._get_catalog_file_path()
+        hash_file = self._get_index_hash_file_path()
+        
+        try:
+            catalog_data = {
+                'catalog_wip': self.catalog_wip,
+                'catalog_releases': self.catalog_releases,
+                'catalog_responses_wip': self.catalog_responses_wip,
+                'catalog_responses_releases': self.catalog_responses_releases,
+                'catalog_sorted_keys_wip': self.catalog_sorted_keys_wip,
+                'catalog_sorted_keys_releases': self.catalog_sorted_keys_releases,
+                'subdirectory_counts_wip': self.subdirectory_counts_wip,
+                'subdirectory_counts_releases': self.subdirectory_counts_releases,
+                'systems_list': self.systems_list,
+                'system_versions': self.system_versions,
+                'system_snapshot_paths': self.system_snapshot_paths,
+                '_catalog_timestamp': self._catalog_timestamp
+            }
+            
+            # Save catalog
+            with open(catalog_file, 'wb') as f:
+                pickle.dump(catalog_data, f)
+            
+            # Save hash for cache validation (reuse same hash as search index)
+            current_hash = self._calculate_games_hash()
+            with open(hash_file, 'w') as f:
+                f.write(current_hash)
+            
+            logger.info(f"Saved catalog to cache: {catalog_file}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to save catalog to cache: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
     
     def _get_enabled_systems_set(self) -> set:
         """Get set of enabled system IDs from database."""
@@ -1608,6 +1767,15 @@ class GameService:
         if getattr(self, index_built_flag, False) and cache_key in self.cache:
             logger.info(f"Returning in-memory cached search index ({catalog_type})")
             return self.cache[cache_key]
+        
+        # Try loading from pickle cache
+        cached_index = self._load_index_from_cache(catalog_type)
+        if cached_index:
+            setattr(self, index_attr, cached_index)
+            setattr(self, index_built_flag, True)
+            self.cache[cache_key] = cached_index
+            logger.info(f"Loaded search index from cache ({catalog_type})")
+            return cached_index
         
         # Build new index
         logger.info(f"Building global search index ({catalog_type})...")
@@ -1735,6 +1903,9 @@ class GameService:
         setattr(self, index_built_flag, True)
         self.cache[cache_key] = index
         
+        # Save to cache after building
+        self._save_index_to_cache(index, catalog_type)
+        
         logger.info(f"Search index built ({catalog_type}): {len(index)} letters, {total_games} games indexed")
         return index
     
@@ -1773,8 +1944,14 @@ class GameService:
         # Reload everything
         self.preload_all_gamelists()
         self.build_search_index('wip')
-        if settings.ENABLE_RELEASES_CATALOG:
-            self.build_search_index('releases')
+        self.build_search_index('releases')
+        
+        # Save catalog and search index to cache
+        self._save_catalog_to_cache()
+        if hasattr(self, 'search_index_wip') and self.search_index_wip:
+            self._save_index_to_cache(self.search_index_wip, 'wip')
+        if hasattr(self, 'search_index_releases') and self.search_index_releases:
+            self._save_index_to_cache(self.search_index_releases, 'releases')
         
         logger.info("Catalog cache and search index refreshed successfully")
         

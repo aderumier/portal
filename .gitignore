@@ -27,7 +27,9 @@ data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
 data/*.db
+# Pickle cache files
 data/*.pkl
+data/**/*.pkl
 data/*.hash
 
 # Backend data (large files)

@@ -52,14 +52,6 @@ async def get_systems(
     if not game_service._gamelists_loaded:
         game_service.preload_all_gamelists()
     
-    # Check if Releases catalog is disabled
-    if catalog_type == 'releases' and not settings.ENABLE_RELEASES_CATALOG:
-        # Return empty list if Releases catalog is disabled
-        return ORJSONResponse({
-            'systems': [],
-            'total': 0
-        })
-    
     # Select appropriate catalog based on catalog_type
     if catalog_type == 'wip':
         catalog = game_service.catalog_wip
@@ -115,13 +107,6 @@ async def get_games(
     db: Session = Depends(get_db)
 ):
     """Get games for a specific system."""
-    # Check if Releases catalog is disabled
-    if catalog_type == 'releases' and not settings.ENABLE_RELEASES_CATALOG:
-        from fastapi import HTTPException, status
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Releases catalog is disabled"
-        )
     # Only use ETag caching for non-search requests (search results are dynamic)
     use_etag = not search
     
@@ -183,13 +168,6 @@ async def search_games(
     db: Session = Depends(get_db)
 ):
     """Search games across all systems using partitioned index."""
-    # Check if Releases catalog is disabled
-    if catalog_type == 'releases' and not settings.ENABLE_RELEASES_CATALOG:
-        return {
-            "results": [],
-            "hasMore": False
-        }
-    
     # Use indexed search - get enough results for pagination
     # Calculate how many we need: current page + 1 extra page to check if there's more
     max_results_needed = page * limit + limit
@@ -226,10 +204,6 @@ async def quick_search(
     db: Session = Depends(get_db)
 ):
     """Quick search using indexed games (for header search)."""
-    # Check if Releases catalog is disabled
-    if catalog_type == 'releases' and not settings.ENABLE_RELEASES_CATALOG:
-        return {"results": []}
-    
     games = game_service.search_indexed_games(q, limit, catalog_type=catalog_type)
     
     # Get download_enabled status for all systems in results
@@ -277,14 +251,6 @@ async def get_game_details(
     
     logger.info(f"Getting game details - system: {system}, game_id: {game_id}, decoded: {decoded_game_id}, catalog_type: {catalog_type}")
     
-    # Check if Releases catalog is disabled
-    if catalog_type == 'releases' and not settings.ENABLE_RELEASES_CATALOG:
-        from fastapi import HTTPException, status
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Releases catalog is disabled"
-        )
-    
     # get_game_by_id expects just the rompath (relative to system directory)
     game = game_service.get_game_by_id(decoded_game_id, catalog_type)
     
@@ -327,12 +293,8 @@ async def get_catalog_preference(
 ):
     """Get user's catalog type preference from session."""
     catalog_type = request.session.get('catalog_type', 'releases')
-    # If Releases catalog is disabled, default to WIP
-    if catalog_type == 'releases' and not settings.ENABLE_RELEASES_CATALOG:
-        catalog_type = 'wip'
     return {
-        "catalog_type": catalog_type,
-        "releases_enabled": settings.ENABLE_RELEASES_CATALOG
+        "catalog_type": catalog_type
     }
 
 @router.put("/preference")
@@ -342,13 +304,6 @@ async def set_catalog_preference(
     current_user: dict = Depends(require_guild_member)
 ):
     """Set user's catalog type preference in session."""
-    # Prevent setting Releases catalog if it's disabled
-    if catalog_type == 'releases' and not settings.ENABLE_RELEASES_CATALOG:
-        from fastapi import HTTPException, status
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Releases catalog is disabled"
-        )
     request.session['catalog_type'] = catalog_type
     return {"catalog_type": catalog_type, "message": "Preference updated"}
 

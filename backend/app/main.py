@@ -45,19 +45,36 @@ async def preload_game_data():
         from app.api.routes.catalog import get_game_service
         game_service = get_game_service()
         
-        # First, preload all gamelist.xml files into memory
-        logger.info("Preloading all gamelist.xml files into memory...")
-        game_service.preload_all_gamelists()
-        logger.info("All gamelist.xml files loaded into memory")
-        
-        # Then, build search index (this will use the in-memory gamelists)
-        logger.info("Building search index...")
-        game_service.build_search_index('wip')
-        if settings.ENABLE_RELEASES_CATALOG:
-            game_service.build_search_index('releases')
-            logger.info("Search index preloaded on startup (WIP and Releases)")
+        # Try loading catalog from cache (this also sets _gamelists_loaded flag)
+        logger.info("Attempting to load catalog from cache...")
+        catalog_loaded_from_cache = game_service._load_catalog_from_cache()
+        if not catalog_loaded_from_cache:
+            logger.info("Cache miss - preloading all gamelist.xml files into memory...")
+            game_service.preload_all_gamelists()
+            logger.info("All gamelist.xml files loaded into memory")
         else:
-            logger.info("Search index preloaded on startup (WIP only, Releases catalog disabled)")
+            logger.info("Catalog loaded from cache")
+        
+        # Try loading search index from cache (build_search_index will handle this)
+        logger.info("Attempting to load search index from cache...")
+        cached_wip = game_service._load_index_from_cache('wip')
+        if cached_wip:
+            game_service.search_index_wip = cached_wip
+            game_service._index_built_wip = True
+            game_service.cache['search_index_wip'] = cached_wip
+            logger.info("Search index (WIP) loaded from cache")
+        else:
+            game_service.build_search_index('wip')
+        
+        cached_releases = game_service._load_index_from_cache('releases')
+        if cached_releases:
+            game_service.search_index_releases = cached_releases
+            game_service._index_built_releases = True
+            game_service.cache['search_index_releases'] = cached_releases
+            logger.info("Search index (Releases) loaded from cache")
+        else:
+            game_service.build_search_index('releases')
+        logger.info("Search index preloaded on startup (WIP and Releases)")
     except Exception as e:
         logger.warning(f"Failed to preload game data: {e}")
         import traceback
