@@ -48,18 +48,34 @@ class UPnPHelper:
             
             # Create UPnP instance and discover (synchronous, so run in thread)
             def _discover():
-                upnp = miniupnpc.UPnP()
-                # Set discovery delay (in milliseconds)
-                upnp.discoverdelay = 200
-                # Discover devices
-                num_devices = upnp.discover()
-                logger.info(f"Found {num_devices} UPnP device(s)")
-                
-                if num_devices > 0:
-                    # Select first IGD device
-                    upnp.selectigd()
-                    return upnp
-                return None
+                try:
+                    upnp = miniupnpc.UPnP()
+                    # Set discovery delay (in milliseconds)
+                    upnp.discoverdelay = 200
+                    # Discover devices
+                    num_devices = upnp.discover()
+                    
+                    # Check for error return values (some platforms return -1 on error)
+                    if num_devices < 0:
+                        logger.warning(f"UPnP discovery returned error code: {num_devices}")
+                        return None
+                    
+                    logger.info(f"Found {num_devices} UPnP device(s)")
+                    
+                    if num_devices > 0:
+                        # Select first IGD device (may raise exception on some platforms)
+                        try:
+                            upnp.selectigd()
+                            return upnp
+                        except Exception as e:
+                            logger.warning(f"Failed to select IGD device: {e}")
+                            return None
+                    return None
+                except Exception as e:
+                    # On Windows, miniupnpc may raise exceptions even for "success" cases
+                    # Log the error but don't fail completely - try to continue
+                    logger.warning(f"UPnP discovery raised exception: {e}")
+                    return None
             
             self.upnp = await asyncio.to_thread(_discover)
             
