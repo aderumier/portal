@@ -3177,6 +3177,34 @@ def get_server_checksum(system, rom_path):
         logger.error(f"Unexpected error requesting checksum from server: {e}", exc_info=True)
         return None
 
+def get_current_client_connection_info():
+    """Get current client's connection info from backend (stored in Redis).
+    
+    Returns:
+        Dictionary with connection info (external_ip, external_port, etc.), or None on error
+    """
+    try:
+        url = f"{API_URL}/api/download/p2p/my-connection-info"
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+        }
+        
+        response = http_session.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        result = response.json()
+        if result.get('success') and result.get('connection_info'):
+            return result['connection_info']
+        else:
+            logger.debug("No connection info found for current client")
+            return None
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"Error getting current client connection info: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error getting current client connection info: {e}", exc_info=True)
+        return None
+
 def request_p2p_peer(system, rom_path, game_id):
     """Request a peer from the backend.
     
@@ -3422,6 +3450,20 @@ def try_p2p_download(system, rom_path, game_id, dest_path, expected_size, paused
             if peer_url in failed_peer_urls:
                 logger.debug(f"Skipping peer {peer_url} (already returned 404)")
                 continue
+            
+            # Skip this peer if it's ourselves (same external IP and port)
+            # Get our own connection info from Redis (via backend API)
+            current_client_info = get_current_client_connection_info()
+            if current_client_info:
+                peer_external_ip = peer_info.get('external_ip')
+                peer_external_port = peer_info.get('external_port')
+                current_external_ip = current_client_info.get('external_ip')
+                current_external_port = current_client_info.get('external_port')
+                if (current_external_ip and current_external_port and
+                    peer_external_ip == current_external_ip and
+                    peer_external_port == current_external_port):
+                    logger.debug(f"Skipping peer {peer_url} (same as current client: {current_external_ip}:{current_external_port})")
+                    continue
             
             logger.info(f"Trying peer {attempt + 1}/{max_peers}: {peer_url}")
             
