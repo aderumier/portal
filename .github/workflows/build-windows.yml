@@ -30,6 +30,20 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
     
+    - name: Download upnpc.exe
+      working-directory: services/download_service
+      run: |
+        $upnpcUrl = "https://github.com/miniupnp/miniupnp/releases/download/miniupnpc_2_1/win32-miniupnpc-2.1.zip"
+        $zipFile = "$env:TEMP\win32-miniupnpc-2.1.zip"
+        Write-Host "Downloading upnpc.exe from: $upnpcUrl"
+        Invoke-WebRequest -Uri $upnpcUrl -OutFile $zipFile
+        Expand-Archive -Path $zipFile -DestinationPath "$env:TEMP\miniupnpc" -Force
+        # Use upnpc-static.exe (static build, no DLL dependencies) and rename to upnpc.exe
+        Copy-Item "$env:TEMP\miniupnpc\upnpc-static.exe" "upnpc.exe"
+        Write-Host "Downloaded and extracted upnpc.exe"
+        Remove-Item $zipFile -Force
+        Remove-Item "$env:TEMP\miniupnpc" -Recurse -Force
+    
     - name: Verify miniupnpc.dll is available
       working-directory: services/download_service
       run: |
@@ -46,6 +60,14 @@ jobs:
         New-Item -ItemType Directory -Force -Path dist\RGS_Download_Service | Out-Null
         Copy-Item dist\rgs_download_service.exe dist\RGS_Download_Service\
         "Your API token here" | Out-File -FilePath dist\RGS_Download_Service\API_TOKEN.txt -Encoding utf8
+        
+        # Copy upnpc.exe if it exists (for Windows UPnP support)
+        if (Test-Path "upnpc.exe") {
+          Copy-Item upnpc.exe dist\RGS_Download_Service\
+          Write-Host "Copied upnpc.exe to distribution package"
+        } else {
+          Write-Host "Note: upnpc.exe not found. UPnP will use Python library (may have issues on Windows)"
+        }
         
         if (Test-Path "install_windows_service.ps1") {
           Copy-Item install_windows_service.ps1 dist\RGS_Download_Service\
