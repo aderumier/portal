@@ -68,13 +68,13 @@ class UPnPHelper:
                             upnp.selectigd()
                             return upnp
                         except Exception as e:
-                            logger.warning(f"Failed to select IGD device: {e}")
+                            logger.warning(f"Failed to select IGD device: {type(e).__name__}: {e}", exc_info=True)
                             return None
                     return None
                 except Exception as e:
                     # On Windows, miniupnpc may raise exceptions even for "success" cases
                     # Log the error but don't fail completely - try to continue
-                    logger.warning(f"UPnP discovery raised exception: {e}")
+                    logger.warning(f"UPnP discovery raised exception: {type(e).__name__}: {e}", exc_info=True)
                     return None
             
             self.upnp = await asyncio.to_thread(_discover)
