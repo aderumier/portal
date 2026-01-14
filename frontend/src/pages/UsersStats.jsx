@@ -133,7 +133,6 @@ const UsersStats = () => {
           <thead>
             <tr>
               <th>Username</th>
-              <th>User ID</th>
               <th>Total Downloaded</th>
               <th>Games Downloaded</th>
               <th>P2P Download</th>
@@ -149,7 +148,7 @@ const UsersStats = () => {
           <tbody>
             {users.length === 0 ? (
               <tr>
-                <td colSpan="12" className="no-users">
+                <td colSpan="11" className="no-users">
                   No users found
                 </td>
               </tr>
@@ -158,9 +157,6 @@ const UsersStats = () => {
                 <tr key={user.user_id}>
                   <td className="username-cell">
                     <span className="username">{user.username || user.user_id}</span>
-                  </td>
-                  <td className="userid-cell">
-                    <span className="userid">{user.user_id}</span>
                   </td>
                   <td className="download-mb-cell">
                     <span className="download-mb">{formatMB(user.total_download_mb)}</span>

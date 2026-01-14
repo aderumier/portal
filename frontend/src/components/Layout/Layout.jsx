@@ -115,6 +115,13 @@ const Layout = () => {
                             Medias Validation
                           </Link>
                           <Link 
+                            to="/bugreports" 
+                            className="account-menu-item"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Bug Reports
+                          </Link>
+                          <Link 
                             to="/download-queues" 
                             className="account-menu-item"
                             onClick={() => setAccountMenuOpen(false)}

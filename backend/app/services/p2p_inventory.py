@@ -188,7 +188,7 @@ class P2PInventoryService:
             return None
     
     @staticmethod
-    async def find_eligible_peers(system: str, rom_path: str, exclude_token_id: int, limit: int = 20) -> List[Dict]:
+    async def find_eligible_peers(system: str, rom_path: str, exclude_token_id: int, limit: int = 20, rom_file_size_bytes: Optional[int] = None) -> List[Dict]:
         """Find eligible P2P peers that have a specific ROM.
         
         Args:
@@ -196,6 +196,7 @@ class P2PInventoryService:
             rom_path: ROM path (relative to system directory)
             exclude_token_id: Token ID of the requesting client (to exclude)
             limit: Maximum number of peers to return (default: 20)
+            rom_file_size_bytes: Optional ROM file size in bytes (used for filtering slow peers for large files)
         
         Returns:
             List of peer dictionaries, each containing: external_ip, external_port, token_id
@@ -260,6 +261,11 @@ class P2PInventoryService:
                     # Filter: must have p2p_port_accessible=True
                     if not p2p_port_accessible:
                         continue
+                    
+                    # Filter: Skip if file is large (>10MB) and peer has slow upload (<20 Mbits/s)
+                    if rom_file_size_bytes is not None and rom_file_size_bytes > 10485760:  # 10MB in bytes
+                        if upload_bandwidth is None or upload_bandwidth < 20.0:
+                            continue  # Skip slow peers for large files
                     
                     eligible_peers.append({
                         'external_ip': external_ip,

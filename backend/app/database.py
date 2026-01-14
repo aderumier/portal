@@ -200,6 +200,26 @@ class User(Base):
     )
 
 
+class BugReport(Base):
+    """Bug report model."""
+    __tablename__ = "bugreports"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    rompath = Column(String, nullable=False)
+    system = Column(String, nullable=False)
+    catalog = Column(String, nullable=False)  # 'wip' or 'releases'
+    iduser = Column(String, nullable=False, index=True)
+    subject = Column(String, nullable=False)
+    description = Column(Text, nullable=False)
+    device = Column(String, nullable=True)  # Token name
+    status = Column(String, nullable=False, default='new')  # 'new', 'notabug', 'resolved'
+    created_at = Column(DateTime, server_default=func.now())
+    
+    __table_args__ = (
+        {'sqlite_autoincrement': True},
+    )
+
+
 def init_db():
     """Initialize database tables and run migrations."""
     Base.metadata.create_all(bind=engine)

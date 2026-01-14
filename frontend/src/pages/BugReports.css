@@ -1,0 +1,173 @@
+.bug-reports-page {
+  padding: 2rem 0;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.bug-reports-page h1 {
+  margin-bottom: 2rem;
+  color: var(--text-primary);
+  background: linear-gradient(135deg, #ffffff 0%, #b0b0b0 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.bug-reports-loading,
+.bug-reports-error {
+  text-align: center;
+  padding: 3rem;
+  color: var(--text-secondary);
+}
+
+.bug-reports-error {
+  color: #dc3545;
+}
+
+.bug-reports-table-container {
+  background: var(--bg-card);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px var(--shadow);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.bug-reports-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 1000px;
+}
+
+.bug-reports-table thead {
+  background: var(--bg-secondary);
+  border-bottom: 2px solid var(--border);
+}
+
+.bug-reports-table th {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.bug-reports-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.2s ease;
+}
+
+.bug-reports-table th.sortable:hover {
+  background-color: var(--bg-hover);
+}
+
+.bug-reports-table tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: background-color 0.2s ease;
+}
+
+.bug-reports-table tbody tr:hover {
+  background-color: var(--bg-hover);
+}
+
+.bug-reports-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.bug-reports-table td {
+  padding: 0.5rem 0.75rem;
+  color: var(--text-primary);
+  vertical-align: middle;
+  font-size: 1rem;
+}
+
+.bug-report-id-cell {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.bug-report-game-cell,
+.bug-report-subject-cell {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bug-report-system-cell,
+.bug-report-catalog-cell {
+  text-transform: capitalize;
+}
+
+.bug-report-user-cell {
+  font-weight: 500;
+}
+
+
+.bug-report-status-cell {
+  text-align: center;
+}
+
+.bug-report-status-badge {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.bug-report-status-new {
+  background: rgba(0, 123, 255, 0.2);
+  color: #007bff;
+  border: 1px solid rgba(0, 123, 255, 0.3);
+}
+
+.bug-report-status-notabug {
+  background: rgba(108, 117, 125, 0.2);
+  color: #6c757d;
+  border: 1px solid rgba(108, 117, 125, 0.3);
+}
+
+.bug-report-status-resolved {
+  background: rgba(40, 167, 69, 0.2);
+  color: #28a745;
+  border: 1px solid rgba(40, 167, 69, 0.3);
+}
+
+.bug-report-date-cell {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.bug-report-actions-cell {
+  text-align: center;
+}
+
+.bug-report-detail-btn {
+  padding: 0.5rem 1rem;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.bug-report-detail-btn:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.no-bug-reports {
+  text-align: center;
+  padding: 3rem;
+  color: var(--text-secondary);
+}
+

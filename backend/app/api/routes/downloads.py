@@ -85,6 +85,10 @@ class MarkErrorRequest(BaseModel):
     client_version: Optional[str] = None  # Download client version
     log_content: Optional[str] = None  # Download task log content
 
+class ClientLogsRequest(BaseModel):
+    token_id: str
+    log_content_compressed: str  # Base64-encoded gzip-compressed log content
+
 def get_download_service(db: Session = Depends(get_db)) -> DownloadService:
     """Get download service instance."""
     game_service = get_game_service()  # Use shared singleton instance
@@ -1195,7 +1199,8 @@ async def request_download(
                     system=system,
                     rom_path=game_id,
                     exclude_token_id=token_id,
-                    limit=20
+                    limit=20,
+                    rom_file_size_bytes=download_info.get('file_size')
                 )
                 download_info['p2p_peers'] = p2p_peers
             else:
@@ -2588,6 +2593,74 @@ async def upload_gamelist(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while uploading gamelist.tar.gz"
+        )
+
+
+@router.post("/client-logs")
+async def receive_client_logs(
+    body: ClientLogsRequest,
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Receive and store client startup logs (gzip compressed).
+    
+    Stores logs in data/clients_logs/<token_id>.log
+    """
+    try:
+        import gzip
+        import base64
+        
+        token_id = body.token_id
+        log_content_compressed = body.log_content_compressed
+        
+        # Decode base64 and decompress gzip
+        try:
+            gzip_data = base64.b64decode(log_content_compressed)
+            log_content = gzip.decompress(gzip_data).decode('utf-8')
+        except Exception as e:
+            logger.error(f"Error decompressing log content: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid compressed log content"
+            )
+        
+        # Determine project root (go up from backend/app/api/routes to project root)
+        project_root = Path(__file__).parent.parent.parent.parent
+        clients_logs_dir = project_root / 'data' / 'clients_logs'
+        
+        # Ensure directory exists
+        clients_logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Write log file
+        log_file_path = clients_logs_dir / f"{token_id}.log"
+        
+        # Append to file if it exists, otherwise create new
+        mode = 'a' if log_file_path.exists() else 'w'
+        with open(log_file_path, mode, encoding='utf-8') as f:
+            if mode == 'a':
+                # Add separator for new startup session
+                f.write(f"\n{'='*80}\n")
+                f.write(f"New startup session - {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"{'='*80}\n")
+            f.write(log_content)
+            if not log_content.endswith('\n'):
+                f.write('\n')
+        
+        logger.info(f"Received and stored client startup logs for token_id {token_id} ({len(log_content)} bytes uncompressed, {len(gzip_data)} bytes compressed) at {log_file_path}")
+        
+        return {
+            "success": True,
+            "message": "Logs stored successfully",
+            "path": str(log_file_path)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error storing client logs: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while storing client logs"
         )
 
 

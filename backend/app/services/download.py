@@ -2321,6 +2321,7 @@ class DownloadService:
                     'id': item.id,
                     'download_id': item.download_id,
                     'user_id': item.user_id,  # Include user_id for admin view
+                    'username': item.username or item.user_id,  # Include username (fallback to user_id if not available)
                     'game_name': item.game_name,
                     'system': item.system or '',
                     'system_name': self.game_service.get_system_name(item.system) if item.system else '',

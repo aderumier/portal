@@ -97,8 +97,8 @@ else:
         log_dir = os.getenv('LOG_DIR')
         log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
     else:
-        # Default Linux location
-        log_file_path = os.path.abspath(os.getenv('LOG_FILE', './rgs_download.log'))
+        # Default Linux location...skipping...
+        log_file_path = os.path.abspath(os.getenv('LOG_FILE', '/userdata/system/logs/rgs_download.log'))
 
 # Ensure log directory exists
 log_dir = os.path.dirname(log_file_path)
@@ -132,6 +132,40 @@ logger.info(f"Logging initialized. Log file: {log_file_path}")
 if config_ini_path.exists():
     logger.info(f"Configuration loaded from: {config_ini_path}")
 
+# Custom handler for capturing startup logs
+class StartupLogHandler(logging.Handler):
+    """Custom logging handler that captures startup logs until WebSocket connection."""
+    def __init__(self):
+        super().__init__()
+        self.logs = []
+        self.setLevel(logging.DEBUG)
+        self.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        ))
+        self.capturing = True  # Stop capturing after logs are sent
+    
+    def emit(self, record):
+        """Capture log record."""
+        if self.capturing:
+            try:
+                msg = self.format(record)
+                self.logs.append(msg)
+            except Exception:
+                self.handleError(record)
+    
+    def get_logs(self):
+        """Get all captured logs as a string."""
+        return '\n'.join(self.logs)
+    
+    def stop_capturing(self):
+        """Stop capturing new logs."""
+        self.capturing = False
+    
+    def clear(self):
+        """Clear captured logs."""
+        self.logs = []
+
 # Custom handler for capturing download task logs
 class DownloadLogHandler(logging.Handler):
     """Custom logging handler that captures logs for a specific download."""
@@ -160,6 +194,10 @@ class DownloadLogHandler(logging.Handler):
     def clear(self):
         """Clear captured logs."""
         self.logs = []
+
+# Global startup log handler
+_startup_log_handler = StartupLogHandler()
+logger.addHandler(_startup_log_handler)
 
 # Global dictionary to store download log handlers
 _download_log_handlers = {}
@@ -1058,6 +1096,54 @@ def add_rom_to_p2p_inventory(system, rom_path):
         logger.error(f"Error adding ROM to P2P inventory: {e}")
     except Exception as e:
         logger.error(f"Unexpected error adding ROM to P2P inventory: {e}", exc_info=True)
+
+def send_startup_logs(token_id):
+    """Send startup logs to the backend for storage with gzip compression.
+    
+    Args:
+        token_id: The token ID received from WebSocket connection
+    """
+    try:
+        import gzip
+        import base64
+        
+        # Get startup logs
+        startup_logs = _startup_log_handler.get_logs()
+        
+        if not startup_logs:
+            logger.debug("No startup logs to send")
+            return
+        
+        # Stop capturing new logs after sending
+        _startup_log_handler.stop_capturing()
+        
+        # Compress logs with gzip
+        log_bytes = startup_logs.encode('utf-8')
+        gzip_data = gzip.compress(log_bytes)
+        
+        # Base64 encode for JSON transmission
+        log_content_compressed = base64.b64encode(gzip_data).decode('utf-8')
+        
+        # Send to backend
+        url = f"{API_URL}/api/download/client-logs"
+        data = {
+            'token_id': str(token_id),
+            'log_content_compressed': log_content_compressed
+        }
+        
+        response = http_session.post(url, json=data, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        if result.get('success'):
+            logger.info(f"Successfully sent startup logs to backend (token_id: {token_id}, {len(log_bytes)} bytes uncompressed, {len(gzip_data)} bytes compressed)")
+        else:
+            logger.warning(f"Failed to send startup logs: {result.get('message', 'Unknown error')}")
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error sending startup logs: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error sending startup logs: {e}", exc_info=True)
 
 def upload_all_gamelist_files():
     """Scan ROMS_PATH for all gamelist.xml files, filter games with playcount > 0, 
@@ -4404,6 +4490,16 @@ async def websocket_client():
                                         token_id = data.get("token_id")
                                         if token_id:
                                             logger.info(f"Connected with token_id: {token_id}")
+                                        
+                                        # Send startup logs on first connection
+                                        if is_first_connection:
+                                            logger.info("First connection detected - sending startup logs to server...")
+                                            try:
+                                                # Run in executor since it's a synchronous function
+                                                loop = asyncio.get_event_loop()
+                                                await loop.run_in_executor(None, send_startup_logs, token_id)
+                                            except Exception as e:
+                                                logger.error(f"Error sending startup logs on first connection: {e}", exc_info=True)
                                         
                                         # Upload all gamelist.xml files and P2P inventory only on first connection (not on reconnections)
                                         if is_first_connection:

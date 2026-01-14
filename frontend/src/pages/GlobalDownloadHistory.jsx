@@ -112,7 +112,7 @@ const GlobalDownloadHistory = () => {
           <table className="history-table">
             <thead>
               <tr>
-                <th>User ID</th>
+                <th>Username</th>
                 <th>Game</th>
                 <th>System</th>
                 <th>Version</th>
@@ -126,7 +126,7 @@ const GlobalDownloadHistory = () => {
             <tbody>
               {history.map((item) => (
                 <tr key={item.id}>
-                  <td>{item.user_id || '-'}</td>
+                  <td>{item.username || item.user_id || '-'}</td>
                   <td className="game-cell">
                     {item.image && (
                       <img 

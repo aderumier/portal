@@ -216,9 +216,14 @@ async def get_tokens_stats(
         
         tokens_list = []
         for token in tokens:
+            # Get username from User table
+            user = db.query(User).filter(User.user_id == token.user_id).first()
+            username = user.username if user and user.username else token.user_id
+            
             tokens_list.append({
                 'token_id': token.id,
                 'token_name': token.name,
+                'username': username,
                 'p2p_total_download_mb': round(token.p2p_total_download_mb, 2) if token.p2p_total_download_mb else 0,
                 'p2p_total_upload_mb': round(token.p2p_total_upload_mb, 2) if token.p2p_total_upload_mb else 0
             })

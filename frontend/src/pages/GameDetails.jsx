@@ -5,6 +5,7 @@ import { useCatalog } from '../context/CatalogContext'
 import { getMediaUrl } from '../utils/constants'
 import MediaUpload from '../components/Media/MediaUpload'
 import TokenSelectorDropdown from '../components/TokenSelector/TokenSelectorDropdown'
+import BugReportModal from '../components/BugReport/BugReportModal'
 import { useDownloadWithToken } from '../hooks/useDownloadWithToken'
 import { getGameDetails } from '../api/catalog'
 import './GameDetails.css'
@@ -18,6 +19,7 @@ const GameDetails = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selectedMedia, setSelectedMedia] = useState(null)
+  const [showBugReportModal, setShowBugReportModal] = useState(false)
   const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
   const isLoadingRef = useRef(false)
   const lastLoadKeyRef = useRef(null)
@@ -168,13 +170,13 @@ const GameDetails = () => {
         <button className="back-btn" onClick={() => navigate(-1)}>
           ← Back
         </button>
-        <Link 
-          to={`/system/${game.system}`} 
-          className="back-to-system"
-          state={{ fromGameDetail: true }}
+        <button
+          className="bug-report-button"
+          onClick={() => setShowBugReportModal(true)}
+          title="Report a bug"
         >
-          Back to {game.systemName}
-        </Link>
+          🐛 Report Bug
+        </button>
       </div>
 
       <div className="game-details-content">
@@ -348,6 +350,15 @@ const GameDetails = () => {
         onClose={cancelTokenSelection}
         onSelect={handleTokenSelected}
         gameId={game?.id}
+      />
+      <BugReportModal
+        isOpen={showBugReportModal}
+        onClose={() => setShowBugReportModal(false)}
+        gameInfo={{
+          rompath: game?.id || gameId,
+          system: game?.system || system,
+          catalog: catalogType
+        }}
       />
     </div>
   )

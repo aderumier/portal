@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import Optional
 import socket
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -117,10 +118,13 @@ class UPnPHelper:
         external_port: Optional[int] = None,
         description: str = "P2P File Sharing"
     ) -> bool:
-        """Add a port mapping (forwarding) on the router."""
-        if external_port is None:
-            external_port = internal_port
+        """Add a port mapping (forwarding) on the router.
         
+        Port selection strategy:
+        1. Try port 8765
+        2. Try ports 8766-8775 (next 10 ports)
+        3. Try 20 random ports between 30000 and 50000
+        """
         # Get local IP address
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -137,12 +141,19 @@ class UPnPHelper:
             return False
         
         try:
-            # Try the requested port first
-            ports_to_try = [external_port]
-            # If there's a conflict, try alternative ports (increment by 1)
-            # Try up to 10 alternative ports
+            # Build port selection strategy:
+            # 1. Try port 8765 first
+            # 2. Try next 10 ports (8766-8775)
+            # 3. Try 20 random ports between 30000 and 50000
+            ports_to_try = [8765]
+            
+            # Add next 10 ports after 8765
             for offset in range(1, 11):
-                ports_to_try.append(external_port + offset)
+                ports_to_try.append(8765 + offset)
+            
+            # Add 20 random ports between 30000 and 50000
+            random_ports = random.sample(range(30000, 50001), min(20, 50001 - 30000))
+            ports_to_try.extend(random_ports)
             
             last_exception = None
             for try_port in ports_to_try:
@@ -166,10 +177,7 @@ class UPnPHelper:
                         self.internal_port = internal_port
                         self.external_port = try_port
                         self.port_mapped = True
-                        if try_port != external_port:
-                            logger.info(f"UPnP port mapping added successfully on alternative port {try_port} (original {external_port} was in use): {try_port} -> {local_ip}:{internal_port}")
-                        else:
-                            logger.info(f"UPnP port mapping added successfully: {try_port} -> {local_ip}:{internal_port}")
+                        logger.info(f"UPnP port mapping added successfully: {try_port} -> {local_ip}:{internal_port}")
                         return True
                     else:
                         logger.debug(f"Failed to add UPnP port mapping on port {try_port} (returned False), trying next port...")
@@ -178,8 +186,6 @@ class UPnPHelper:
                     error_str = str(e)
                     # Check if it's a conflict error (miniupnpc raises Exception with "ConflictInMappingEntry" message)
                     if 'ConflictInMappingEntry' in error_str or 'Conflict' in error_str:
-                        if try_port == external_port:
-                            logger.warning(f"Port {external_port} is already in use, trying alternative ports...")
                         logger.debug(f"Port {try_port} is in use, trying next port...")
                         last_exception = e
                         continue
@@ -189,9 +195,9 @@ class UPnPHelper:
             
             # All ports failed
             if last_exception:
-                logger.error(f"Failed to add UPnP port mapping: all ports from {external_port} to {ports_to_try[-1]} are in use or unavailable")
+                logger.error(f"Failed to add UPnP port mapping: all attempted ports failed (tried 8765, 8766-8775, and 20 random ports 30000-50000)")
             else:
-                logger.error(f"Failed to add UPnP port mapping: all ports from {external_port} to {ports_to_try[-1]} returned False")
+                logger.error(f"Failed to add UPnP port mapping: all attempted ports returned False")
             return False
         except Exception as e:
             logger.error(f"Error adding UPnP port mapping: {e}", exc_info=True)

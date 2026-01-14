@@ -21,6 +21,7 @@ import UsersStats from './pages/UsersStats'
 import ClientsStats from './pages/ClientsStats'
 import SystemsConfiguration from './pages/SystemsConfiguration'
 import ConnectedClients from './pages/ConnectedClients'
+import BugReports from './pages/BugReports'
 
 function App() {
   return (
@@ -43,6 +44,7 @@ function App() {
             <Route path="users-stats" element={<ProtectedRoute requireAdmin><UsersStats /></ProtectedRoute>} />
             <Route path="clients-stats" element={<ProtectedRoute requireAdmin><ClientsStats /></ProtectedRoute>} />
             <Route path="media-validation" element={<ProtectedRoute requireAdmin><MediaValidation /></ProtectedRoute>} />
+            <Route path="bugreports" element={<ProtectedRoute requireAdmin><BugReports /></ProtectedRoute>} />
             <Route path="download-queues" element={<ProtectedRoute requireAdmin><DownloadQueues /></ProtectedRoute>} />
             <Route path="connected-clients" element={<ProtectedRoute requireAdmin><ConnectedClients /></ProtectedRoute>} />
             <Route path="systems-configuration" element={<ProtectedRoute requireAdmin><SystemsConfiguration /></ProtectedRoute>} />

@@ -88,6 +88,7 @@ const ClientsStats = () => {
             <tr>
               <th>Token ID</th>
               <th>Token Name</th>
+              <th>Username</th>
               <th>P2P Download</th>
               <th>P2P Upload</th>
             </tr>
@@ -95,7 +96,7 @@ const ClientsStats = () => {
           <tbody>
             {tokens.length === 0 ? (
               <tr>
-                <td colSpan="4" className="no-tokens">
+                <td colSpan="5" className="no-tokens">
                   No tokens found
                 </td>
               </tr>
@@ -107,6 +108,9 @@ const ClientsStats = () => {
                   </td>
                   <td className="token-name-cell">
                     <span className="token-name">{token.token_name}</span>
+                  </td>
+                  <td className="username-cell">
+                    <span className="username">{token.username || '-'}</span>
                   </td>
                   <td className="p2p-download-mb-cell">
                     <span className="p2p-download-mb">{formatMB(token.p2p_total_download_mb || 0)}</span>

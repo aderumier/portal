@@ -20,6 +20,7 @@
   gap: 1rem;
   margin-bottom: 2rem;
   align-items: center;
+  justify-content: space-between;
 }
 
 .back-btn {
@@ -40,15 +41,6 @@
   color: var(--accent);
 }
 
-.back-to-system {
-  color: var(--text-secondary);
-  text-decoration: none;
-  transition: color 0.3s ease;
-}
-
-.back-to-system:hover {
-  color: var(--accent);
-}
 
 .game-details-content {
   max-width: 1400px;
@@ -170,6 +162,25 @@
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+.bug-report-button {
+  padding: 0.5rem 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.bug-report-button:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  transform: translateY(-1px);
 }
 
 .game-marquee-logo {
