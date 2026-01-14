@@ -3355,6 +3355,13 @@ def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, 
         logger.info(f"Successfully downloaded file from peer: {dest_path} ({total_bytes_downloaded} bytes)")
         return True
         
+    except requests.exceptions.HTTPError as e:
+        # For 404 errors, return a special value to indicate the file doesn't exist on this peer
+        if e.response and e.response.status_code == 404:
+            logger.warning(f"P2P download failed from {peer_url}: File not found (404)")
+            return None  # Return None to indicate 404 (file doesn't exist on this peer)
+        logger.warning(f"P2P download failed from {peer_url}: {e}")
+        return False
     except requests.exceptions.RequestException as e:
         logger.warning(f"P2P download failed from {peer_url}: {e}")
         return False
@@ -3393,6 +3400,7 @@ def try_p2p_download(system, rom_path, game_id, dest_path, expected_size, paused
         logger.info(f"Retrieved checksum from server: file_size={expected_checksum.get('file_size')}")
         
         # Try up to max_peers different peers
+        failed_peer_urls = set()  # Track peer URLs that returned 404
         for attempt in range(max_peers):
             # Check if download is paused before requesting peer
             if paused_ref and paused_ref[0]:
@@ -3408,6 +3416,11 @@ def try_p2p_download(system, rom_path, game_id, dest_path, expected_size, paused
             peer_url = peer_info.get('peer_url')
             if not peer_url:
                 logger.warning(f"Peer info missing peer_url: {peer_info}")
+                continue
+            
+            # Skip this peer if we've already gotten a 404 from it
+            if peer_url in failed_peer_urls:
+                logger.debug(f"Skipping peer {peer_url} (already returned 404)")
                 continue
             
             logger.info(f"Trying peer {attempt + 1}/{max_peers}: {peer_url}")
@@ -3427,7 +3440,7 @@ def try_p2p_download(system, rom_path, game_id, dest_path, expected_size, paused
                     except Exception as e:
                         logger.warning(f"Failed to delete existing file: {e}")
             
-            success = download_file_via_p2p(
+            result = download_file_via_p2p(
                 peer_url=peer_url,
                 system=system,
                 rom_path=rom_path,
@@ -3440,10 +3453,22 @@ def try_p2p_download(system, rom_path, game_id, dest_path, expected_size, paused
                 bytes_transferred_ref=bytes_transferred_ref
             )
             
-            if success:
+            if result is True:
                 logger.info(f"Successfully downloaded via P2P from {peer_url}")
                 return True
+            elif result is None:
+                # 404 error - file doesn't exist on this peer, don't retry this peer
+                logger.warning(f"P2P download failed from {peer_url}: File not found (404), will not retry this peer")
+                failed_peer_urls.add(peer_url)
+                # Delete partial file if download failed
+                if os.path.exists(dest_path):
+                    try:
+                        os.remove(dest_path)
+                    except Exception:
+                        pass
+                continue
             else:
+                # Other error - might retry this peer if backend returns it again
                 logger.warning(f"P2P download failed from {peer_url}, will try next peer")
                 # Delete partial file if download failed
                 if os.path.exists(dest_path):
@@ -4720,13 +4745,18 @@ async def setup_upnp_port_mapping(port: int):
         )
         
         if mapping_success:
-            logger.info(f"UPnP: Port mapping added successfully (port {port})")
+            # Get the actual external port (may differ from requested port if there was a conflict)
+            actual_external_port = upnp_helper.external_port or port
+            if actual_external_port != port:
+                logger.info(f"UPnP: Port mapping added successfully on port {actual_external_port} (requested {port} was in use)")
+            else:
+                logger.info(f"UPnP: Port mapping added successfully (port {port})")
             
             # Register P2P client with backend
             logger.info("UPnP: Registering P2P client with backend...")
             await register_p2p_client(
                 external_ip=external_ip,
-                external_port=port,
+                external_port=actual_external_port,
                 internal_port=port,
                 upnp_enabled=True
             )

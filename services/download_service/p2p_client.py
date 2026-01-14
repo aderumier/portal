@@ -32,10 +32,10 @@ def create_p2p_handler(roms_path):
                     return
                 
                 if path_parts[0] == 'p2p':
-                    if len(path_parts) == 3 and path_parts[1] == 'checksum':
+                    if len(path_parts) >= 3 and path_parts[1] == 'checksum':
                         # GET /p2p/checksum/{system}/{rom_path}
                         self._handle_checksum(path_parts[2:], roms_path)
-                    elif len(path_parts) == 3 and path_parts[1] == 'file':
+                    elif len(path_parts) >= 3 and path_parts[1] == 'file':
                         # GET /p2p/file/{system}/{rom_path}
                         self._handle_file(path_parts[2:], roms_path)
                     else:
