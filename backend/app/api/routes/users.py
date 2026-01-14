@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.database import get_db, User
+from app.database import get_db, User, ApiToken
 from app.services.token import ApiTokenService
 from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.guild import require_guild_member
@@ -192,7 +192,9 @@ async def get_users_stats(
                 'last_login_ip': user.last_login_ip,
                 'country': user.country,
                 'created_at': user.created_at.isoformat() if user.created_at else None,
-                'updated_at': user.updated_at.isoformat() if user.updated_at else None
+                'updated_at': user.updated_at.isoformat() if user.updated_at else None,
+                'p2p_total_download_mb': round(user.p2p_total_download_mb, 2) if user.p2p_total_download_mb else 0,
+                'p2p_total_upload_mb': round(user.p2p_total_upload_mb, 2) if user.p2p_total_upload_mb else 0
             })
         
         return {"users": users_list}
@@ -201,5 +203,31 @@ async def get_users_stats(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve users statistics"
+        )
+
+@router.get("/tokens/stats")
+async def get_tokens_stats(
+    current_user: dict = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+) -> Dict[str, List[Dict]]:
+    """Get all tokens with their P2P statistics (admin only)."""
+    try:
+        tokens = db.query(ApiToken).order_by(ApiToken.id.asc()).all()
+        
+        tokens_list = []
+        for token in tokens:
+            tokens_list.append({
+                'token_id': token.id,
+                'token_name': token.name,
+                'p2p_total_download_mb': round(token.p2p_total_download_mb, 2) if token.p2p_total_download_mb else 0,
+                'p2p_total_upload_mb': round(token.p2p_total_upload_mb, 2) if token.p2p_total_upload_mb else 0
+            })
+        
+        return {"tokens": tokens_list}
+    except Exception as e:
+        logger.error(f"Error getting tokens stats: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve tokens statistics"
         )
 

@@ -326,10 +326,10 @@ const GameDetails = () => {
               )}
             </div>
 
-            {game.description && (
+            {game.desc && (
               <div className="game-description">
                 <h2>Description</h2>
-                <p>{game.description}</p>
+                <p>{game.desc}</p>
               </div>
             )}
 

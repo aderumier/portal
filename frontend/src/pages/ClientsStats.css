@@ -1,0 +1,171 @@
+.clients-stats-page {
+  padding: 2rem 0;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.clients-stats-page h1 {
+  margin-bottom: 2rem;
+  color: var(--text-primary);
+  background: linear-gradient(135deg, #ffffff 0%, #b0b0b0 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.clients-stats-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  text-align: center;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px var(--shadow);
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 0.5rem;
+}
+
+.stat-label {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.clients-table-container {
+  background: var(--bg-card);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px var(--shadow);
+  border: 1px solid var(--border);
+}
+
+.clients-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.clients-table thead {
+  background: var(--bg-secondary);
+  border-bottom: 2px solid var(--border);
+}
+
+.clients-table th {
+  padding: 1rem 1.5rem;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.clients-table tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: background-color 0.2s ease;
+}
+
+.clients-table tbody tr:hover {
+  background-color: var(--bg-hover);
+}
+
+.clients-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.clients-table td {
+  padding: 1rem 1.5rem;
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+
+.token-id-cell {
+  font-family: monospace;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.token-id {
+  color: var(--text-secondary);
+}
+
+.token-name-cell {
+  font-weight: 600;
+}
+
+.token-name {
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.p2p-download-mb-cell {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.p2p-download-mb {
+  color: var(--accent);
+}
+
+.p2p-upload-mb-cell {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.p2p-upload-mb {
+  color: var(--accent);
+}
+
+.no-tokens {
+  text-align: center;
+  padding: 3rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.clients-stats-loading,
+.clients-stats-error {
+  text-align: center;
+  padding: 4rem 2rem;
+  color: var(--text-secondary);
+}
+
+.clients-stats-error {
+  color: #dc3545;
+}
+
+@media (max-width: 768px) {
+  .clients-stats-summary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .clients-table-container {
+    overflow-x: auto;
+  }
+
+  .clients-table {
+    min-width: 600px;
+  }
+
+  .clients-table th,
+  .clients-table td {
+    padding: 0.8rem 1rem;
+  }
+}
+

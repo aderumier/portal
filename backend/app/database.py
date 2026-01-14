@@ -124,6 +124,8 @@ class ApiToken(Base):
     upload_bandwidth = Column(Float, nullable=True)  # Upload bandwidth in Mbits/s
     download_bandwidth = Column(Float, nullable=True)  # Download bandwidth in Mbits/s
     last_bandwidth_test_time = Column(DateTime, nullable=True)  # Timestamp of last bandwidth test
+    p2p_total_download_mb = Column(Float, default=0.0, nullable=False)  # Total P2P download traffic in MB
+    p2p_total_upload_mb = Column(Float, default=0.0, nullable=False)  # Total P2P upload traffic in MB
     
     __table_args__ = (
         {'sqlite_autoincrement': True},
@@ -188,6 +190,8 @@ class User(Base):
     last_login = Column(DateTime, nullable=True)  # Last login datetime
     last_login_ip = Column(String, nullable=True)  # IP address from last login
     country = Column(String, nullable=True)  # Country code from GeoIP lookup
+    p2p_total_download_mb = Column(Float, default=0.0, nullable=False)  # Total P2P download traffic in MB (sum of all tokens)
+    p2p_total_upload_mb = Column(Float, default=0.0, nullable=False)  # Total P2P upload traffic in MB (sum of all tokens)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     

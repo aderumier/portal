@@ -134,6 +134,8 @@ def migrate_database():
         ("bandwidth_limit", "INTEGER"),
         ("last_login_ip", "TEXT"),
         ("country", "TEXT"),
+        ("p2p_total_download_mb", "REAL NOT NULL DEFAULT 0.0"),
+        ("p2p_total_upload_mb", "REAL NOT NULL DEFAULT 0.0"),
     ]
     
     for col_name, col_def in columns_to_add:
@@ -307,6 +309,8 @@ def migrate_database():
             ("upload_bandwidth", "REAL"),
             ("download_bandwidth", "REAL"),
             ("last_bandwidth_test_time", "TEXT"),
+            ("p2p_total_download_mb", "REAL NOT NULL DEFAULT 0.0"),
+            ("p2p_total_upload_mb", "REAL NOT NULL DEFAULT 0.0"),
         ]
         
         for col_name, col_def in token_columns_to_add:

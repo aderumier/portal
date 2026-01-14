@@ -432,7 +432,7 @@ class GameService:
             catalog_responses[system_id][rompath] = {
                 'id': rompath,
                 'name': game_data.get('name', ''),
-                'description': game_data.get('desc', ''),
+                'desc': game_data.get('desc', ''),
                 'image': catalog_image,
                 'system': system_id,
                 'systemName': system_name_temp,
@@ -1055,7 +1055,7 @@ class GameService:
                         results.append({
                             'id': rompath,
                             'name': name,
-                            'description': game_data.get('desc', ''),
+                            'desc': game_data.get('desc', ''),
                             'image': display_image,
                             'system': system_id,
                             'systemName': self.get_system_name(system_id)
@@ -1151,15 +1151,9 @@ class GameService:
             game_data['system'] = system_id
             game_data['systemName'] = self.get_system_name(system_id)
             
-            # Map 'desc' field from gamelist.xml to 'description' for frontend
-            if 'desc' in game_data and 'description' not in game_data:
-                game_data['description'] = game_data.get('desc', '')
-            
             # Ensure required fields exist (with defaults if missing)
             if 'name' not in game_data:
                 game_data['name'] = ''
-            if 'description' not in game_data:
-                game_data['description'] = ''
             
             # Get snapshot path for Releases catalog
             snapshot_dir_path = None
@@ -1816,32 +1810,19 @@ class GameService:
                     if first_letter not in index:
                         index[first_letter] = {}
                     
-                    # Get game data with image priority: thumbnail > boxart > extra1 > image
-                    # Only compute path for the first media type that exists (optimized)
-                    display_image = ''
-                    for media_type in ['thumbnail', 'boxart', 'extra1', 'image']:
-                        raw_path = game_data.get(media_type, '')
-                        if raw_path:
-                            display_image = get_media_path(media_type, game_data, system_id)
-                            break  # Found first available, stop checking
-                    
-                    result_game_data = {
+                    # Store only minimal data in index: id, name, system
+                    # Full game data will be enriched from catalog_responses when returning results
+                    minimal_game_data = {
                         'id': rompath,
                         'name': game_name,
-                        'description': game_data.get('desc', ''),
-                        'image': display_image,
-                        'system': system_id,
-                        'systemName': self.get_system_name(system_id),
-                        'favorite': game_data.get('favorite', ''),  # Include favorite
-                        'playcount': game_data.get('playcount', 0),  # Include playcount
-                        'gametime': game_data.get('gametime', 0)  # Include gametime
+                        'system': system_id
                     }
                     
                     # Add to index (normalized name -> list of games)
                     if normalized not in index[first_letter]:
                         index[first_letter][normalized] = []
                     
-                    index[first_letter][normalized].append(result_game_data)
+                    index[first_letter][normalized].append(minimal_game_data)
                     total_games += 1
                     
             except Exception as e:
@@ -2249,12 +2230,15 @@ class GameService:
         index_built_flag = '_index_built_wip' if catalog_type == 'wip' else '_index_built_releases'
         index_attr = 'search_index_wip' if catalog_type == 'wip' else 'search_index_releases'
         
-        # Select appropriate raw catalog for enriching results
+        # Select appropriate catalog_responses and raw catalog for enriching results
         if catalog_type == 'wip':
+            catalog_responses = self.catalog_responses_wip
             raw_catalog = self.catalog_wip
         elif catalog_type == 'releases':
+            catalog_responses = self.catalog_responses_releases
             raw_catalog = self.catalog_releases
         else:
+            catalog_responses = self.catalog_responses_wip
             raw_catalog = self.catalog_wip
         
         # Build index if not already built
@@ -2289,26 +2273,51 @@ class GameService:
                         relevance = 2  # Contains
                     
                     # Add all games with this normalized name, with relevance score
-                    # Filter by enabled systems and enrich with playcount/gametime from raw catalog
-                    for game in games:
+                    # Filter by enabled systems and enrich from catalog_responses
+                    for minimal_game in games:
+                        system_id = minimal_game['system']
+                        rompath = minimal_game['id']
+                        
                         # Only include games from enabled systems
-                        if enabled_systems and game['system'] not in enabled_systems:
+                        if enabled_systems and system_id not in enabled_systems:
                             continue
                         
-                        # Enrich game data with playcount/gametime from raw catalog if available
-                        system_id = game['system']
-                        rompath = game['id']
-                        if system_id in raw_catalog and rompath in raw_catalog[system_id]:
-                            raw_game_data = raw_catalog[system_id][rompath]
-                            if 'playcount' in raw_game_data:
-                                game['playcount'] = raw_game_data['playcount']
-                            if 'gametime' in raw_game_data:
-                                game['gametime'] = raw_game_data['gametime']
-                            # Ensure favorite is included
-                            if 'favorite' in raw_game_data:
-                                game['favorite'] = raw_game_data['favorite']
+                        # Enrich minimal game data from catalog_responses (pre-computed response cache)
+                        enriched_game = None
+                        if system_id in catalog_responses and rompath in catalog_responses[system_id]:
+                            # Use pre-computed response structure
+                            enriched_game = catalog_responses[system_id][rompath].copy()
+                        else:
+                            # Fallback: try with ./ prefix or build from minimal data
+                            alt_rompath = f'./{rompath}' if not rompath.startswith('./') else rompath.lstrip('./')
+                            if system_id in catalog_responses and alt_rompath in catalog_responses[system_id]:
+                                enriched_game = catalog_responses[system_id][alt_rompath].copy()
+                            else:
+                                # Last resort: build minimal game dict (shouldn't happen, but handle gracefully)
+                                enriched_game = minimal_game.copy()
+                                enriched_game['systemName'] = self.get_system_name(system_id)
                         
-                        results.append((relevance, game))
+                        # Add playcount/gametime/favorite from raw catalog if not already in enriched_game
+                        if system_id in raw_catalog:
+                            # Try exact match first
+                            raw_game_data = None
+                            if rompath in raw_catalog[system_id]:
+                                raw_game_data = raw_catalog[system_id][rompath]
+                            else:
+                                # Try with ./ prefix
+                                alt_rompath = f'./{rompath}' if not rompath.startswith('./') else rompath.lstrip('./')
+                                if alt_rompath in raw_catalog[system_id]:
+                                    raw_game_data = raw_catalog[system_id][alt_rompath]
+                            
+                            if raw_game_data:
+                                if 'playcount' in raw_game_data and 'playcount' not in enriched_game:
+                                    enriched_game['playcount'] = raw_game_data['playcount']
+                                if 'gametime' in raw_game_data and 'gametime' not in enriched_game:
+                                    enriched_game['gametime'] = raw_game_data['gametime']
+                                if 'favorite' in raw_game_data and 'favorite' not in enriched_game:
+                                    enriched_game['favorite'] = raw_game_data['favorite']
+                        
+                        results.append((relevance, enriched_game))
         
         # Remove duplicates (same game might appear multiple times if indexed multiple ways)
         # Keep the one with the best relevance score

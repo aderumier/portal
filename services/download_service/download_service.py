@@ -24,7 +24,7 @@ import random
 import struct
 
 # Client version
-CLIENT_VERSION = "0.3"
+CLIENT_VERSION = "0.4"
 
 def read_config_ini(config_path):
     """Read config.ini file and return a dictionary of settings.
@@ -98,7 +98,7 @@ else:
         log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
     else:
         # Default Linux location
-        log_file_path = os.path.abspath(os.getenv('LOG_FILE', '/userdata/system/logs/rgs_download.log'))
+        log_file_path = os.path.abspath(os.getenv('LOG_FILE', './rgs_download.log'))
 
 # Ensure log directory exists
 log_dir = os.path.dirname(log_file_path)
@@ -1012,6 +1012,52 @@ def upload_p2p_inventory():
         
     except Exception as e:
         logger.error(f"Error preparing P2P inventory: {e}", exc_info=True)
+
+def add_rom_to_p2p_inventory(system, rom_path):
+    """Add a single ROM path to P2P inventory.
+    
+    Args:
+        system: System identifier (e.g., "atari2600")
+        rom_path: ROM file path relative to system directory
+    """
+    try:
+        # Build minimal inventory with just this ROM path
+        inventory = {system: [rom_path]}
+        
+        # Convert inventory to JSON
+        json_data = json.dumps(inventory)
+        json_bytes = json_data.encode('utf-8')
+        
+        # Gzip compress
+        import gzip
+        gzip_data = gzip.compress(json_bytes)
+        
+        # Upload to server
+        url = f"{API_URL}/api/download/p2p/inventory"
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+            'Content-Type': 'application/json',
+            'Content-Encoding': 'gzip'
+        }
+        
+        response = http_session.post(
+            url,
+            data=gzip_data,
+            headers=headers,
+            timeout=30
+        )
+        response.raise_for_status()
+        
+        result = response.json()
+        if result.get('success'):
+            logger.debug(f"Successfully added ROM to P2P inventory: {system}/{rom_path}")
+        else:
+            logger.warning(f"Failed to add ROM to P2P inventory: {result.get('message', 'Unknown error')}")
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error adding ROM to P2P inventory: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error adding ROM to P2P inventory: {e}", exc_info=True)
 
 def upload_all_gamelist_files():
     """Scan ROMS_PATH for all gamelist.xml files, filter games with playcount > 0, 
@@ -3205,47 +3251,6 @@ def get_current_client_connection_info():
         logger.error(f"Unexpected error getting current client connection info: {e}", exc_info=True)
         return None
 
-def request_p2p_peer(system, rom_path, game_id):
-    """Request a peer from the backend.
-    
-    Args:
-        system: System identifier
-        rom_path: ROM file path (relative to system directory)
-        game_id: Game ID for the request
-        
-    Returns:
-        Dictionary with peer information (peer_url, token_id, external_ip, etc.), or None on error
-    """
-    try:
-        url = f"{API_URL}/api/download/p2p/request-peer"
-        headers = {
-            'Authorization': f'Bearer {API_TOKEN}',
-            'Content-Type': 'application/json'
-        }
-        data = {
-            'system': system,
-            'rom_path': rom_path,
-            'game_id': game_id
-        }
-        
-        response = http_session.post(url, json=data, headers=headers, timeout=10)
-        response.raise_for_status()
-        
-        result = response.json()
-        if result.get('success') and result.get('peer'):
-            peer_info = result['peer']
-            logger.info(f"Found P2P peer for {system}/{rom_path}: {peer_info.get('peer_url')}")
-            return peer_info
-        else:
-            logger.debug(f"No peer found for {system}/{rom_path}")
-            return None
-    except requests.exceptions.RequestException as e:
-        logger.debug(f"Error requesting peer for {system}/{rom_path}: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error requesting peer: {e}", exc_info=True)
-        return None
-
 def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, paused_ref=None, download_id=None, bytes_transferred_ref=None, chunk_size=1024*1024, timeout=300):
     """Download a file from a peer via HTTP.
     
@@ -3397,77 +3402,54 @@ def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, 
         logger.error(f"Unexpected error during P2P download: {e}", exc_info=True)
         return False
 
-def try_p2p_download(system, rom_path, game_id, dest_path, expected_size, paused_ref, download_id, bytes_transferred_ref, max_peers=5):
-    """Try to download a file via P2P with retry logic.
+def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, expected_size, expected_checksum, paused_ref, download_id, bytes_transferred_ref):
+    """Try to download a file via P2P from a list of peers.
     
-    Attempts to download from up to max_peers different peers.
+    Attempts to download from peers in the provided list (already sorted by upload bandwidth).
     Falls back to server download if all peers fail.
     
     Args:
+        p2p_peers: List of peer dictionaries, each containing: external_ip, external_port, token_id
         system: System identifier
         rom_path: ROM file path (relative to system directory)
         game_id: Game ID
         dest_path: Destination file path
         expected_size: Expected file size in bytes (optional)
+        expected_checksum: Expected checksum data (dictionary from server)
         paused_ref: Optional list to check if download should be paused
         download_id: Download ID for progress reporting (optional)
         bytes_transferred_ref: Optional list to track bytes transferred
-        max_peers: Maximum number of peers to try (default: 5)
-        
+    
     Returns:
-        True if download succeeded via P2P, False otherwise (should fall back to server)
+        token_id (int) of the successful peer if download succeeded via P2P, False otherwise (should fall back to server)
     """
     try:
-        # Get checksum from server first
-        logger.info(f"Attempting P2P download for {system}/{rom_path}")
-        expected_checksum = get_server_checksum(system, rom_path)
-        if not expected_checksum:
-            logger.warning(f"Could not get checksum from server for {system}/{rom_path}, skipping P2P")
+        if not p2p_peers:
+            logger.debug(f"No P2P peers provided for {system}/{rom_path}")
             return False
         
-        logger.info(f"Retrieved checksum from server: file_size={expected_checksum.get('file_size')}")
+        logger.info(f"Attempting P2P download for {system}/{rom_path} from {len(p2p_peers)} peer(s)")
         
-        # Try up to max_peers different peers
-        failed_peer_urls = set()  # Track peer URLs that returned 404
-        for attempt in range(max_peers):
-            # Check if download is paused before requesting peer
+        # Try each peer in the list (already sorted by upload bandwidth)
+        for peer_idx, peer in enumerate(p2p_peers):
+            # Check if download is paused
             if paused_ref and paused_ref[0]:
-                logger.info("P2P download paused before requesting peer")
+                logger.info("P2P download paused")
                 return False
             
-            # Request peer from backend
-            peer_info = request_p2p_peer(system, rom_path, game_id)
-            if not peer_info:
-                logger.debug(f"No peer available for {system}/{rom_path} (attempt {attempt + 1}/{max_peers})")
-                break  # No more peers available
+            external_ip = peer.get('external_ip')
+            external_port = peer.get('external_port')
             
-            peer_url = peer_info.get('peer_url')
-            if not peer_url:
-                logger.warning(f"Peer info missing peer_url: {peer_info}")
+            if not external_ip or not external_port:
+                logger.warning(f"Peer {peer_idx + 1} missing external_ip or external_port: {peer}")
                 continue
             
-            # Skip this peer if we've already gotten a 404 from it
-            if peer_url in failed_peer_urls:
-                logger.debug(f"Skipping peer {peer_url} (already returned 404)")
-                continue
+            # Build peer URL
+            peer_url = f"http://{external_ip}:{external_port}"
             
-            # Skip this peer if it's ourselves (same external IP and port)
-            # Get our own connection info from Redis (via backend API)
-            current_client_info = get_current_client_connection_info()
-            if current_client_info:
-                peer_external_ip = peer_info.get('external_ip')
-                peer_external_port = peer_info.get('external_port')
-                current_external_ip = current_client_info.get('external_ip')
-                current_external_port = current_client_info.get('external_port')
-                if (current_external_ip and current_external_port and
-                    peer_external_ip == current_external_ip and
-                    peer_external_port == current_external_port):
-                    logger.debug(f"Skipping peer {peer_url} (same as current client: {current_external_ip}:{current_external_port})")
-                    continue
+            logger.info(f"Trying peer {peer_idx + 1}/{len(p2p_peers)}: {peer_url}")
             
-            logger.info(f"Trying peer {attempt + 1}/{max_peers}: {peer_url}")
-            
-            # Download from peer
+            # Determine resume point
             resume_from = 0
             if os.path.exists(dest_path):
                 existing_size = os.path.getsize(dest_path)
@@ -3482,6 +3464,7 @@ def try_p2p_download(system, rom_path, game_id, dest_path, expected_size, paused
                     except Exception as e:
                         logger.warning(f"Failed to delete existing file: {e}")
             
+            # Download from peer
             result = download_file_via_p2p(
                 peer_url=peer_url,
                 system=system,
@@ -3497,11 +3480,11 @@ def try_p2p_download(system, rom_path, game_id, dest_path, expected_size, paused
             
             if result is True:
                 logger.info(f"Successfully downloaded via P2P from {peer_url}")
-                return True
+                peer_token_id = peer.get('token_id')
+                return peer_token_id if peer_token_id is not None else True
             elif result is None:
-                # 404 error - file doesn't exist on this peer, don't retry this peer
-                logger.warning(f"P2P download failed from {peer_url}: File not found (404), will not retry this peer")
-                failed_peer_urls.add(peer_url)
+                # 404 error - file doesn't exist on this peer, try next peer
+                logger.warning(f"P2P download failed from {peer_url}: File not found (404), trying next peer")
                 # Delete partial file if download failed
                 if os.path.exists(dest_path):
                     try:
@@ -3510,8 +3493,8 @@ def try_p2p_download(system, rom_path, game_id, dest_path, expected_size, paused
                         pass
                 continue
             else:
-                # Other error - might retry this peer if backend returns it again
-                logger.warning(f"P2P download failed from {peer_url}, will try next peer")
+                # Other error (connection error, checksum mismatch, etc.) - try next peer
+                logger.warning(f"P2P download failed from {peer_url}, trying next peer")
                 # Delete partial file if download failed
                 if os.path.exists(dest_path):
                     try:
@@ -3762,25 +3745,38 @@ def download_game(download_info):
         
         # Try P2P download if enabled (before checking file existence for resume)
         p2p_download_success = False
-        if p2p_enabled:
+        p2p_peers = download_info.get('p2p_peers', [])
+        if p2p_enabled and p2p_peers:
             # Set up pause tracking for P2P download
             paused = [False]
             _active_download_pause_refs[download_id] = paused
             bytes_transferred_this_session = [0]
             
             try:
-                logger.info(f"Attempting P2P download for {system}/{clean_original_path}")
-                p2p_download_success = try_p2p_download(
-                    system=system,
-                    rom_path=clean_original_path,
-                    game_id=game_id,
-                    dest_path=dest_path,
-                    expected_size=expected_file_size,
-                    paused_ref=paused,
-                    download_id=download_id,
-                    bytes_transferred_ref=bytes_transferred_this_session,
-                    max_peers=5
-                )
+                logger.info(f"Attempting P2P download for {system}/{clean_original_path} from {len(p2p_peers)} peer(s)")
+                
+                # Get checksum from server first
+                expected_checksum = get_server_checksum(system, clean_original_path)
+                if not expected_checksum:
+                    logger.warning(f"Could not get checksum from server for {system}/{clean_original_path}, skipping P2P")
+                    p2p_download_success = False
+                else:
+                    logger.info(f"Retrieved checksum from server: file_size={expected_checksum.get('file_size')}")
+                    p2p_result = try_p2p_download_from_list(
+                        p2p_peers=p2p_peers,
+                        system=system,
+                        rom_path=clean_original_path,
+                        game_id=game_id,
+                        dest_path=dest_path,
+                        expected_size=expected_file_size,
+                        expected_checksum=expected_checksum,
+                        paused_ref=paused,
+                        download_id=download_id,
+                        bytes_transferred_ref=bytes_transferred_this_session
+                    )
+                    # p2p_result is token_id (int) if successful, False otherwise
+                    p2p_download_success = bool(p2p_result)
+                    p2p_source_token_id = p2p_result if p2p_download_success else None
                 
                 if p2p_download_success:
                     logger.info(f"P2P download successful for {system}/{clean_original_path}")
@@ -3845,6 +3841,9 @@ def download_game(download_info):
                     except Exception as e:
                         logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
                     
+                    # Store p2p_source_token_id in download_info for mark_completed
+                    if p2p_source_token_id is not None:
+                        download_info['p2p_source_token_id'] = p2p_source_token_id
                     return True
             else:
                 logger.error(f"P2P downloaded file not found: {dest_path}")
@@ -4156,8 +4155,13 @@ def download_game(download_info):
         if download_id in _active_download_pause_refs:
             del _active_download_pause_refs[download_id]
 
-def mark_completed(download_id):
-    """Mark a download as completed in the queue and send logs."""
+def mark_completed(download_id, download_info=None):
+    """Mark a download as completed in the queue and send logs.
+    
+    Args:
+        download_id: Download ID
+        download_info: Optional download info dict (used to update P2P inventory and pass p2p_source_token_id)
+    """
     try:
         headers = {
             'Content-Type': 'application/json'
@@ -4181,6 +4185,12 @@ def mark_completed(download_id):
         if log_content:
             data['log_content'] = log_content
         
+        # Get p2p_source_token_id from download_info if provided
+        if download_info and 'p2p_source_token_id' in download_info:
+            p2p_source_token_id = download_info.get('p2p_source_token_id')
+            if p2p_source_token_id is not None:
+                data['p2p_source_token_id'] = p2p_source_token_id
+        
         response = http_session.post(
             f"{API_URL}/api/download/complete",
             json=data,
@@ -4195,6 +4205,26 @@ def mark_completed(download_id):
         
         response.raise_for_status()
         logger.info(f"Marked download {download_id} as completed")
+        
+        # Add downloaded game to P2P inventory if download_info is provided
+        if download_info:
+            system = download_info.get('system')
+            game_id = download_info.get('game_id')
+            if system and game_id:
+                # Get the ROM path from game_details if available, otherwise use game_id
+                game_details = download_info.get('game_details', {})
+                rom_path = game_details.get('path', game_id)
+                # Remove ./ prefix if present
+                rom_path = rom_path.lstrip('./')
+                # Remove system prefix if present
+                if rom_path.startswith(f"{system}/"):
+                    rom_path = rom_path[len(system) + 1:]
+                
+                try:
+                    add_rom_to_p2p_inventory(system, rom_path)
+                except Exception as e:
+                    logger.warning(f"Failed to add ROM to P2P inventory: {e}")
+        
         return True
     except requests.exceptions.HTTPError as e:
         # Handle other HTTP errors (shouldn't reach here for 404 since we handle it above, but keep as fallback)
@@ -4279,7 +4309,7 @@ def process_queue():
         logger.info(f"Got download: {download_info.get('game_name', 'Unknown')} (ID: {download_info['download_id']})")
         
         if download_game(download_info):
-            mark_completed(download_info['download_id'])
+            mark_completed(download_info['download_id'], download_info)
         else:
             logger.error(f"Failed to download {download_info.get('game_id', 'Unknown')}")
     except Exception as e:

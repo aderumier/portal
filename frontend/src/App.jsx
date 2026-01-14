@@ -18,6 +18,7 @@ import ProtectedRoute from './components/Auth/ProtectedRoute'
 import MediaValidation from './pages/MediaValidation'
 import DownloadQueues from './pages/DownloadQueues'
 import UsersStats from './pages/UsersStats'
+import ClientsStats from './pages/ClientsStats'
 import SystemsConfiguration from './pages/SystemsConfiguration'
 import ConnectedClients from './pages/ConnectedClients'
 
@@ -40,6 +41,7 @@ function App() {
             <Route path="account" element={<ProtectedRoute><Account /></ProtectedRoute>} />
             <Route path="downloads/history/all" element={<ProtectedRoute requireAdmin><GlobalDownloadHistory /></ProtectedRoute>} />
             <Route path="users-stats" element={<ProtectedRoute requireAdmin><UsersStats /></ProtectedRoute>} />
+            <Route path="clients-stats" element={<ProtectedRoute requireAdmin><ClientsStats /></ProtectedRoute>} />
             <Route path="media-validation" element={<ProtectedRoute requireAdmin><MediaValidation /></ProtectedRoute>} />
             <Route path="download-queues" element={<ProtectedRoute requireAdmin><DownloadQueues /></ProtectedRoute>} />
             <Route path="connected-clients" element={<ProtectedRoute requireAdmin><ConnectedClients /></ProtectedRoute>} />

@@ -2480,15 +2480,20 @@ class DownloadService:
             logger.error(f"Error reading download log for {download_id}: {e}")
             return None
     
-    async def complete_download(self, download_id: int) -> bool:
+    async def complete_download(self, download_id: int, p2p_source_token_id: Optional[int] = None) -> bool:
         """Remove download from queue and update user download statistics.
         
         After completion, checks if there are more items in user_queue for the same token_id
         and promotes one if no active downloads remain, then sends WebSocket notification.
+        
+        Args:
+            download_id: ID of the download to complete
+            p2p_source_token_id: Optional source peer's token_id for P2P downloads
         """
         try:
-            from app.database import User
+            from app.database import User, ApiToken
             from app.services.websocket_manager import get_websocket_manager
+            from sqlalchemy import func
             
             download = self.db.query(DownloadQueue).filter(
                 DownloadQueue.id == download_id
@@ -2506,6 +2511,62 @@ class DownloadService:
             # Calculate downloaded MB (convert bytes to MB: 1 MB = 1024 * 1024 bytes)
             downloaded_bytes = download.bytes_transferred or 0
             downloaded_mb = downloaded_bytes / (1024 * 1024)
+            
+            # Handle P2P traffic tracking if this was a P2P download
+            if p2p_source_token_id is not None:
+                try:
+                    # Update target token (downloading client) - add to p2p_total_download_mb
+                    target_token = self.db.query(ApiToken).filter(ApiToken.id == token_id).first()
+                    if target_token:
+                        target_token.p2p_total_download_mb += downloaded_mb
+                        logger.info(f"Updated target token {token_id} p2p_total_download_mb: {target_token.p2p_total_download_mb:.2f} MB (+{downloaded_mb:.2f} MB)")
+                    
+                    # Update source token (serving peer) - add to p2p_total_upload_mb
+                    source_token = self.db.query(ApiToken).filter(ApiToken.id == p2p_source_token_id).first()
+                    if source_token:
+                        source_token.p2p_total_upload_mb += downloaded_mb
+                        logger.info(f"Updated source token {p2p_source_token_id} p2p_total_upload_mb: {source_token.p2p_total_upload_mb:.2f} MB (+{downloaded_mb:.2f} MB)")
+                    else:
+                        logger.warning(f"Source token {p2p_source_token_id} not found for P2P upload tracking")
+                    
+                    # Update user statistics by summing all their tokens' P2P traffic
+                    # For target user (downloading client)
+                    target_user_tokens = self.db.query(ApiToken).filter(ApiToken.user_id == user_id).all()
+                    target_user_download_mb = sum(token.p2p_total_download_mb or 0.0 for token in target_user_tokens)
+                    target_user_upload_mb = sum(token.p2p_total_upload_mb or 0.0 for token in target_user_tokens)
+                    
+                    user = self.db.query(User).filter(User.user_id == user_id).first()
+                    if user:
+                        user.p2p_total_download_mb = target_user_download_mb
+                        user.p2p_total_upload_mb = target_user_upload_mb
+                        logger.info(f"Updated user {user_id} P2P totals: download={target_user_download_mb:.2f} MB, upload={target_user_upload_mb:.2f} MB")
+                    
+                    # For source user (serving peer)
+                    if source_token:
+                        source_user_id = source_token.user_id
+                        source_user_tokens = self.db.query(ApiToken).filter(ApiToken.user_id == source_user_id).all()
+                        source_user_download_mb = sum(token.p2p_total_download_mb or 0.0 for token in source_user_tokens)
+                        source_user_upload_mb = sum(token.p2p_total_upload_mb or 0.0 for token in source_user_tokens)
+                        
+                        source_user = self.db.query(User).filter(User.user_id == source_user_id).first()
+                        if source_user:
+                            source_user.p2p_total_download_mb = source_user_download_mb
+                            source_user.p2p_total_upload_mb = source_user_upload_mb
+                            logger.info(f"Updated source user {source_user_id} P2P totals: download={source_user_download_mb:.2f} MB, upload={source_user_upload_mb:.2f} MB")
+                        else:
+                            # Create user record if it doesn't exist
+                            source_user = User(
+                                user_id=source_user_id,
+                                p2p_total_download_mb=source_user_download_mb,
+                                p2p_total_upload_mb=source_user_upload_mb,
+                                created_at=datetime.now(timezone.utc),
+                                updated_at=datetime.now(timezone.utc)
+                            )
+                            self.db.add(source_user)
+                            logger.info(f"Created source user {source_user_id} with P2P totals: download={source_user_download_mb:.2f} MB, upload={source_user_upload_mb:.2f} MB")
+                except Exception as e:
+                    logger.error(f"Error tracking P2P traffic: {e}", exc_info=True)
+                    # Don't fail the download completion if P2P tracking fails
             
             # Update or create user statistics
             user = self.db.query(User).filter(

@@ -186,4 +186,103 @@ class P2PInventoryService:
         except Exception as e:
             logger.error(f"Error getting P2P client connection info for token_id {token_id}: {e}")
             return None
+    
+    @staticmethod
+    async def find_eligible_peers(system: str, rom_path: str, exclude_token_id: int, limit: int = 20) -> List[Dict]:
+        """Find eligible P2P peers that have a specific ROM.
+        
+        Args:
+            system: System identifier
+            rom_path: ROM path (relative to system directory)
+            exclude_token_id: Token ID of the requesting client (to exclude)
+            limit: Maximum number of peers to return (default: 20)
+        
+        Returns:
+            List of peer dictionaries, each containing: external_ip, external_port, token_id
+            Sorted by upload_bandwidth (descending, None values last)
+        """
+        redis_p2p_client = get_redis_p2p_client()
+        if not redis_p2p_client:
+            return []
+        
+        try:
+            # Get Redis cache client for WebSocket connection info (database 1)
+            from app.services.discord import get_redis_cache_client
+            redis_cache_client = get_redis_cache_client()
+            
+            # Get requesting client's external IP to exclude
+            requesting_client_info = await P2PInventoryService.get_client_connection_info(exclude_token_id)
+            requesting_external_ip = requesting_client_info.get('external_ip') if requesting_client_info else None
+            
+            # Find all clients that have this ROM
+            candidate_token_ids = await P2PInventoryService.find_clients_with_rom(system, rom_path)
+            
+            # Remove the requesting client
+            candidate_token_ids.discard(exclude_token_id)
+            
+            if not candidate_token_ids:
+                return []
+            
+            eligible_peers = []
+            
+            # For each candidate, get connection info and filter
+            for token_id in candidate_token_ids:
+                try:
+                    # Get P2P connection info (external_ip, external_port)
+                    p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
+                    if not p2p_info:
+                        continue
+                    
+                    external_ip = p2p_info.get('external_ip')
+                    external_port = p2p_info.get('external_port')
+                    
+                    if not external_ip or not external_port:
+                        continue
+                    
+                    # Exclude if same external IP as requesting client
+                    if requesting_external_ip and external_ip == requesting_external_ip:
+                        continue
+                    
+                    # Get WebSocket connection info (upload_bandwidth, p2p_port_accessible)
+                    upload_bandwidth = None
+                    p2p_port_accessible = False
+                    if redis_cache_client:
+                        try:
+                            ws_key = f"ws_client:{token_id}"
+                            ws_info_str = await redis_cache_client.get(ws_key)
+                            if ws_info_str:
+                                ws_info = json.loads(ws_info_str)
+                                upload_bandwidth = ws_info.get('upload_bandwidth')
+                                p2p_port_accessible = ws_info.get('p2p_port_accessible', False)
+                        except Exception as e:
+                            logger.debug(f"Error getting WebSocket info for token_id {token_id}: {e}")
+                    
+                    # Filter: must have p2p_port_accessible=True
+                    if not p2p_port_accessible:
+                        continue
+                    
+                    eligible_peers.append({
+                        'external_ip': external_ip,
+                        'external_port': external_port,
+                        'token_id': token_id,
+                        'upload_bandwidth': upload_bandwidth if upload_bandwidth is not None else 0.0
+                    })
+                    
+                except Exception as e:
+                    logger.debug(f"Error processing candidate token_id {token_id}: {e}")
+                    continue
+            
+            # Sort by upload_bandwidth (descending, None values last - but we set None to 0.0 above)
+            eligible_peers.sort(key=lambda x: x['upload_bandwidth'], reverse=True)
+            
+            # Remove upload_bandwidth from results (not needed by client)
+            for peer in eligible_peers:
+                del peer['upload_bandwidth']
+            
+            # Return up to limit entries
+            return eligible_peers[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error finding eligible peers for {system}/{rom_path}: {e}", exc_info=True)
+            return []
 

@@ -73,6 +73,7 @@ class MarkCompletedRequest(BaseModel):
     download_id: int
     client_version: Optional[str] = None  # Download client version
     log_content: Optional[str] = None  # Download task log content
+    p2p_source_token_id: Optional[int] = None  # Source peer's token_id for P2P downloads
 
 class ArchiveDownloadRequest(BaseModel):
     download_id: int
@@ -1180,6 +1181,29 @@ async def request_download(
             "bandwidth_update_interval": settings.BANDWIDTH_UPDATE_INTERVAL
         }
     
+    # Add P2P peers list if P2P is enabled
+    if settings.P2P_ENABLED and download_info:
+        try:
+            from app.services.p2p_inventory import P2PInventoryService
+            system = download_info.get('system')
+            game_id = download_info.get('game_id')
+            
+            if system and game_id:
+                # Use game_id as rom_path for P2P inventory lookup (already normalized, system-relative)
+                # The game_id is the resolved path without snapshot prefixes, which matches what's stored in Redis
+                p2p_peers = await P2PInventoryService.find_eligible_peers(
+                    system=system,
+                    rom_path=game_id,
+                    exclude_token_id=token_id,
+                    limit=20
+                )
+                download_info['p2p_peers'] = p2p_peers
+            else:
+                download_info['p2p_peers'] = []
+        except Exception as e:
+            logger.debug(f"Error finding P2P peers for download: {e}")
+            download_info['p2p_peers'] = []
+    
     return {
         "download": download_info,
         "bandwidth_update_interval": settings.BANDWIDTH_UPDATE_INTERVAL
@@ -1236,6 +1260,7 @@ async def mark_completed(
     """Mark a download as completed (used by download service)."""
     download_id = request.download_id
     log_content = request.log_content
+    p2p_source_token_id = request.p2p_source_token_id
     
     if download_id <= 0:
         raise HTTPException(
@@ -1247,7 +1272,7 @@ async def mark_completed(
     if log_content:
         download_service.store_download_log(download_id, log_content)
     
-    success = await download_service.complete_download(download_id)
+    success = await download_service.complete_download(download_id, p2p_source_token_id=p2p_source_token_id)
     
     if not success:
         raise HTTPException(
@@ -3254,73 +3279,6 @@ async def register_p2p_client(
             detail="An error occurred while registering P2P client"
         )
 
-
-@router.post("/p2p/request-peer")
-async def request_p2p_peer(
-    request: Request,
-    body: P2PRequestPeerRequest,
-    current_user: dict = Depends(require_auth_user),
-    db: Session = Depends(get_db)
-):
-    """Request peer information for P2P file download.
-    
-    Returns peer connection information if an available peer is found.
-    """
-    try:
-        # Check if P2P is enabled
-        if not settings.P2P_ENABLED:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="P2P downloads are disabled"
-            )
-        
-        # Get token_id from request state (set by API token middleware)
-        token_id = getattr(request.state, 'token_id', None)
-        
-        if token_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token ID not found. API token authentication required."
-            )
-        
-        # Find peer using matcher service
-        from app.services.p2p_matcher import P2PMatcherService
-        peer_info = await P2PMatcherService.request_peer(
-            body.system,
-            body.rom_path,
-            token_id,
-            max_attempts=settings.P2P_MAX_PEER_ATTEMPTS
-        )
-        
-        if not peer_info:
-            return {
-                "success": False,
-                "peer": None,
-                "message": "No available peer found"
-            }
-        
-        logger.debug(f"Found P2P peer for {body.system}/{body.rom_path}: token_id {peer_info.get('token_id')}")
-        
-        return {
-            "success": True,
-            "peer": {
-                "token_id": peer_info.get('token_id'),
-                "peer_url": peer_info.get('peer_url'),
-                "external_ip": peer_info.get('external_ip'),
-                "external_port": peer_info.get('external_port'),
-                "internal_port": peer_info.get('internal_port'),
-                "upnp_enabled": peer_info.get('upnp_enabled', False)
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error requesting P2P peer: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred while requesting P2P peer"
-        )
 
 @router.get("/p2p/my-connection-info")
 async def get_my_connection_info(

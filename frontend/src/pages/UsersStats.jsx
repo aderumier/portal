@@ -136,6 +136,8 @@ const UsersStats = () => {
               <th>User ID</th>
               <th>Total Downloaded</th>
               <th>Games Downloaded</th>
+              <th>P2P Download</th>
+              <th>P2P Upload</th>
               <th>Medias Uploaded</th>
               <th>Medias Validated</th>
               <th>Last Login IP</th>
@@ -147,7 +149,7 @@ const UsersStats = () => {
           <tbody>
             {users.length === 0 ? (
               <tr>
-                <td colSpan="10" className="no-users">
+                <td colSpan="12" className="no-users">
                   No users found
                 </td>
               </tr>
@@ -165,6 +167,12 @@ const UsersStats = () => {
                   </td>
                   <td className="download-number-cell">
                     <span className="download-number">{user.total_download_number}</span>
+                  </td>
+                  <td className="p2p-download-mb-cell">
+                    <span className="p2p-download-mb">{formatMB(user.p2p_total_download_mb || 0)}</span>
+                  </td>
+                  <td className="p2p-upload-mb-cell">
+                    <span className="p2p-upload-mb">{formatMB(user.p2p_total_upload_mb || 0)}</span>
                   </td>
                   <td className="medias-upload-cell">
                     <span className="medias-upload">{user.medias_upload || 0}</span>
