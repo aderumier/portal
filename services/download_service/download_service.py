@@ -1800,17 +1800,18 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                         pass
                 # Return immediately - exit function and while loop, no retry
                 return False  # Return False immediately - do NOT retry on pause
-            # Handle 404 errors - file doesn't exist, remove from queue
+            # Handle 404 errors - file doesn't exist, don't retry
+            # For media files, 404 means the file doesn't exist on the server (no point in retrying)
+            # For ROM files, 404 should also not be retried (file doesn't exist)
             if e.response and e.response.status_code == 404:
-                logger.error(f"File not found (404) for URL: {http_url}")
-                logger.error(f"This indicates the file doesn't exist on the server. The download should be removed from queue.")
+                logger.warning(f"File not found (404) for URL: {http_url} - skipping (no retry)")
                 # Close response if it exists
                 if 'response' in locals() and response:
                     try:
                         response.close()
                     except:
                         pass
-                # Return a special value to indicate file not found
+                # Return None immediately - do NOT retry on 404
                 return None  # None indicates file not found (different from False which indicates pause/failure)
             logger.error(f"HTTP download error: {e}", exc_info=True)
             # Close response on error
@@ -2938,7 +2939,8 @@ def download_game_media(system, game_id, download_id, batocera_system):
                     bytes_transferred_ref=None,
                     chunk_size=1024 * 1024,  # 1MB chunks
                     paused_ref=None,
-                    existing_response=None
+                    existing_response=None,
+                    max_retries=0  # Don't retry media downloads - 404 means file doesn't exist
                 )
                 
                 if success:
