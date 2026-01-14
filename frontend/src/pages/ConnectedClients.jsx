@@ -41,6 +41,11 @@ const ConnectedClients = () => {
     }
   }
 
+  const formatBandwidth = (mbps) => {
+    if (mbps === null || mbps === undefined) return 'N/A'
+    return `${mbps.toFixed(2)} Mbits/s`
+  }
+
   if (loading) {
     return (
       <div className="connected-clients">
@@ -78,6 +83,10 @@ const ConnectedClients = () => {
             <div className="grid-cell">IP Address</div>
             <div className="grid-cell">Platform</div>
             <div className="grid-cell">Client Version</div>
+            <div className="grid-cell">UPnP</div>
+            <div className="grid-cell">P2P Port Open</div>
+            <div className="grid-cell">Upload Bandwidth</div>
+            <div className="grid-cell">Download Bandwidth</div>
             <div className="grid-cell">Connected At</div>
             <div className="grid-cell">Token ID</div>
           </div>
@@ -88,6 +97,26 @@ const ConnectedClients = () => {
               <div className="grid-cell">{conn.ip || 'Unknown'}</div>
               <div className="grid-cell">{conn.platform || 'Unknown'}</div>
               <div className="grid-cell">{conn.client_version || 'Unknown'}</div>
+              <div className="grid-cell">
+                {conn.upnp_enabled ? (
+                  <span title={`UPnP enabled on port ${conn.upnp_port || 'N/A'}`}>
+                    ON {conn.upnp_port ? `(${conn.upnp_port})` : ''}
+                  </span>
+                ) : (
+                  <span title="UPnP disabled">OFF</span>
+                )}
+              </div>
+              <div className="grid-cell">
+                {conn.p2p_port_accessible === true ? (
+                  <span style={{ color: '#4caf50' }}>YES</span>
+                ) : conn.p2p_port_accessible === false ? (
+                  <span style={{ color: '#f44336' }}>NO</span>
+                ) : (
+                  <span style={{ color: '#999' }}>N/A</span>
+                )}
+              </div>
+              <div className="grid-cell">{formatBandwidth(conn.upload_bandwidth)}</div>
+              <div className="grid-cell">{formatBandwidth(conn.download_bandwidth)}</div>
               <div className="grid-cell">{formatDate(conn.connected_at)}</div>
               <div className="grid-cell">{conn.token_id || 'N/A'}</div>
             </div>

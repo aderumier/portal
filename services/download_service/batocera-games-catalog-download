@@ -24,8 +24,7 @@ SERVICE_NAME="batocera-games-catalog-download"
 SERVICE_USER="root"
 SERVICE_GROUP="root"
 SERVICE_DIR="/userdata/system/rgs/download_service"
-PYTHON_BIN="/usr/bin/python3"
-# Or if using venv: PYTHON_BIN="${SERVICE_DIR}/venv/bin/python"
+SYSTEM_PYTHON="/usr/bin/python3"
 SCRIPT_NAME="download_service.py"
 PIDFILE="/var/run/${SERVICE_NAME}.pid"
 LOCKFILE="/var/lock/subsys/${SERVICE_NAME}"
@@ -105,11 +104,49 @@ start() {
         return 1
     fi
     
-    # Check if Python is available
-    if [ ! -f "$PYTHON_BIN" ]; then
+    # Check if system Python is available
+    if [ ! -f "$SYSTEM_PYTHON" ]; then
         echo -e "${RED}FAILED${NC}"
-        echo "Error: Python not found: $PYTHON_BIN"
+        echo "Error: Python not found: $SYSTEM_PYTHON"
         return 1
+    fi
+    
+    # Create venv if it doesn't exist
+    VENV_DIR="${SERVICE_DIR}/.venv"
+    if [ ! -f "${VENV_DIR}/bin/python" ]; then
+        echo -n "Creating virtual environment... "
+        if "$SYSTEM_PYTHON" -m venv "$VENV_DIR" 2>/dev/null; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${YELLOW}WARNING${NC}"
+            echo "Warning: Failed to create virtual environment. Will use system Python."
+        fi
+    fi
+    
+    # Install/update dependencies if venv exists
+    if [ -f "${VENV_DIR}/bin/python" ] && [ -f "${VENV_DIR}/bin/pip" ]; then
+        echo -n "Installing/updating dependencies... "
+        # Upgrade pip first (quietly)
+        "${VENV_DIR}/bin/pip" install --upgrade pip >/dev/null 2>&1 || true
+        # Install/update requirements (use --upgrade to ensure new packages are installed)
+        # First try quietly, but if it fails, show output
+        if "${VENV_DIR}/bin/pip" install --upgrade -r "${SERVICE_DIR}/requirements.txt" >/dev/null 2>&1; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${YELLOW}WARNING${NC}"
+            echo "Warning: Silent install failed, retrying with output:"
+            "${VENV_DIR}/bin/pip" install --upgrade -r "${SERVICE_DIR}/requirements.txt" || {
+                echo -e "${RED}FAILED${NC}"
+                echo "Error: Failed to install dependencies. Continuing anyway..."
+            }
+        fi
+    fi
+    
+    # Use venv Python if available, otherwise fall back to system Python
+    if [ -f "${VENV_DIR}/bin/python" ]; then
+        PYTHON_BIN="${VENV_DIR}/bin/python"
+    else
+        PYTHON_BIN="$SYSTEM_PYTHON"
     fi
     
     # Check if API_TOKEN.txt exists

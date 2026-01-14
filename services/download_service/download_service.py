@@ -15,7 +15,8 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 import asyncio
 import websockets
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
+import hashlib
 import tarfile
 import tempfile
 import io
@@ -728,6 +729,9 @@ CONFIGDIR = config.get('CONFIGDIR') or os.getenv('CONFIGDIR', DEFAULT_CONFIGDIR)
 BANDWIDTH_UPDATE_INTERVAL = None
 SERVICE_ID = config.get('SERVICE_ID') or os.getenv('SERVICE_ID', socket.gethostname())
 
+# P2P server configuration
+P2P_PORT = int(config.get('P2P_PORT') or os.getenv('P2P_PORT', '8765'))
+
 # Read API_TOKEN from API_TOKEN.txt file in the service root directory
 # Use SERVICE_DIR which is set based on platform above
 api_token_path = SERVICE_DIR / 'API_TOKEN.txt'
@@ -749,6 +753,22 @@ else:
 if not API_TOKEN:
     raise ValueError("API_TOKEN is required. Please create API_TOKEN.txt file in the download service directory with your API token.")
 
+# Import P2P client module (after logger is initialized)
+try:
+    from p2p_client import get_p2p_server, stop_p2p_server
+    P2P_CLIENT_AVAILABLE = True
+except ImportError as e:
+    P2P_CLIENT_AVAILABLE = False
+    logger.warning(f"P2P client module not available: {e}")
+
+# Import UPnP helper module (after logger is initialized)
+try:
+    from upnp_helper import get_upnp_helper, UPnPHelper
+    UPNP_HELPER_AVAILABLE = True
+except ImportError as e:
+    UPNP_HELPER_AVAILABLE = False
+    logger.warning(f"UPnP helper module not available: {e}")
+
 # Log configuration on startup
 logger.info(f"Download service configuration:")
 logger.info(f"  API_URL: {API_URL}")
@@ -757,6 +777,7 @@ logger.info(f"  SAVEDIR: {SAVEDIR}")
 if CONFIGDIR:
     logger.info(f"  CONFIGDIR: {CONFIGDIR}")
 logger.info(f"  SERVICE_ID: {SERVICE_ID}")
+logger.info(f"  P2P_PORT: {P2P_PORT}")
 logger.info(f"  BANDWIDTH_UPDATE_INTERVAL: Will be set from backend on first connection")
 
 # Validate API_URL is not pointing to frontend
@@ -810,6 +831,39 @@ def update_bandwidth_update_interval(new_interval):
             BANDWIDTH_UPDATE_INTERVAL = new_interval
     else:
         logger.warning(f"Invalid bandwidth update interval received: {new_interval}, keeping current value: {BANDWIDTH_UPDATE_INTERVAL}")
+
+def extract_rom_paths_from_gamelist(gamelist_path):
+    """Extract ROM paths from all games in gamelist.xml.
+    
+    Args:
+        gamelist_path: Path to the gamelist.xml file
+        
+    Returns:
+        List of ROM paths (strings), or empty list if error
+    """
+    try:
+        # Parse the original gamelist.xml
+        tree = ET.parse(gamelist_path)
+        root = tree.getroot()
+        
+        # Find all game elements
+        games = root.findall('game')
+        
+        # Extract path from all games (not just those with playcount > 0)
+        rom_paths = []
+        for game in games:
+            path_elem = game.find('path')
+            if path_elem is not None and path_elem.text:
+                # Get path text, removing leading ./
+                path = path_elem.text.lstrip('./')
+                if path:
+                    rom_paths.append(path)
+        
+        return rom_paths
+        
+    except Exception as e:
+        logger.error(f"Error extracting ROM paths from {gamelist_path}: {e}")
+        return []
 
 def filter_gamelist_for_upload(gamelist_path):
     """Parse gamelist.xml and filter games with playcount > 0, keeping only specific fields.
@@ -873,6 +927,91 @@ def filter_gamelist_for_upload(gamelist_path):
     except Exception as e:
         logger.error(f"Error filtering gamelist.xml from {gamelist_path}: {e}")
         return None
+
+def upload_p2p_inventory():
+    """Extract ROM paths from all gamelist.xml files and upload inventory to server.
+    
+    Scans ROMS_PATH for all gamelist.xml files, extracts ROM paths from ALL games
+    (not just those with playcount > 0), builds JSON structure, gzip compresses it,
+    and uploads to the P2P inventory endpoint.
+    """
+    try:
+        if not ROMS_PATH or not os.path.exists(ROMS_PATH):
+            logger.warning(f"ROMS_PATH does not exist: {ROMS_PATH}, skipping P2P inventory upload")
+            return
+        
+        logger.info(f"Extracting ROM paths for P2P inventory from {ROMS_PATH}")
+        
+        # Build inventory: {system: [path1, path2, ...], system2: [path1, path2, ...], ...}
+        inventory = {}
+        total_paths = 0
+        
+        # Scan all system directories in ROMS_PATH
+        for system_dir in os.listdir(ROMS_PATH):
+            system_path = os.path.join(ROMS_PATH, system_dir)
+            
+            # Skip if not a directory
+            if not os.path.isdir(system_path):
+                continue
+            
+            # Check for gamelist.xml in this system directory
+            gamelist_path = os.path.join(system_path, 'gamelist.xml')
+            
+            if os.path.exists(gamelist_path) and os.path.isfile(gamelist_path):
+                try:
+                    # Extract ROM paths from all games (not just those with playcount > 0)
+                    rom_paths = extract_rom_paths_from_gamelist(gamelist_path)
+                    if rom_paths:
+                        inventory[system_dir] = rom_paths
+                        total_paths += len(rom_paths)
+                        logger.debug(f"Extracted {len(rom_paths)} ROM paths from system '{system_dir}'")
+                except Exception as e:
+                    logger.error(f"Error extracting ROM paths from {gamelist_path}: {e}")
+        
+        if not inventory:
+            logger.info("No ROM paths found in any gamelist.xml files, skipping P2P inventory upload")
+            return
+        
+        # Convert inventory to JSON
+        json_data = json.dumps(inventory)
+        json_bytes = json_data.encode('utf-8')
+        
+        # Gzip compress
+        import gzip
+        gzip_data = gzip.compress(json_bytes)
+        
+        logger.info(f"Prepared P2P inventory: {len(inventory)} systems, {total_paths} ROM paths, {len(gzip_data)} bytes compressed (from {len(json_bytes)} bytes)")
+        
+        # Upload to server
+        try:
+            url = f"{API_URL}/api/download/p2p/inventory"
+            headers = {
+                'Authorization': f'Bearer {API_TOKEN}',
+                'Content-Type': 'application/json',
+                'Content-Encoding': 'gzip'
+            }
+            
+            response = http_session.post(
+                url,
+                data=gzip_data,
+                headers=headers,
+                timeout=120  # Increased timeout for larger files
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            if result.get('success'):
+                logger.info(f"Successfully uploaded P2P inventory ({result.get('systems_count', 0)} systems, {result.get('total_paths', 0)} ROM paths)")
+            else:
+                logger.warning(f"Failed to upload P2P inventory: {result.get('message', 'Unknown error')}")
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error uploading P2P inventory: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error uploading P2P inventory: {e}", exc_info=True)
+        
+    except Exception as e:
+        logger.error(f"Error preparing P2P inventory: {e}", exc_info=True)
 
 def upload_all_gamelist_files():
     """Scan ROMS_PATH for all gamelist.xml files, filter games with playcount > 0, 
@@ -2919,6 +3058,412 @@ def _update_gamelist_xml_manually(batocera_system, game_id, xml_content):
         logger.error(f"Error updating gamelist.xml manually: {e}", exc_info=True)
         return False
 
+# ============================================================================
+# P2P Download Helper Functions
+# ============================================================================
+
+def calculate_partial_checksum(file_path, chunk_size=2097152):
+    """Calculate partial SHA-256 checksum of a file (beginning + end chunks + file size).
+    
+    For files smaller than chunk_size * 2, computes full SHA-256.
+    For larger files, computes SHA-256 of first chunk_size bytes and last chunk_size bytes.
+    
+    Args:
+        file_path: Path to the file
+        chunk_size: Size of chunks to read for partial checksum (default: 2MB)
+        
+    Returns:
+        Dictionary with checksum data:
+        - For small files (< chunk_size * 2): {file_size, full_hash}
+        - For large files: {file_size, beginning_hash, end_hash, chunk_size}
+        Returns None on error
+    """
+    if not os.path.exists(file_path):
+        logger.warning(f"File not found for checksum calculation: {file_path}")
+        return None
+    
+    try:
+        file_size = os.path.getsize(file_path)
+        
+        # For small files, compute full SHA-256
+        if file_size < chunk_size * 2:
+            sha256_hash = hashlib.sha256()
+            with open(file_path, 'rb') as f:
+                while True:
+                    chunk = f.read(8192)  # 8KB chunks
+                    if not chunk:
+                        break
+                    sha256_hash.update(chunk)
+            return {
+                "file_size": file_size,
+                "full_hash": sha256_hash.hexdigest()
+            }
+        
+        # For large files, compute SHA-256 of beginning and end chunks
+        beginning_hash = hashlib.sha256()
+        end_hash = hashlib.sha256()
+        
+        with open(file_path, 'rb') as f:
+            # Read and hash first chunk_size bytes
+            bytes_read = 0
+            while bytes_read < chunk_size:
+                chunk = f.read(min(8192, chunk_size - bytes_read))
+                if not chunk:
+                    break
+                beginning_hash.update(chunk)
+                bytes_read += len(chunk)
+            
+            # Seek to end and read last chunk_size bytes
+            f.seek(max(0, file_size - chunk_size))
+            bytes_read = 0
+            while bytes_read < chunk_size:
+                chunk = f.read(min(8192, chunk_size - bytes_read))
+                if not chunk:
+                    break
+                end_hash.update(chunk)
+                bytes_read += len(chunk)
+        
+        return {
+            "file_size": file_size,
+            "beginning_hash": beginning_hash.hexdigest(),
+            "end_hash": end_hash.hexdigest(),
+            "chunk_size": chunk_size
+        }
+    except Exception as e:
+        logger.error(f"Error calculating checksum for {file_path}: {e}", exc_info=True)
+        return None
+
+def get_server_checksum(system, rom_path):
+    """Get partial SHA-256 checksum from server.
+    
+    Args:
+        system: System identifier
+        rom_path: ROM file path (relative to system directory)
+        
+    Returns:
+        Dictionary with checksum data:
+        - For small files: {file_size, full_hash}
+        - For large files: {file_size, beginning_hash, end_hash, chunk_size}
+        Returns None on error
+    """
+    try:
+        # URL encode the rom_path for the API endpoint
+        encoded_rom_path = quote(rom_path, safe='')
+        
+        url = f"{API_URL}/api/download/p2p/md5/{system}/{encoded_rom_path}"
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+        }
+        
+        response = http_session.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        if result.get('success'):
+            checksum_data = result.get('checksum')
+            if checksum_data:
+                logger.debug(f"Retrieved checksum from server for {system}/{rom_path}: file_size={checksum_data.get('file_size')}")
+                return checksum_data
+            else:
+                logger.error(f"Server returned success but no checksum data for {system}/{rom_path}")
+                return None
+        else:
+            logger.error(f"Server returned error for checksum request: {result.get('message', 'Unknown error')}")
+            return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error requesting checksum from server for {system}/{rom_path}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error requesting checksum from server: {e}", exc_info=True)
+        return None
+
+def request_p2p_peer(system, rom_path, game_id):
+    """Request a peer from the backend.
+    
+    Args:
+        system: System identifier
+        rom_path: ROM file path (relative to system directory)
+        game_id: Game ID for the request
+        
+    Returns:
+        Dictionary with peer information (peer_url, token_id, external_ip, etc.), or None on error
+    """
+    try:
+        url = f"{API_URL}/api/download/p2p/request-peer"
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            'system': system,
+            'rom_path': rom_path,
+            'game_id': game_id
+        }
+        
+        response = http_session.post(url, json=data, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        result = response.json()
+        if result.get('success') and result.get('peer'):
+            peer_info = result['peer']
+            logger.info(f"Found P2P peer for {system}/{rom_path}: {peer_info.get('peer_url')}")
+            return peer_info
+        else:
+            logger.debug(f"No peer found for {system}/{rom_path}")
+            return None
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"Error requesting peer for {system}/{rom_path}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error requesting peer: {e}", exc_info=True)
+        return None
+
+def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, paused_ref=None, download_id=None, bytes_transferred_ref=None, chunk_size=1024*1024, timeout=300):
+    """Download a file from a peer via HTTP.
+    
+    Args:
+        peer_url: Base URL of the peer (e.g., "http://192.168.1.100:8080")
+        system: System identifier
+        rom_path: ROM file path (relative to system directory)
+        dest_path: Destination file path
+        resume_from: Byte position to resume from (default: 0)
+        expected_size: Expected file size in bytes (optional)
+        expected_checksum: Expected checksum data (optional, for verification after download)
+                          Dictionary with checksum data: {file_size, full_hash} or {file_size, beginning_hash, end_hash, chunk_size}
+        paused_ref: Optional list to check if download should be paused
+        download_id: Download ID for progress reporting (optional)
+        bytes_transferred_ref: Optional list to track bytes transferred
+        chunk_size: Size of chunks to read (default: 1MB)
+        timeout: Request timeout in seconds (default: 300)
+        
+    Returns:
+        True if download succeeded and checksum verification passed (if expected_checksum provided), False otherwise
+    """
+    try:
+        # Build peer file URL
+        encoded_system = quote(system, safe='')
+        encoded_rom_path = quote(rom_path, safe='')
+        peer_file_url = f"{peer_url}/p2p/file/{encoded_system}/{encoded_rom_path}"
+        
+        current_resume_from = resume_from
+        total_bytes_downloaded = resume_from
+        
+        headers = {}
+        if current_resume_from > 0:
+            headers['Range'] = f'bytes={current_resume_from}-'
+        
+        logger.info(f"Downloading from peer: {peer_file_url} (resume from {current_resume_from} bytes)")
+        
+        response = requests.get(peer_file_url, headers=headers, stream=True, timeout=timeout)
+        response.raise_for_status()
+        
+        # Check if server supports range requests
+        if current_resume_from > 0 and response.status_code != 206:
+            logger.warning(f"Peer doesn't support range requests, starting from beginning")
+            current_resume_from = 0
+            total_bytes_downloaded = 0
+            response.close()
+            response = requests.get(peer_file_url, stream=True, timeout=timeout)
+            response.raise_for_status()
+        
+        # Get file size from Content-Length or Content-Range header
+        content_length = None
+        if 'Content-Length' in response.headers:
+            content_length = int(response.headers['Content-Length'])
+        elif 'Content-Range' in response.headers:
+            content_range = response.headers['Content-Range']
+            if '/' in content_range:
+                content_length = int(content_range.split('/')[-1])
+        
+        # Open destination file
+        mode = 'r+b' if current_resume_from > 0 and os.path.exists(dest_path) else 'wb'
+        
+        bytes_downloaded_this_session = 0
+        download_start_time = time.time()
+        last_pause_check = download_start_time
+        
+        with open(dest_path, mode) as f:
+            if current_resume_from > 0:
+                f.truncate(current_resume_from)
+                f.seek(current_resume_from)
+            
+            try:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    # Check if download is paused (every 2 seconds)
+                    if paused_ref and time.time() - last_pause_check >= 2.0:
+                        if paused_ref[0]:
+                            logger.info(f"P2P download paused - stopping at {total_bytes_downloaded} bytes")
+                            response.close()
+                            return False
+                        last_pause_check = time.time()
+                    
+                    if chunk:
+                        f.write(chunk)
+                        bytes_written = len(chunk)
+                        total_bytes_downloaded += bytes_written
+                        bytes_downloaded_this_session += bytes_written
+                        
+                        if bytes_transferred_ref:
+                            bytes_transferred_ref[0] += bytes_written
+            except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError) as e:
+                logger.warning(f"P2P download connection error: {e}")
+                response.close()
+                return False
+            finally:
+                response.close()
+        
+        # Verify file size if expected_size provided
+        if expected_size and total_bytes_downloaded != expected_size:
+            logger.error(f"P2P download size mismatch: downloaded {total_bytes_downloaded} bytes, expected {expected_size} bytes")
+            return False
+        
+        # Verify checksum if expected_checksum provided
+        if expected_checksum:
+            logger.info(f"Verifying checksum for downloaded file: {dest_path}")
+            actual_checksum = calculate_partial_checksum(dest_path)
+            if not actual_checksum:
+                logger.error(f"Failed to calculate checksum for downloaded file: {dest_path}")
+                return False
+            
+            # Compare file sizes
+            if actual_checksum['file_size'] != expected_checksum['file_size']:
+                logger.error(f"P2P download size mismatch: expected {expected_checksum['file_size']}, got {actual_checksum['file_size']}")
+                return False
+            
+            # For small files, compare full_hash
+            if 'full_hash' in expected_checksum:
+                if 'full_hash' not in actual_checksum:
+                    logger.error(f"P2P download checksum format mismatch: expected full_hash, got partial checksum")
+                    return False
+                if actual_checksum['full_hash'].lower() != expected_checksum['full_hash'].lower():
+                    logger.error(f"P2P download checksum mismatch: expected {expected_checksum['full_hash']}, got {actual_checksum['full_hash']}")
+                    return False
+            else:
+                # For large files, compare beginning_hash and end_hash
+                if 'beginning_hash' not in actual_checksum or 'end_hash' not in actual_checksum:
+                    logger.error(f"P2P download checksum format mismatch: expected partial checksum, got full_hash")
+                    return False
+                if actual_checksum['beginning_hash'].lower() != expected_checksum['beginning_hash'].lower():
+                    logger.error(f"P2P download beginning hash mismatch: expected {expected_checksum['beginning_hash']}, got {actual_checksum['beginning_hash']}")
+                    return False
+                if actual_checksum['end_hash'].lower() != expected_checksum['end_hash'].lower():
+                    logger.error(f"P2P download end hash mismatch: expected {expected_checksum['end_hash']}, got {actual_checksum['end_hash']}")
+                    return False
+            
+            logger.info(f"Checksum verification passed")
+        
+        logger.info(f"Successfully downloaded file from peer: {dest_path} ({total_bytes_downloaded} bytes)")
+        return True
+        
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"P2P download failed from {peer_url}: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error during P2P download: {e}", exc_info=True)
+        return False
+
+def try_p2p_download(system, rom_path, game_id, dest_path, expected_size, paused_ref, download_id, bytes_transferred_ref, max_peers=5):
+    """Try to download a file via P2P with retry logic.
+    
+    Attempts to download from up to max_peers different peers.
+    Falls back to server download if all peers fail.
+    
+    Args:
+        system: System identifier
+        rom_path: ROM file path (relative to system directory)
+        game_id: Game ID
+        dest_path: Destination file path
+        expected_size: Expected file size in bytes (optional)
+        paused_ref: Optional list to check if download should be paused
+        download_id: Download ID for progress reporting (optional)
+        bytes_transferred_ref: Optional list to track bytes transferred
+        max_peers: Maximum number of peers to try (default: 5)
+        
+    Returns:
+        True if download succeeded via P2P, False otherwise (should fall back to server)
+    """
+    try:
+        # Get checksum from server first
+        logger.info(f"Attempting P2P download for {system}/{rom_path}")
+        expected_checksum = get_server_checksum(system, rom_path)
+        if not expected_checksum:
+            logger.warning(f"Could not get checksum from server for {system}/{rom_path}, skipping P2P")
+            return False
+        
+        logger.info(f"Retrieved checksum from server: file_size={expected_checksum.get('file_size')}")
+        
+        # Try up to max_peers different peers
+        for attempt in range(max_peers):
+            # Check if download is paused before requesting peer
+            if paused_ref and paused_ref[0]:
+                logger.info("P2P download paused before requesting peer")
+                return False
+            
+            # Request peer from backend
+            peer_info = request_p2p_peer(system, rom_path, game_id)
+            if not peer_info:
+                logger.debug(f"No peer available for {system}/{rom_path} (attempt {attempt + 1}/{max_peers})")
+                break  # No more peers available
+            
+            peer_url = peer_info.get('peer_url')
+            if not peer_url:
+                logger.warning(f"Peer info missing peer_url: {peer_info}")
+                continue
+            
+            logger.info(f"Trying peer {attempt + 1}/{max_peers}: {peer_url}")
+            
+            # Download from peer
+            resume_from = 0
+            if os.path.exists(dest_path):
+                existing_size = os.path.getsize(dest_path)
+                if expected_size and existing_size < expected_size:
+                    resume_from = existing_size
+                    logger.info(f"Resuming P2P download from byte {resume_from}")
+                elif expected_size and existing_size >= expected_size:
+                    # File already complete or larger than expected, delete it
+                    try:
+                        os.remove(dest_path)
+                        logger.info(f"Deleted existing file for fresh P2P download: {dest_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete existing file: {e}")
+            
+            success = download_file_via_p2p(
+                peer_url=peer_url,
+                system=system,
+                rom_path=rom_path,
+                dest_path=dest_path,
+                resume_from=resume_from,
+                expected_size=expected_size,
+                expected_checksum=expected_checksum,
+                paused_ref=paused_ref,
+                download_id=download_id,
+                bytes_transferred_ref=bytes_transferred_ref
+            )
+            
+            if success:
+                logger.info(f"Successfully downloaded via P2P from {peer_url}")
+                return True
+            else:
+                logger.warning(f"P2P download failed from {peer_url}, will try next peer")
+                # Delete partial file if download failed
+                if os.path.exists(dest_path):
+                    try:
+                        os.remove(dest_path)
+                    except Exception:
+                        pass
+                continue
+        
+        logger.info(f"All P2P attempts failed for {system}/{rom_path}, falling back to server download")
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error during P2P download attempt: {e}", exc_info=True)
+        return False
+
+# ============================================================================
+# End of P2P Download Helper Functions
+# ============================================================================
+
 def download_game(download_info):
     """Download a game file or directory via HTTP with progress reporting and resume support."""
     download_id = download_info.get('download_id')
@@ -3139,9 +3684,106 @@ def download_game(download_info):
             logger.error(f"Error checking if directory: {e}")
             # Continue with single file download
         
-        # Single file download (existing logic)
+        # Single file download
+        # Check if P2P is enabled - if not, skip P2P and use server download
+        p2p_enabled = download_info.get('p2p_enabled', False)
+        if not p2p_enabled:
+            logger.info("P2P downloads are disabled - using server download")
+        
         dest_path = dest_base_path
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        
+        # Try P2P download if enabled (before checking file existence for resume)
+        p2p_download_success = False
+        if p2p_enabled:
+            # Set up pause tracking for P2P download
+            paused = [False]
+            _active_download_pause_refs[download_id] = paused
+            bytes_transferred_this_session = [0]
+            
+            try:
+                logger.info(f"Attempting P2P download for {system}/{clean_original_path}")
+                p2p_download_success = try_p2p_download(
+                    system=system,
+                    rom_path=clean_original_path,
+                    game_id=game_id,
+                    dest_path=dest_path,
+                    expected_size=expected_file_size,
+                    paused_ref=paused,
+                    download_id=download_id,
+                    bytes_transferred_ref=bytes_transferred_this_session,
+                    max_peers=5
+                )
+                
+                if p2p_download_success:
+                    logger.info(f"P2P download successful for {system}/{clean_original_path}")
+                    # Clean up pause_ref
+                    if download_id in _active_download_pause_refs:
+                        del _active_download_pause_refs[download_id]
+                    # Close file_response if we have one (no longer needed)
+                    if file_response:
+                        file_response.close()
+                        file_response = None
+                else:
+                    logger.info(f"P2P download failed, falling back to server download for {system}/{clean_original_path}")
+                    # Clean up pause_ref (will be recreated for server download)
+                    if download_id in _active_download_pause_refs:
+                        del _active_download_pause_refs[download_id]
+            except Exception as e:
+                logger.error(f"Error during P2P download attempt: {e}", exc_info=True)
+                p2p_download_success = False
+                # Clean up pause_ref on error
+                if download_id in _active_download_pause_refs:
+                    del _active_download_pause_refs[download_id]
+        
+        # If P2P download succeeded, skip server download and proceed with media/gamelist
+        if p2p_download_success:
+            # Verify file size
+            if os.path.exists(dest_path) and os.path.isfile(dest_path):
+                final_size = os.path.getsize(dest_path)
+                if expected_file_size and final_size != expected_file_size:
+                    logger.error(f"P2P downloaded file size mismatch: {final_size} != {expected_file_size}")
+                    # Delete corrupted file
+                    try:
+                        os.remove(dest_path)
+                    except Exception as e:
+                        logger.error(f"Failed to delete corrupted file: {e}")
+                    # Report error and fall back to server
+                    error_msg = f"P2P downloaded file size mismatch: {final_size} != {expected_file_size}"
+                    mark_error(download_id, error_msg)
+                    p2p_download_success = False  # Fall back to server download
+                else:
+                    # P2P download successful - download media and update gamelist
+                    logger.info(f"Successfully downloaded via P2P: {game_id}")
+                    logger.info(f"  Destination: {dest_path}")
+                    logger.info(f"  Size: {final_size} bytes ({final_size / (1024*1024):.2f} MB)")
+                    
+                    # Download media files and update gamelist.xml after successful P2P download
+                    media_and_gamelist_success = False
+                    try:
+                        logger.info(f"P2P download completed successfully, downloading media files for {game_id}")
+                        downloaded_media, game_data = download_game_media(system, game_id, download_id, batocera_system=target_system)
+                        
+                        # Use game_data returned from download_game_media
+                        if game_data:
+                            # Update gamelist.xml with game entry
+                            gamelist_success = add_game_to_batocera_api(target_system, clean_original_path, game_data, downloaded_media)
+                            if gamelist_success:
+                                media_and_gamelist_success = True
+                                logger.info(f"Media download and gamelist.xml update completed successfully for {game_id}")
+                            else:
+                                logger.warning(f"Gamelist.xml update failed for {game_id}")
+                        else:
+                            logger.warning(f"Could not fetch game details for gamelist.xml update: download {download_id}")
+                    except Exception as e:
+                        logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
+                    
+                    return True
+            else:
+                logger.error(f"P2P downloaded file not found: {dest_path}")
+                p2p_download_success = False  # Fall back to server download
+        
+        # If P2P download failed or was disabled, continue with server download (existing code below)
 
         # Check if file already exists (for resume)
         resume_from = 0
@@ -3577,7 +4219,7 @@ def process_queue():
         logger.error(f"Error in process_queue: {e}", exc_info=True)
 
 async def periodic_gamelist_upload():
-    """Periodically upload gamelist.xml files every 24 hours."""
+    """Periodically upload gamelist.xml files and P2P inventory every 24 hours."""
     while True:
         try:
             # Wait 24 hours (86400 seconds)
@@ -3586,6 +4228,9 @@ async def periodic_gamelist_upload():
             # Run upload in executor since it's synchronous
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, upload_all_gamelist_files)
+            # Also upload P2P inventory
+            logger.info("Starting periodic P2P inventory upload (24h interval)")
+            await loop.run_in_executor(None, upload_p2p_inventory)
         except asyncio.CancelledError:
             logger.info("Periodic gamelist upload task cancelled")
             break
@@ -3663,7 +4308,7 @@ async def websocket_client():
                                         if token_id:
                                             logger.info(f"Connected with token_id: {token_id}")
                                         
-                                        # Upload all gamelist.xml files only on first connection (not on reconnections)
+                                        # Upload all gamelist.xml files and P2P inventory only on first connection (not on reconnections)
                                         if is_first_connection:
                                             logger.info("First connection detected - uploading all local gamelist.xml files to server...")
                                             try:
@@ -3672,9 +4317,23 @@ async def websocket_client():
                                                 await loop.run_in_executor(None, upload_all_gamelist_files)
                                             except Exception as e:
                                                 logger.error(f"Error uploading gamelist.xml files on first connection: {e}", exc_info=True)
+                                            logger.info("First connection detected - uploading P2P inventory to server...")
+                                            try:
+                                                # Run in executor since it's a synchronous function
+                                                loop = asyncio.get_event_loop()
+                                                await loop.run_in_executor(None, upload_p2p_inventory)
+                                            except Exception as e:
+                                                logger.error(f"Error uploading P2P inventory on first connection: {e}", exc_info=True)
                                             is_first_connection = False  # Mark that first connection upload is done
                                         else:
-                                            logger.debug("Reconnection detected - skipping gamelist.xml upload (will upload after 24h)")
+                                            logger.debug("Reconnection detected - skipping gamelist.xml and P2P inventory upload (will upload after 24h)")
+                                        
+                                        # Check if bandwidth test is needed
+                                        bandwidth_test_needed = data.get("bandwidth_test_needed", False)
+                                        if bandwidth_test_needed:
+                                            logger.info("Bandwidth test requested by server")
+                                            # Perform bandwidth test in background (don't block WebSocket)
+                                            asyncio.create_task(perform_bandwidth_test())
                                         
                                         # Check if there are downloads available on connection
                                         has_downloads = data.get("has_downloads", False)
@@ -3848,6 +4507,240 @@ async def handle_download_notification(queue_type):
         logger.error(f"Error handling download notification: {e}", exc_info=True)
 
 
+async def perform_bandwidth_test():
+    """Perform bandwidth test using internetspeedtest library and submit results to backend.
+    
+    This function is called when the server requests a bandwidth test.
+    Runs in background without blocking WebSocket operations.
+    """
+    try:
+        logger.info("Starting bandwidth test...")
+        
+        # Import internetspeedtest library
+        try:
+            from internetspeedtest import SpeedTest
+        except ImportError:
+            logger.error("internetspeedtest library not available, skipping bandwidth test")
+            return
+        
+        # Run bandwidth test in executor to avoid blocking
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _run_bandwidth_test_sync)
+        
+        if result:
+            upload_mbps, download_mbps = result
+            logger.info(f"Bandwidth test completed: upload={upload_mbps:.2f} Mbits/s, download={download_mbps:.2f} Mbits/s")
+            
+            # Submit results to backend
+            await submit_bandwidth_test_results(upload_mbps, download_mbps)
+        else:
+            logger.warning("Bandwidth test failed, not submitting results")
+            
+    except Exception as e:
+        logger.error(f"Error performing bandwidth test: {e}", exc_info=True)
+
+def _run_bandwidth_test_sync():
+    """Synchronous wrapper for bandwidth test (runs in executor).
+    
+    Returns:
+        Tuple of (upload_mbps, download_mbps) or None on error
+    """
+    try:
+        from internetspeedtest import SpeedTest
+        
+        st = SpeedTest()
+        
+        # Get available servers
+        servers = st.get_servers()
+        if not servers:
+            logger.error("No speedtest servers available")
+            return None
+        
+        # Find the best server
+        best_server = st.find_best_server(servers)
+        if not best_server:
+            logger.error("Could not find best server for speed test")
+            return None
+        
+        # Handle Server object - it may have attributes like name, host, etc.
+        server_name = getattr(best_server, 'name', None) or getattr(best_server, 'host', None) or 'Unknown'
+        logger.info(f"Running bandwidth test against server: {server_name}")
+        
+        # Test download speed
+        download_result = st.download(best_server)
+        if isinstance(download_result, tuple):
+            download_speed, _ = download_result  # (speed, bytes)
+        else:
+            download_speed = download_result
+        
+        # Test upload speed
+        upload_result = st.upload(best_server)
+        if isinstance(upload_result, tuple):
+            upload_speed, _ = upload_result  # (speed, bytes)
+        else:
+            upload_speed = upload_result
+        
+        # Convert to Mbits/s if needed (check if already in Mbits/s)
+        # The library should return Mbits/s, but let's ensure
+        upload_mbps = float(upload_speed)
+        download_mbps = float(download_speed)
+        
+        return (upload_mbps, download_mbps)
+        
+    except Exception as e:
+        logger.error(f"Error in bandwidth test: {e}", exc_info=True)
+        import traceback
+        logger.debug(f"Bandwidth test traceback: {traceback.format_exc()}")
+        return None
+
+async def submit_bandwidth_test_results(upload_bandwidth: float, download_bandwidth: float):
+    """Submit bandwidth test results to backend.
+    
+    Args:
+        upload_bandwidth: Upload speed in Mbits/s
+        download_bandwidth: Download speed in Mbits/s
+    """
+    try:
+        url = f"{API_URL}/api/download/bandwidth-test"
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        
+        data = {
+            "upload_bandwidth": upload_bandwidth,
+            "download_bandwidth": download_bandwidth
+        }
+        
+        response = http_session.post(url, json=data, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        if result.get("success"):
+            logger.info(f"Successfully submitted bandwidth test results: upload={upload_bandwidth:.2f} Mbits/s, download={download_bandwidth:.2f} Mbits/s")
+        else:
+            logger.warning(f"Backend returned success=false for bandwidth test submission: {result.get('message', 'Unknown error')}")
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to submit bandwidth test results: {e}")
+    except Exception as e:
+        logger.error(f"Error submitting bandwidth test results: {e}", exc_info=True)
+
+async def register_p2p_client(external_ip: str, external_port: int, internal_port: int, upnp_enabled: bool):
+    """Register P2P client connection info with backend.
+    
+    Args:
+        external_ip: External IP address (from UPnP)
+        external_port: External port (same as internal for UPnP)
+        internal_port: Internal port (P2P port)
+        upnp_enabled: Whether UPnP is enabled
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        import requests
+        import json
+        
+        url = f"{API_URL}/api/download/p2p/register"
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            'external_ip': external_ip,
+            'external_port': external_port,
+            'internal_port': internal_port,
+            'upnp_enabled': upnp_enabled
+        }
+        
+        logger.info(f"Registering P2P client with backend: {external_ip}:{external_port}, UPnP: {upnp_enabled}")
+        response = requests.post(url, json=data, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        result = response.json()
+        if result.get('success'):
+            logger.info(f"P2P client registered successfully with backend")
+            return True
+        else:
+            logger.warning(f"P2P client registration returned non-success: {result}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error registering P2P client with backend: {e}", exc_info=True)
+        return False
+
+
+async def setup_upnp_port_mapping(port: int):
+    """Set up UPnP port mapping for P2P server.
+    
+    Args:
+        port: Port number to forward
+        
+    Returns:
+        UPnPHelper instance if successful, None otherwise
+    """
+    if not UPNP_HELPER_AVAILABLE:
+        logger.info("UPnP helper not available, skipping UPnP port mapping setup")
+        return None
+    
+    try:
+        logger.info(f"Starting UPnP port mapping setup for port {port}...")
+        upnp_helper = get_upnp_helper()
+        
+        # Check if UPnP is available
+        if not upnp_helper.is_available():
+            logger.info("UPnP library not available (miniupnpc not installed), skipping UPnP setup")
+            return None
+        
+        # Discover router
+        logger.info("UPnP: Discovering router...")
+        router_discovered = await upnp_helper.discover_router()
+        if not router_discovered:
+            logger.warning("UPnP: Router discovery failed, continuing without UPnP port mapping")
+            return None
+        
+        logger.info("UPnP: Router discovered successfully")
+        
+        # Get external IP
+        logger.info("UPnP: Getting external IP address...")
+        external_ip = await upnp_helper.get_external_ip()
+        if external_ip:
+            logger.info(f"UPnP: External IP address: {external_ip}")
+        else:
+            logger.warning("UPnP: Could not get external IP address")
+            return None
+        
+        # Add port mapping
+        logger.info(f"UPnP: Adding port mapping for port {port}...")
+        mapping_success = await upnp_helper.add_port_mapping(
+            internal_port=port,
+            external_port=port,
+            description="P2P File Sharing"
+        )
+        
+        if mapping_success:
+            logger.info(f"UPnP: Port mapping added successfully (port {port})")
+            
+            # Register P2P client with backend
+            logger.info("UPnP: Registering P2P client with backend...")
+            await register_p2p_client(
+                external_ip=external_ip,
+                external_port=port,
+                internal_port=port,
+                upnp_enabled=True
+            )
+            
+            return upnp_helper
+        else:
+            logger.warning(f"UPnP: Failed to add port mapping for port {port}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"UPnP: Error during port mapping setup: {e}", exc_info=True)
+        return None
+
+
 def main():
     """Main function to run the download service."""
     if not API_TOKEN:
@@ -3858,6 +4751,33 @@ def main():
     logger.info(f"Starting download service (Service ID: {SERVICE_ID})...")
     ensure_directories()
     
+    # Start P2P server if available
+    p2p_server_started = False
+    upnp_helper = None
+    if P2P_CLIENT_AVAILABLE:
+        try:
+            logger.info(f"Starting P2P server on port {P2P_PORT}...")
+            get_p2p_server(ROMS_PATH, P2P_PORT)
+            p2p_server_started = True
+            logger.info(f"P2P server started successfully on port {P2P_PORT}")
+            
+            # Set up UPnP port mapping
+            try:
+                logger.info("Setting up UPnP port mapping for P2P server...")
+                upnp_helper = asyncio.run(setup_upnp_port_mapping(P2P_PORT))
+                if upnp_helper:
+                    logger.info("UPnP port mapping setup completed successfully")
+                else:
+                    logger.info("UPnP port mapping setup skipped or failed (service will continue without UPnP)")
+            except Exception as e:
+                logger.error(f"Error setting up UPnP port mapping: {e}", exc_info=True)
+                logger.info("Continuing without UPnP port mapping...")
+        except Exception as e:
+            logger.error(f"Failed to start P2P server: {e}", exc_info=True)
+            logger.warning("Continuing without P2P server...")
+    else:
+        logger.info("P2P server not available (p2p_client module not found)")
+    
     # Run WebSocket client
     try:
         asyncio.run(websocket_client())
@@ -3866,6 +4786,24 @@ def main():
     except Exception as e:
         logger.error(f"Fatal error in download service: {e}", exc_info=True)
         sys.exit(1)
+    finally:
+        # Remove UPnP port mapping on shutdown
+        if upnp_helper and UPNP_HELPER_AVAILABLE:
+            try:
+                logger.info(f"UPnP: Removing port mapping for port {P2P_PORT}...")
+                asyncio.run(upnp_helper.delete_port_mapping(P2P_PORT))
+                logger.info(f"UPnP: Port mapping removed successfully (port {P2P_PORT})")
+            except Exception as e:
+                logger.error(f"UPnP: Error removing port mapping: {e}", exc_info=True)
+        
+        # Stop P2P server on shutdown
+        if p2p_server_started and P2P_CLIENT_AVAILABLE:
+            try:
+                logger.info("Stopping P2P server...")
+                stop_p2p_server()
+                logger.info("P2P server stopped")
+            except Exception as e:
+                logger.error(f"Error stopping P2P server: {e}", exc_info=True)
 
 if __name__ == "__main__":
     main() 

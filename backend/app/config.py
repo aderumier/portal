@@ -51,6 +51,13 @@ class Settings:
     # Download service settings
     POLLING_INTERVAL: int = int(os.getenv('POLLING_INTERVAL', '10'))  # Seconds between queue checks
     
+    # P2P settings
+    P2P_ENABLED: bool = os.getenv('P2P_ENABLED', 'true').lower() == 'true'  # Enable P2P transfers (default: true)
+    P2P_PORT: int = int(os.getenv('P2P_PORT', '8765'))  # Local port for P2P service (default: 8765)
+    UPnP_ENABLED: bool = os.getenv('UPnP_ENABLED', 'true').lower() == 'true'  # Enable UPnP (default: true)
+    P2P_MAX_PEER_ATTEMPTS: int = int(os.getenv('P2P_MAX_PEER_ATTEMPTS', '5'))  # Max peers to try (default: 5)
+    P2P_TIMEOUT: int = int(os.getenv('P2P_TIMEOUT', '30'))  # Timeout for P2P requests in seconds (default: 30)
+    
     # Catalog settings
     # Note: Releases catalog is always enabled
     

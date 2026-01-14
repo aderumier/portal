@@ -1668,7 +1668,8 @@ class DownloadService:
                     'game_name': game.get('name', ''),
                     'system': game.get('system', ''),  # Include system for download service
                     'batocera_system': target_system,  # Include system prefix for destination path (batocera_system for Linux, retrobat_system for Windows)
-                    'game_details': self._normalize_game_details_for_client(game, catalog_version)  # Include full game details for media download (snapshot paths removed)
+                    'game_details': self._normalize_game_details_for_client(game, catalog_version),  # Include full game details for media download (snapshot paths removed)
+                    'p2p_enabled': settings.P2P_ENABLED  # Include P2P enabled status
                 }
                 
                 # Add save_location if this is a .psvita or .psn file (Windows)
@@ -1936,7 +1937,8 @@ class DownloadService:
                 'game_name': game.get('name', ''),
                 'system': game.get('system', ''),
                 'batocera_system': target_system,  # Include system prefix for destination path (batocera_system for Linux, retrobat_system for Windows)
-                'game_details': self._normalize_game_details_for_client(game, catalog_version)  # Include full game details for media download (snapshot paths removed)
+                'game_details': self._normalize_game_details_for_client(game, catalog_version),  # Include full game details for media download (snapshot paths removed)
+                'p2p_enabled': settings.P2P_ENABLED  # Include P2P enabled status
             }
             
             # Add save_location if this is a .psvita or .psn file (Windows)

@@ -297,6 +297,30 @@ def migrate_database():
     except sqlite3.OperationalError as e:
         print(f"  ✗ Error creating index idx_systems_enabled: {e}")
     
+    # Migrate api_tokens table - add bandwidth testing columns
+    try:
+        cursor.execute("PRAGMA table_info(api_tokens)")
+        existing_token_columns = [col[1] for col in cursor.fetchall()]
+        print(f"Existing api_tokens columns: {existing_token_columns}")
+        
+        token_columns_to_add = [
+            ("upload_bandwidth", "REAL"),
+            ("download_bandwidth", "REAL"),
+            ("last_bandwidth_test_time", "TEXT"),
+        ]
+        
+        for col_name, col_def in token_columns_to_add:
+            if col_name not in existing_token_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE api_tokens ADD COLUMN {col_name} {col_def}")
+                    print(f"  ✓ Added column {col_name} to api_tokens table")
+                except sqlite3.OperationalError as e:
+                    print(f"  ✗ Error adding column {col_name} to api_tokens: {e}")
+            else:
+                print(f"  - Column {col_name} already exists in api_tokens table")
+    except sqlite3.OperationalError as e:
+        print(f"  ⚠ Could not migrate api_tokens table (table may not exist yet): {e}")
+    
     conn.commit()
     conn.close()
     print("Migration completed!")

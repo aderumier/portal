@@ -55,6 +55,30 @@ class WebSocketManager:
         except Exception as e:
             logger.warning(f"Failed to store connection info in Redis: {e}")
     
+    async def update_connection_info_port_check(self, token_id: int, p2p_port_accessible: bool):
+        """Update connection info in Redis with P2P port accessibility result.
+        
+        Args:
+            token_id: The API token ID
+            p2p_port_accessible: True if P2P port is accessible, False otherwise
+        """
+        redis_client = await self._get_redis_client()
+        if not redis_client:
+            return
+        
+        try:
+            redis_key = f"{self._redis_key_prefix}{token_id}"
+            data = await redis_client.get(redis_key)
+            if data:
+                connection_info = json.loads(data)
+                connection_info["p2p_port_accessible"] = p2p_port_accessible
+                await redis_client.setex(redis_key, 86400, json.dumps(connection_info))  # 24 hour TTL
+                logger.debug(f"Updated port check result in Redis for token_id {token_id}: {p2p_port_accessible}")
+            else:
+                logger.debug(f"Connection info not found in Redis for token_id {token_id}, cannot update port check")
+        except Exception as e:
+            logger.warning(f"Failed to update port check in Redis for token_id {token_id}: {e}")
+    
     async def _remove_connection_info(self, token_id: int):
         """Remove connection info from Redis."""
         redis_client = await self._get_redis_client()
@@ -101,7 +125,7 @@ class WebSocketManager:
             self.active_connections[token_id] = websocket
             logger.info(f"WebSocket connection added for token_id {token_id}")
             
-            # Store connection info in Redis
+            # Store connection info in Redis (note: db parameter not available here, will be updated when bandwidth test completes)
             if ip:
                 await self._store_connection_info(token_id, ip, client_version, token_string, platform)
         

@@ -27,6 +27,31 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+async def test_tcp_port(host: str, port: int, timeout: float = 2.0) -> bool:
+    """Test TCP port accessibility by attempting a connection.
+    
+    Args:
+        host: Hostname or IP address
+        port: Port number
+        timeout: Connection timeout in seconds (default: 2.0)
+    
+    Returns:
+        True if port is accessible, False otherwise
+    """
+    try:
+        import asyncio
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port),
+            timeout=timeout
+        )
+        # Connection successful - close immediately
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except (asyncio.TimeoutError, ConnectionRefusedError, OSError, Exception) as e:
+        logger.debug(f"TCP port test failed for {host}:{port}: {type(e).__name__}")
+        return False
+
 class AddToQueueRequest(BaseModel):
     game_id: str
     token_name: Optional[str] = None  # Token name to associate with the download
@@ -902,6 +927,55 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
         
         logger.debug(f"Connection registered in WebSocket manager for token_id {token_id}")
         
+        # Test P2P port accessibility
+        p2p_port_accessible = None
+        try:
+            from app.services.p2p_inventory import P2PInventoryService
+            p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
+            if p2p_info:
+                external_ip = p2p_info.get("external_ip")
+                upnp_enabled = p2p_info.get("upnp_enabled", False)
+                external_port = p2p_info.get("external_port")
+                internal_port = p2p_info.get("internal_port", 8765)
+                
+                # Use UPnP port if enabled, otherwise use internal port (default 8765)
+                port_to_test = external_port if upnp_enabled and external_port else internal_port
+                
+                if external_ip and port_to_test:
+                    p2p_port_accessible = await test_tcp_port(external_ip, port_to_test)
+                    logger.info(f"P2P port test for token_id {token_id}: {external_ip}:{port_to_test} - {'accessible' if p2p_port_accessible else 'not accessible'}")
+                else:
+                    logger.debug(f"P2P port test skipped for token_id {token_id}: missing IP or port")
+        except Exception as e:
+            logger.warning(f"Error testing P2P port for token_id {token_id}: {e}")
+        
+        # Update connection info with port accessibility result
+        if p2p_port_accessible is not None:
+            await ws_manager.update_connection_info_port_check(token_id, p2p_port_accessible)
+        
+        # Check if bandwidth test is needed
+        from app.database import ApiToken
+        from datetime import datetime, timezone, timedelta
+        
+        api_token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
+        bandwidth_test_needed = False
+        
+        if api_token:
+            # Check if last_bandwidth_test_time is None or > 24 hours old
+            if api_token.last_bandwidth_test_time is None:
+                bandwidth_test_needed = True
+                logger.debug(f"Bandwidth test needed for token_id {token_id}: never tested")
+            else:
+                # Calculate time difference
+                time_diff = datetime.now(timezone.utc) - api_token.last_bandwidth_test_time.replace(tzinfo=timezone.utc) if api_token.last_bandwidth_test_time.tzinfo is None else api_token.last_bandwidth_test_time
+                if time_diff > timedelta(hours=24):
+                    bandwidth_test_needed = True
+                    logger.debug(f"Bandwidth test needed for token_id {token_id}: last test was {time_diff} ago")
+                else:
+                    logger.debug(f"Bandwidth test not needed for token_id {token_id}: last test was {time_diff} ago (< 24h)")
+        else:
+            logger.warning(f"ApiToken not found for token_id {token_id}, cannot check bandwidth test status")
+        
         # Check for available downloads and notify client
         download_service = get_download_service(db)
         available_downloads = download_service.check_available_downloads(token_id=token_id)
@@ -915,7 +989,8 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
                 "message": "WebSocket connection established",
                 "has_downloads": available_downloads.get('has_any', False),
                 "has_user_queue": available_downloads.get('has_user_queue', False),
-                "has_resumable": available_downloads.get('has_resumable', False)
+                "has_resumable": available_downloads.get('has_resumable', False),
+                "bandwidth_test_needed": bandwidth_test_needed
             })
             logger.debug(f"Sent 'connected' message to token_id {token_id}")
         except Exception as e:
@@ -2788,6 +2863,7 @@ async def get_connected_clients(
     
     # Enrich with token and user info
     from app.database import ApiToken, User
+    from app.services.p2p_inventory import P2PInventoryService
     
     enriched_connections = []
     for conn in connections:
@@ -2797,6 +2873,21 @@ async def get_connected_clients(
             token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
             if token:
                 user = db.query(User).filter(User.user_id == token.user_id).first()
+                
+                # Get P2P connection info (UPnP status, ports, etc.)
+                p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
+                upnp_enabled = p2p_info.get("upnp_enabled", False) if p2p_info else False
+                upnp_port = p2p_info.get("external_port") or p2p_info.get("internal_port") if p2p_info else None
+                
+                # Get bandwidth from Redis (connection info) first, fallback to database
+                upload_bandwidth = conn.get("upload_bandwidth")
+                download_bandwidth = conn.get("download_bandwidth")
+                # Fallback to database if not in Redis
+                if upload_bandwidth is None:
+                    upload_bandwidth = token.upload_bandwidth
+                if download_bandwidth is None:
+                    download_bandwidth = token.download_bandwidth
+                
                 enriched_connections.append({
                     "token_id": token_id,
                     "token_string": conn.get("token_string", "unknown"),
@@ -2806,10 +2897,111 @@ async def get_connected_clients(
                     "ip": conn.get("ip", "unknown"),
                     "client_version": conn.get("client_version", "unknown"),
                     "platform": conn.get("platform", "unknown"),
-                    "connected_at": conn.get("connected_at")
+                    "connected_at": conn.get("connected_at"),
+                    "upnp_enabled": upnp_enabled,
+                    "upnp_port": upnp_port,
+                    "p2p_port_accessible": conn.get("p2p_port_accessible"),
+                    "upload_bandwidth": upload_bandwidth,
+                    "download_bandwidth": download_bandwidth,
+                    "last_bandwidth_test_time": token.last_bandwidth_test_time.isoformat() if token.last_bandwidth_test_time else None
                 })
     
     return {"connections": enriched_connections, "count": len(enriched_connections)}
+
+class BandwidthTestRequest(BaseModel):
+    """Request model for bandwidth test submission."""
+    upload_bandwidth: float
+    download_bandwidth: float
+
+@router.post("/bandwidth-test")
+async def submit_bandwidth_test(
+    request: Request,
+    body: BandwidthTestRequest,
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Submit bandwidth test results from client.
+    
+    Accepts: {upload_bandwidth: float, download_bandwidth: float} in Mbits/s
+    Updates ApiToken record and Redis connection info.
+    """
+    from app.database import ApiToken
+    from datetime import datetime, timezone
+    from app.services.websocket_manager import get_websocket_manager
+    
+    try:
+        upload_bandwidth = body.upload_bandwidth
+        download_bandwidth = body.download_bandwidth
+        
+        # Validate that values are non-negative
+        if upload_bandwidth < 0 or download_bandwidth < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Bandwidth values must be non-negative"
+            )
+        
+        # Get token_id from request state (set by API token middleware)
+        token_id = getattr(request.state, 'token_id', None)
+        
+        if token_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token ID not found. API token authentication required."
+            )
+        
+        # Update ApiToken record
+        api_token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
+        if not api_token:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="API token not found"
+            )
+        
+        # Update bandwidth values and test time
+        api_token.upload_bandwidth = upload_bandwidth
+        api_token.download_bandwidth = download_bandwidth
+        api_token.last_bandwidth_test_time = datetime.now(timezone.utc)
+        db.commit()
+        
+        logger.info(f"Updated bandwidth for token_id {token_id}: upload={upload_bandwidth:.2f} Mbits/s, download={download_bandwidth:.2f} Mbits/s")
+        
+        # Update Redis connection info with bandwidth values
+        ws_manager = get_websocket_manager()
+        # Get current connection info and update it
+        connections = await ws_manager.get_all_connections()
+        for conn in connections:
+            if conn.get("token_id") == token_id:
+                # Update Redis with new bandwidth values
+                redis_client = await ws_manager._get_redis_client()
+                if redis_client:
+                    try:
+                        redis_key = f"{ws_manager._redis_key_prefix}{token_id}"
+                        data = await redis_client.get(redis_key)
+                        if data:
+                            connection_info = json.loads(data)
+                            connection_info["upload_bandwidth"] = upload_bandwidth
+                            connection_info["download_bandwidth"] = download_bandwidth
+                            await redis_client.setex(redis_key, 86400, json.dumps(connection_info))  # 24 hour TTL
+                            logger.debug(f"Updated bandwidth in Redis for token_id {token_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to update bandwidth in Redis: {e}")
+                break
+        
+        return {
+            "success": True,
+            "message": "Bandwidth test results saved successfully",
+            "upload_bandwidth": upload_bandwidth,
+            "download_bandwidth": download_bandwidth
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error submitting bandwidth test results: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while processing bandwidth test results"
+        )
 
 @router.get("/devices")
 async def get_connected_devices(
@@ -2868,4 +3060,406 @@ async def get_connected_devices(
         })
     
     return {"devices": devices}
+
+
+@router.post("/p2p/inventory")
+async def upload_p2p_inventory(
+    request: Request,
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Upload client ROM inventory for P2P file sharing.
+    
+    Accepts gzip-compressed JSON body with format: {system: [path1, path2, ...], ...}
+    """
+    try:
+        # Check if P2P is enabled
+        if not settings.P2P_ENABLED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="P2P downloads are disabled"
+            )
+        
+        # Get token_id from request state (set by API token middleware)
+        token_id = getattr(request.state, 'token_id', None)
+        
+        if token_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token ID not found. API token authentication required."
+            )
+        
+        # Read request body
+        body = await request.body()
+        
+        # Check Content-Encoding header for gzip
+        content_encoding = request.headers.get('Content-Encoding', '').lower()
+        if 'gzip' in content_encoding:
+            # Decompress gzip data
+            import gzip
+            try:
+                body = gzip.decompress(body)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to decompress gzip data: {str(e)}"
+                )
+        
+        # Parse JSON
+        try:
+            inventory = json.loads(body)
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid JSON: {str(e)}"
+            )
+        
+        # Validate inventory format
+        if not isinstance(inventory, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Inventory must be a JSON object"
+            )
+        
+        # Validate that values are lists
+        for system, paths in inventory.items():
+            if not isinstance(paths, list):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid inventory format: system '{system}' must have a list of paths"
+                )
+            for path in paths:
+                if not isinstance(path, str):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid inventory format: paths must be strings"
+                    )
+        
+        # Store inventory in Redis
+        from app.services.p2p_inventory import P2PInventoryService
+        success = await P2PInventoryService.update_inventory(token_id, inventory)
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to store inventory"
+            )
+        
+        systems_count = len(inventory)
+        total_paths = sum(len(paths) for paths in inventory.values())
+        
+        logger.info(f"Uploaded P2P inventory for token_id '{token_id}': {systems_count} systems, {total_paths} ROM paths")
+        
+        return {
+            "success": True,
+            "message": f"P2P inventory uploaded successfully",
+            "systems_count": systems_count,
+            "total_paths": total_paths
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading P2P inventory: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while uploading P2P inventory"
+        )
+
+
+class P2PRegisterRequest(BaseModel):
+    external_ip: Optional[str] = None
+    external_port: Optional[int] = None
+    internal_port: int
+    upnp_enabled: bool = False
+
+class P2PRequestPeerRequest(BaseModel):
+    game_id: str
+    system: str
+    rom_path: str
+
+@router.post("/p2p/register")
+async def register_p2p_client(
+    request: Request,
+    body: P2PRegisterRequest,
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Register client for P2P file sharing.
+    
+    Stores client connection information (IP, ports, UPnP status) for peer matching.
+    """
+    try:
+        # Check if P2P is enabled
+        if not settings.P2P_ENABLED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="P2P downloads are disabled"
+            )
+        
+        # Get token_id from request state (set by API token middleware)
+        token_id = getattr(request.state, 'token_id', None)
+        
+        if token_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token ID not found. API token authentication required."
+            )
+        
+        # Get client IP from request
+        from app.api.middleware.auth import get_client_ip
+        client_ip = get_client_ip(request)
+        if not body.external_ip and client_ip:
+            # Use client IP as external IP if not provided
+            external_ip = client_ip
+        else:
+            external_ip = body.external_ip
+        
+        # Build connection info
+        from datetime import datetime, timezone
+        connection_info = {
+            "external_ip": external_ip,
+            "external_port": body.external_port,
+            "internal_port": body.internal_port,
+            "upnp_enabled": body.upnp_enabled,
+            "registered_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Store connection info in Redis
+        from app.services.p2p_inventory import P2PInventoryService
+        success = await P2PInventoryService.update_client_connection_info(token_id, connection_info)
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to register P2P client"
+            )
+        
+        # Log UPnP status
+        upnp_status = "enabled" if body.upnp_enabled else "disabled"
+        port_info = f"external:{body.external_port}" if body.external_port else f"internal:{body.internal_port}"
+        logger.info(f"Registered P2P client for token_id '{token_id}': {external_ip}:{body.external_port or body.internal_port}, UPnP: {upnp_status}, Port: {port_info}")
+        
+        return {
+            "success": True,
+            "message": "P2P client registered successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error registering P2P client: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while registering P2P client"
+        )
+
+
+@router.post("/p2p/request-peer")
+async def request_p2p_peer(
+    request: Request,
+    body: P2PRequestPeerRequest,
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Request peer information for P2P file download.
+    
+    Returns peer connection information if an available peer is found.
+    """
+    try:
+        # Check if P2P is enabled
+        if not settings.P2P_ENABLED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="P2P downloads are disabled"
+            )
+        
+        # Get token_id from request state (set by API token middleware)
+        token_id = getattr(request.state, 'token_id', None)
+        
+        if token_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token ID not found. API token authentication required."
+            )
+        
+        # Find peer using matcher service
+        from app.services.p2p_matcher import P2PMatcherService
+        peer_info = await P2PMatcherService.request_peer(
+            body.system,
+            body.rom_path,
+            token_id,
+            max_attempts=settings.P2P_MAX_PEER_ATTEMPTS
+        )
+        
+        if not peer_info:
+            return {
+                "success": False,
+                "peer": None,
+                "message": "No available peer found"
+            }
+        
+        logger.debug(f"Found P2P peer for {body.system}/{body.rom_path}: token_id {peer_info.get('token_id')}")
+        
+        return {
+            "success": True,
+            "peer": {
+                "token_id": peer_info.get('token_id'),
+                "peer_url": peer_info.get('peer_url'),
+                "external_ip": peer_info.get('external_ip'),
+                "external_port": peer_info.get('external_port'),
+                "internal_port": peer_info.get('internal_port'),
+                "upnp_enabled": peer_info.get('upnp_enabled', False)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error requesting P2P peer: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while requesting P2P peer"
+        )
+
+
+def calculate_partial_checksum(file_path: Path, chunk_size: int = 2097152) -> dict:
+    """Calculate partial SHA-256 checksum of a file (beginning + end chunks + file size).
+    
+    For files smaller than chunk_size * 2, computes full SHA-256.
+    For larger files, computes SHA-256 of first chunk_size bytes and last chunk_size bytes.
+    
+    Args:
+        file_path: Path to the file
+        chunk_size: Size of chunks to read for partial checksum (default: 2MB)
+        
+    Returns:
+        Dictionary with checksum data:
+        - For small files (< chunk_size * 2): {file_size, full_hash}
+        - For large files: {file_size, beginning_hash, end_hash, chunk_size}
+    """
+    import hashlib
+    
+    file_size = file_path.stat().st_size
+    
+    # For small files, compute full SHA-256
+    if file_size < chunk_size * 2:
+        sha256_hash = hashlib.sha256()
+        with open(file_path, 'rb') as f:
+            while True:
+                chunk = f.read(8192)  # 8KB chunks
+                if not chunk:
+                    break
+                sha256_hash.update(chunk)
+        return {
+            "file_size": file_size,
+            "full_hash": sha256_hash.hexdigest()
+        }
+    
+    # For large files, compute SHA-256 of beginning and end chunks
+    beginning_hash = hashlib.sha256()
+    end_hash = hashlib.sha256()
+    
+    with open(file_path, 'rb') as f:
+        # Read and hash first chunk_size bytes
+        bytes_read = 0
+        while bytes_read < chunk_size:
+            chunk = f.read(min(8192, chunk_size - bytes_read))
+            if not chunk:
+                break
+            beginning_hash.update(chunk)
+            bytes_read += len(chunk)
+        
+        # Seek to end and read last chunk_size bytes
+        f.seek(max(0, file_size - chunk_size))
+        bytes_read = 0
+        while bytes_read < chunk_size:
+            chunk = f.read(min(8192, chunk_size - bytes_read))
+            if not chunk:
+                break
+            end_hash.update(chunk)
+            bytes_read += len(chunk)
+    
+    return {
+        "file_size": file_size,
+        "beginning_hash": beginning_hash.hexdigest(),
+        "end_hash": end_hash.hexdigest(),
+        "chunk_size": chunk_size
+    }
+
+
+@router.get("/p2p/md5/{system}/{rom_path:path}")
+async def get_p2p_md5(
+    system: str,
+    rom_path: str,
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Get partial SHA-256 checksum for a ROM file (for P2P verification).
+    
+    Computes partial SHA-256 checksum on-demand (beginning + end chunks + file size).
+    """
+    try:
+        # Check if P2P is enabled
+        if not settings.P2P_ENABLED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="P2P downloads are disabled"
+            )
+        import urllib.parse
+        from pathlib import Path
+        
+        # URL decode rom_path (may be double-encoded)
+        rom_path = urllib.parse.unquote(urllib.parse.unquote(rom_path))
+        
+        # Build file path
+        if not settings.GAMES_PATH:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="GAMES_PATH not configured"
+            )
+        
+        file_path = Path(settings.GAMES_PATH) / system / rom_path.lstrip('./')
+        
+        # Security check: ensure path is within GAMES_PATH
+        try:
+            games_path_abs = Path(settings.GAMES_PATH).resolve()
+            file_path_abs = file_path.resolve()
+            if not str(file_path_abs).startswith(str(games_path_abs)):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied"
+                )
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+        
+        if not file_path.exists() or not file_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found"
+            )
+        
+        # Compute partial SHA-256 checksum on-demand
+        checksum_data = calculate_partial_checksum(file_path)
+        
+        logger.debug(f"Computed checksum for {system}/{rom_path}: file_size={checksum_data['file_size']}")
+        
+        return {
+            "success": True,
+            "checksum": checksum_data,
+            "system": system,
+            "rom_path": rom_path
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting P2P checksum for {system}/{rom_path}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while computing checksum"
+        )
 

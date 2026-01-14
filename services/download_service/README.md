@@ -167,4 +167,17 @@ sudo rm /etc/rc*.d/*batocera-games-catalog-download
 To run the service manually for testing:
 ```bash
 python3 download_service.py
-``` 
+```
+
+## Troubleshooting
+
+### UPnP Import Errors
+
+If you see errors like "cannot import name 'SSDP_ST_ALL' from 'async_upnp_client.const'", this usually means there are old local library directories (async_upnp_client, defusedxml, voluptuous) in the service directory. Remove them:
+
+```bash
+cd /userdata/system/rgs/download_service
+rm -rf async_upnp_client defusedxml voluptuous
+```
+
+The service now uses pip-installed packages. The virtual environment will automatically install all required dependencies when the service starts. 

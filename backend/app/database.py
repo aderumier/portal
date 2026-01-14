@@ -121,6 +121,9 @@ class ApiToken(Base):
     created_at = Column(DateTime, server_default=func.now())
     last_used_at = Column(DateTime, nullable=True)
     revoked = Column(Boolean, default=False)
+    upload_bandwidth = Column(Float, nullable=True)  # Upload bandwidth in Mbits/s
+    download_bandwidth = Column(Float, nullable=True)  # Download bandwidth in Mbits/s
+    last_bandwidth_test_time = Column(DateTime, nullable=True)  # Timestamp of last bandwidth test
     
     __table_args__ = (
         {'sqlite_autoincrement': True},
