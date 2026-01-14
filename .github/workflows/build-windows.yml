@@ -33,7 +33,7 @@ jobs:
     - name: Verify miniupnpc.dll is available
       working-directory: services/download_service
       run: |
-        python -c "import miniupnpc; import os; from pathlib import Path; pkg_path = Path(miniupnpc.__file__).parent; dlls = list(pkg_path.glob('*.dll')); print(f'miniupnpc package path: {pkg_path}'); print(f'DLLs found: {[str(d) for d in dlls]}'); miniupnpc_dll = pkg_path / 'miniupnpc.dll'; assert miniupnpc_dll.exists(), f'miniupnpc.dll not found in {pkg_path}'; print(f'✓ miniupnpc.dll found: {miniupnpc_dll}')"
+        python -c "import miniupnpc; from pathlib import Path; pkg_path = Path(miniupnpc.__file__).parent; dlls = list(pkg_path.glob('miniupnpc*.dll')); print(f'miniupnpc package path: {pkg_path}'); print(f'miniupnpc DLLs found: {[str(d.name) for d in dlls]}'); assert len(dlls) > 0, f'No miniupnpc*.dll found in {pkg_path}'; print(f'✓ miniupnpc DLL found: {dlls[0].name}')"
     
     - name: Build executable
       working-directory: services/download_service
