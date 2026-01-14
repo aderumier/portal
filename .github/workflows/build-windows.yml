@@ -30,6 +30,11 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
     
+    - name: Verify miniupnpc.dll is available
+      working-directory: services/download_service
+      run: |
+        python -c "import miniupnpc; import os; from pathlib import Path; pkg_path = Path(miniupnpc.__file__).parent; dlls = list(pkg_path.glob('*.dll')); print(f'miniupnpc package path: {pkg_path}'); print(f'DLLs found: {[str(d) for d in dlls]}'); miniupnpc_dll = pkg_path / 'miniupnpc.dll'; assert miniupnpc_dll.exists(), f'miniupnpc.dll not found in {pkg_path}'; print(f'✓ miniupnpc.dll found: {miniupnpc_dll}')"
+    
     - name: Build executable
       working-directory: services/download_service
       run: |
