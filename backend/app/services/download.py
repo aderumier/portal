@@ -2508,6 +2508,7 @@ class DownloadService:
             user_id = download.user_id
             game_id = download.game_id
             token_id = download.token_id
+            catalog_version = download.catalog_version
             
             # Calculate downloaded MB (convert bytes to MB: 1 MB = 1024 * 1024 bytes)
             downloaded_bytes = download.bytes_transferred or 0
@@ -2601,6 +2602,53 @@ class DownloadService:
                 await RedisDownloadTracker.remove_download(download_id)
             except Exception as e:
                 logger.debug(f"Failed to remove download from Redis: {e}")
+            
+            # Register token_id in p2p_index for the downloaded ROM
+            try:
+                from app.services.p2p_inventory import P2PInventoryService
+                
+                # Determine catalog_type from catalog_version
+                catalog_type = 'releases' if catalog_version else 'wip'
+                
+                # Look up the game to get system
+                lookup_game_id = game_id
+                if catalog_type == 'releases' and catalog_version:
+                    # Remove snapshot path prefix to get original game_id for lookup
+                    import re
+                    escaped_version = re.escape(catalog_version)
+                    pattern = re.compile(r'\.zfs/snapshot/' + escaped_version + r'/(.*)')
+                    match = pattern.match(game_id)
+                    if match:
+                        lookup_game_id = match.group(1)
+                
+                # Get game to extract system
+                game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+                if game:
+                    system = game.get('system', '')
+                    if system:
+                        # Extract rom_path from game_id
+                        # Remove snapshot path if present
+                        rom_path = self._remove_snapshot_path_from_game_id(game_id, catalog_version)
+                        # Remove system prefix if present (game_id might be "system/rom.rom" or "./rom.rom")
+                        if rom_path.startswith(f"{system}/"):
+                            rom_path = rom_path[len(system) + 1:]
+                        # Remove leading "./" if present
+                        rom_path = rom_path.lstrip('./')
+                        
+                        # Register token_id in p2p_index
+                        inventory = {system: [rom_path]}
+                        success = await P2PInventoryService.update_inventory(token_id, inventory)
+                        if success:
+                            logger.info(f"Registered token_id {token_id} in p2p_index for {system}/{rom_path}")
+                        else:
+                            logger.warning(f"Failed to register token_id {token_id} in p2p_index for {system}/{rom_path}")
+                    else:
+                        logger.warning(f"Game found but system is empty for game_id: {lookup_game_id}")
+                else:
+                    logger.warning(f"Game not found for game_id: {lookup_game_id}, cannot register in p2p_index")
+            except Exception as e:
+                logger.error(f"Error registering token_id in p2p_index: {e}", exc_info=True)
+                # Don't fail the download completion if p2p_index registration fails
             
             # Delete the download from queue instead of marking as completed
             self.db.delete(download)
