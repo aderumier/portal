@@ -972,32 +972,6 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
         
         logger.debug(f"Connection registered in WebSocket manager for token_id {token_id}")
         
-        # Test P2P port accessibility
-        p2p_port_accessible = None
-        try:
-            from app.services.p2p_inventory import P2PInventoryService
-            p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
-            if p2p_info:
-                external_ip = p2p_info.get("external_ip")
-                upnp_enabled = p2p_info.get("upnp_enabled", False)
-                external_port = p2p_info.get("external_port")
-                internal_port = p2p_info.get("internal_port", 8765)
-                
-                # Use UPnP port if enabled, otherwise use internal port (default 8765)
-                port_to_test = external_port if upnp_enabled and external_port else internal_port
-                
-                if external_ip and port_to_test:
-                    p2p_port_accessible = await test_tcp_port(external_ip, port_to_test)
-                    logger.info(f"P2P port test for token_id {token_id}: {external_ip}:{port_to_test} - {'accessible' if p2p_port_accessible else 'not accessible'}")
-                else:
-                    logger.debug(f"P2P port test skipped for token_id {token_id}: missing IP or port")
-        except Exception as e:
-            logger.warning(f"Error testing P2P port for token_id {token_id}: {e}")
-        
-        # Update connection info with port accessibility result
-        if p2p_port_accessible is not None:
-            await ws_manager.update_connection_info_port_check(token_id, p2p_port_accessible)
-        
         # Check if bandwidth test is needed
         from app.database import ApiToken
         from datetime import datetime, timezone, timedelta
@@ -1230,14 +1204,14 @@ async def request_download(
         try:
             from app.services.p2p_inventory import P2PInventoryService
             system = download_info.get('system')
-            game_id = download_info.get('game_id')
+            rom_path = download_info.get('rom_path')  # Use rom_path instead of game_id
             
-            if system and game_id:
-                # Use game_id as rom_path for P2P inventory lookup (already normalized, system-relative)
-                # The game_id is the resolved path without snapshot prefixes, which matches what's stored in Redis
+            if system and rom_path:
+                # Use rom_path for P2P inventory lookup (normalized, system-relative, without snapshot paths)
+                # This matches what's stored in the p2p_index (normalized paths without snapshot prefixes)
                 p2p_peers = await P2PInventoryService.find_eligible_peers(
                     system=system,
-                    rom_path=game_id,
+                    rom_path=rom_path,  # Use rom_path instead of game_id
                     exclude_token_id=token_id,
                     limit=20,
                     rom_file_size_bytes=download_info.get('file_size')
@@ -3405,14 +3379,36 @@ async def register_p2p_client(
                 detail="Failed to register P2P client"
             )
         
+        # Test P2P port accessibility
+        p2p_port_accessible = None
+        try:
+            # Use UPnP port if enabled, otherwise use internal port (default 8765)
+            port_to_test = body.external_port if body.upnp_enabled and body.external_port else (body.internal_port or 8765)
+            
+            if external_ip and port_to_test:
+                p2p_port_accessible = await test_tcp_port(external_ip, port_to_test)
+                logger.info(f"P2P port test for token_id {token_id}: {external_ip}:{port_to_test} - {'accessible' if p2p_port_accessible else 'not accessible'}")
+            else:
+                logger.debug(f"P2P port test skipped for token_id {token_id}: missing IP or port")
+        except Exception as e:
+            logger.warning(f"Error testing P2P port for token_id {token_id}: {e}")
+        
+        # Update WebSocket connection info with port accessibility result if client is connected
+        if p2p_port_accessible is not None:
+            from app.services.websocket_manager import get_websocket_manager
+            ws_manager = get_websocket_manager()
+            await ws_manager.update_connection_info_port_check(token_id, p2p_port_accessible)
+        
         # Log UPnP status
         upnp_status = "enabled" if body.upnp_enabled else "disabled"
         port_info = f"external:{body.external_port}" if body.external_port else f"internal:{body.internal_port}"
-        logger.info(f"Registered P2P client for token_id '{token_id}': {external_ip}:{body.external_port or body.internal_port}, UPnP: {upnp_status}, Port: {port_info}")
+        port_accessible_status = f", Port accessible: {p2p_port_accessible}" if p2p_port_accessible is not None else ""
+        logger.info(f"Registered P2P client for token_id '{token_id}': {external_ip}:{body.external_port or body.internal_port}, UPnP: {upnp_status}, Port: {port_info}{port_accessible_status}")
         
         return {
             "success": True,
-            "message": "P2P client registered successfully"
+            "message": "P2P client registered successfully",
+            "port_accessible": p2p_port_accessible
         }
         
     except HTTPException:
