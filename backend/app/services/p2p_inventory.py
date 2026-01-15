@@ -49,45 +49,14 @@ class P2PInventoryService:
     """Service for managing P2P client ROM inventory in Redis."""
     
     @staticmethod
-    async def _get_index_key(system: str, rom_path: str, version: Optional[str] = None) -> str:
+    def _get_index_key(system: str, rom_path: str) -> str:
         """Get Redis key for reverse index (which clients have this ROM).
         
         Args:
             system: System identifier
             rom_path: ROM path
-            version: Optional version suffix (for atomic rebuilds). If None, uses current active version.
         """
-        if version:
-            return f"p2p:index_{version}:{system}/{rom_path}"
-        # Get current version from pointer
-        current_version = await P2PInventoryService._get_current_index_version()
-        return f"p2p:index_{current_version}:{system}/{rom_path}"
-    
-    @staticmethod
-    async def _get_current_index_version() -> str:
-        """Get the current active index version."""
-        redis_client = get_redis_p2p_client()
-        if not redis_client:
-            return "v1"
-        
-        try:
-            version = await redis_client.get("p2p:index_version")
-            return version if version else "v1"
-        except Exception:
-            return "v1"
-    
-    @staticmethod
-    async def _set_index_version(version: str) -> bool:
-        """Set the current active index version."""
-        redis_client = get_redis_p2p_client()
-        if not redis_client:
-            return False
-        
-        try:
-            await redis_client.set("p2p:index_version", version)
-            return True
-        except Exception:
-            return False
+        return f"p2p:index:{system}/{rom_path}"
     
     @staticmethod
     async def update_inventory(token_id: int, inventory: Dict[str, List[str]]) -> bool:
@@ -106,13 +75,10 @@ class P2PInventoryService:
             return False
         
         try:
-            # Get current version to write to correct index
-            current_version = await P2PInventoryService._get_current_index_version()
-            
             # Add new inventory entries to index
             for system, paths in inventory.items():
                 for rom_path in paths:
-                    index_key = await P2PInventoryService._get_index_key(system, rom_path, current_version)
+                    index_key = P2PInventoryService._get_index_key(system, rom_path)
                     await redis_client.sadd(index_key, str(token_id))
                     # Set TTL on index key (48 hours)
                     await redis_client.expire(index_key, 48 * 3600)
@@ -140,10 +106,7 @@ class P2PInventoryService:
             return set()
         
         try:
-            # Get current version and use it for lookup
-            current_version = await P2PInventoryService._get_current_index_version()
-            index_key = await P2PInventoryService._get_index_key(system, rom_path, current_version)
-            
+            index_key = P2PInventoryService._get_index_key(system, rom_path)
             token_ids_str = await redis_client.smembers(index_key)
             return {int(token_id) for token_id in token_ids_str if token_id.isdigit()}
         except Exception as e:
@@ -335,12 +298,14 @@ class P2PInventoryService:
     
     @staticmethod
     async def rebuild_index() -> bool:
-        """Atomically rebuild the entire p2p_index.
+        """Rebuild the entire p2p_index by computing all keys from current state.
         
-        Uses a versioned approach:
-        1. Build new index with version suffix (e.g., p2p:index_v2:*)
-        2. Atomically switch pointer to new version
-        3. Delete old version keys in background
+        Process:
+        1. Scan all existing p2p:index:* keys (including versioned ones for cleanup)
+        2. Collect all ROM paths and their token_ids
+        3. Rewrite all keys in place (update existing, keep valid ones)
+        4. Delete keys that no longer have any token_ids
+        5. Clean up any versioned keys (p2p:index_v1:*, p2p:index_v2:*)
         
         Returns:
             True if successful, False otherwise
@@ -350,100 +315,109 @@ class P2PInventoryService:
             return False
         
         try:
-            # Get current version
-            current_version = await P2PInventoryService._get_current_index_version()
-            new_version = "v2" if current_version == "v1" else "v1"
+            logger.info("Starting p2p_index rebuild")
             
-            logger.info(f"Starting atomic p2p_index rebuild: current={current_version}, new={new_version}")
+            # Step 1: Collect all index data from all possible key formats
+            # Scan for: p2p:index:* (current format) and p2p:index_v*:* (old versioned format)
+            all_patterns = ["p2p:index:*", "p2p:index_v1:*", "p2p:index_v2:*"]
+            consolidated_index = {}  # {rom_key: set of token_ids}
+            all_keys_found = set()
             
-            # Step 1: Collect all current index data
-            # Scan all current index keys and build new index structure
-            current_pattern = f"p2p:index_{current_version}:*"
-            if current_version == "v1":
-                # First rebuild - check old format without version
-                current_pattern = "p2p:index:*"
-            
-            new_index = {}  # {rom_key: set of token_ids}
-            cursor = 0
-            keys_scanned = 0
-            
-            # Scan current index
-            while True:
-                cursor, keys = await redis_client.scan(cursor, match=current_pattern, count=1000)
-                for key in keys:
-                    keys_scanned += 1
-                    # Extract system/rom_path from key
-                    if current_version == "v1" and not key.startswith("p2p:index_"):
-                        # Old format: p2p:index:{system}/{rom_path}
-                        rom_key = key.replace("p2p:index:", "", 1)
-                    else:
-                        # Versioned format: p2p:index_v1:{system}/{rom_path}
-                        parts = key.split(":", 2)
-                        if len(parts) >= 3:
-                            rom_key = parts[2]
+            for pattern in all_patterns:
+                cursor = 0
+                while True:
+                    cursor, keys = await redis_client.scan(cursor, match=pattern, count=1000)
+                    for key in keys:
+                        all_keys_found.add(key)
+                        # Extract rom_key from any format
+                        if key.startswith("p2p:index:"):
+                            # Current format: p2p:index:{system}/{rom_path}
+                            rom_key = key.replace("p2p:index:", "", 1)
+                        elif ":" in key:
+                            # Versioned format: p2p:index_v1:{system}/{rom_path} or p2p:index_v2:{system}/{rom_path}
+                            parts = key.split(":", 2)
+                            if len(parts) >= 3:
+                                rom_key = parts[2]
+                            else:
+                                continue  # Skip malformed keys
                         else:
-                            continue  # Skip malformed keys
+                            continue
+                        
+                        # Get all token_ids for this ROM
+                        token_ids = await redis_client.smembers(key)
+                        token_id_set = {tid for tid in token_ids if tid.isdigit()}
+                        
+                        # Merge with existing data (same ROM might be in multiple formats)
+                        if rom_key in consolidated_index:
+                            consolidated_index[rom_key].update(token_id_set)
+                        else:
+                            consolidated_index[rom_key] = token_id_set
                     
-                    # Get all token_ids for this ROM
-                    token_ids = await redis_client.smembers(key)
-                    new_index[rom_key] = {tid for tid in token_ids if tid.isdigit()}
-                
-                if cursor == 0:
-                    break
+                    if cursor == 0:
+                        break
             
-            logger.info(f"Scanned {keys_scanned} index keys, found {len(new_index)} unique ROM paths")
+            logger.info(f"Scanned {len(all_keys_found)} index keys, found {len(consolidated_index)} unique ROM paths")
             
-            # Step 2: Build new index with new version prefix
-            new_keys_created = 0
+            # Step 2: Rewrite all keys in place (compute new keys, rewrite existing, delete missing)
+            keys_updated = 0
+            keys_deleted = 0
             pipeline = redis_client.pipeline()
+            pipeline_count = 0
             
-            for rom_key, token_ids in new_index.items():
-                new_index_key = f"p2p:index_{new_version}:{rom_key}"
-                # Clear and add all token_ids
-                pipeline.delete(new_index_key)  # Clear if exists
+            # Process all consolidated ROM paths
+            for rom_key, token_ids in consolidated_index.items():
+                index_key = f"p2p:index:{rom_key}"
+                
                 if token_ids:
-                    pipeline.sadd(new_index_key, *[str(tid) for tid in token_ids])
-                    pipeline.expire(new_index_key, 48 * 3600)
-                    new_keys_created += 1
+                    # Rewrite key with current token_ids
+                    pipeline.delete(index_key)  # Clear existing
+                    pipeline.sadd(index_key, *[str(tid) for tid in token_ids])
+                    pipeline.expire(index_key, 48 * 3600)
+                    keys_updated += 1
+                    pipeline_count += 3
+                else:
+                    # Delete empty keys
+                    pipeline.delete(index_key)
+                    keys_deleted += 1
+                    pipeline_count += 1
+                
+                # Execute pipeline in batches to avoid memory issues
+                if pipeline_count >= 3000:  # ~1000 ROMs per batch
+                    await pipeline.execute()
+                    pipeline = redis_client.pipeline()
+                    pipeline_count = 0
             
-            # Execute pipeline to create new index
-            await pipeline.execute()
-            logger.info(f"Created {new_keys_created} new index keys with version {new_version}")
+            # Execute remaining pipeline operations
+            if pipeline_count > 0:
+                await pipeline.execute()
             
-            # Step 3: Atomically switch to new version (this is the atomic operation)
-            success = await P2PInventoryService._set_index_version(new_version)
-            if not success:
-                logger.error("Failed to switch index version pointer")
-                return False
+            logger.info(f"Updated {keys_updated} index keys, deleted {keys_deleted} empty keys")
             
-            logger.info(f"Atomically switched index version to {new_version}")
+            # Step 3: Delete all old versioned keys (cleanup)
+            versioned_keys_to_delete = []
+            for pattern in ["p2p:index_v1:*", "p2p:index_v2:*"]:
+                cursor = 0
+                while True:
+                    cursor, keys = await redis_client.scan(cursor, match=pattern, count=1000)
+                    versioned_keys_to_delete.extend(keys)
+                    if cursor == 0:
+                        break
             
-            # Step 4: Delete old version keys in background (non-blocking)
-            # This doesn't need to be atomic since we've already switched
-            old_pattern = f"p2p:index_{current_version}:*"
-            if current_version == "v1":
-                old_pattern = "p2p:index:*"  # Also clean up old format
-            
-            old_keys_to_delete = []
-            cursor = 0
-            while True:
-                cursor, keys = await redis_client.scan(cursor, match=old_pattern, count=1000)
-                old_keys_to_delete.extend(keys)
-                if cursor == 0:
-                    break
-            
-            # Filter out keys that match new version pattern
-            old_keys_to_delete = [k for k in old_keys_to_delete if not k.startswith(f"p2p:index_{new_version}:")]
-            
-            if old_keys_to_delete:
-                # Delete in batches to avoid blocking
+            if versioned_keys_to_delete:
+                # Delete in batches
                 batch_size = 1000
-                for i in range(0, len(old_keys_to_delete), batch_size):
-                    batch = old_keys_to_delete[i:i + batch_size]
+                for i in range(0, len(versioned_keys_to_delete), batch_size):
+                    batch = versioned_keys_to_delete[i:i + batch_size]
                     await redis_client.delete(*batch)
-                logger.info(f"Deleted {len(old_keys_to_delete)} old index keys")
+                logger.info(f"Deleted {len(versioned_keys_to_delete)} old versioned index keys")
             
-            logger.info(f"Atomic p2p_index rebuild completed: switched to version {new_version}")
+            # Step 4: Delete version pointer if it exists
+            try:
+                await redis_client.delete("p2p:index_version")
+            except Exception:
+                pass
+            
+            logger.info(f"p2p_index rebuild completed: {keys_updated} keys updated, {keys_deleted} keys deleted")
             return True
             
         except Exception as e:
