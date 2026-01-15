@@ -24,7 +24,7 @@ import random
 import struct
 
 # Client version
-CLIENT_VERSION = "0.4"
+CLIENT_VERSION = "0.5"
 
 def read_config_ini(config_path):
     """Read config.ini file and return a dictionary of settings.
@@ -3058,10 +3058,11 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
         # Send POST request to Batocera API
         batocera_api_url = "http://127.0.0.1:1234"
         url = f"{batocera_api_url}/addgames/{batocera_system}"
-        headers = {'Content-Type': 'application/xml'}
+        headers = {'Content-Type': 'application/xml; charset=utf-8'}
         
         logger.info(f"Sending game '{game_data.get('name', game_id)}' to Batocera API at {url}")
-        response = requests.post(url, data=xml_content, headers=headers, timeout=10)
+        # Encode XML content to UTF-8 bytes to ensure proper encoding
+        response = requests.post(url, data=xml_content.encode('utf-8'), headers=headers, timeout=10)
         
         if response.status_code == 200:
             logger.info(f"Successfully added/updated game in Batocera system '{batocera_system}'")
