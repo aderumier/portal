@@ -22,6 +22,8 @@ class SubmitBugReportRequest(BaseModel):
     subject: str
     description: str
     device: Optional[str] = None  # Token name
+    os: Optional[str] = None  # 'batocera' or 'retrobat'
+    os_version: Optional[str] = None  # OS version string
 
 
 class UpdateBugReportStatusRequest(BaseModel):
@@ -52,6 +54,8 @@ async def submit_bug_report(
             subject=request.subject,
             description=request.description,
             device=request.device,
+            os=request.os,
+            os_version=request.os_version,
             status='new'  # Default status
         )
         
@@ -139,6 +143,8 @@ async def get_bug_reports(
                 "subject": bug_report.subject,
                 "description": bug_report.description,
                 "device": bug_report.device,
+                "os": bug_report.os,
+                "os_version": bug_report.os_version,
                 "status": bug_report.status,
                 "created_at": bug_report.created_at.isoformat() if bug_report.created_at else None,
                 "user": {
@@ -209,6 +215,8 @@ async def get_bug_report(
                 "subject": bug_report.subject,
                 "description": bug_report.description,
                 "device": bug_report.device,
+                "os": bug_report.os,
+                "os_version": bug_report.os_version,
                 "status": bug_report.status,
                 "created_at": bug_report.created_at.isoformat() if bug_report.created_at else None,
                 "user": {
@@ -292,6 +300,8 @@ async def update_bug_report_status(
                 "subject": bug_report.subject,
                 "description": bug_report.description,
                 "device": bug_report.device,
+                "os": bug_report.os,
+                "os_version": bug_report.os_version,
                 "status": bug_report.status,
                 "created_at": bug_report.created_at.isoformat() if bug_report.created_at else None,
                 "user": {

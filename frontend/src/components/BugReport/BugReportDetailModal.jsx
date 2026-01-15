@@ -111,6 +111,16 @@ const BugReportDetailModal = ({ isOpen, onClose, bugReport, onStatusUpdate }) =>
               </div>
               
               <div className="bug-report-detail-field">
+                <label>OS</label>
+                <div className="bug-report-detail-value">{bugReport.os || 'N/A'}</div>
+              </div>
+              
+              <div className="bug-report-detail-field">
+                <label>OS Version</label>
+                <div className="bug-report-detail-value">{bugReport.os_version || 'N/A'}</div>
+              </div>
+              
+              <div className="bug-report-detail-field">
                 <label>User</label>
                 <div className="bug-report-detail-value">
                   {bugReport.user?.username || bugReport.user?.id || 'Unknown'}

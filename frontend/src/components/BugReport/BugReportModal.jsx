@@ -7,6 +7,8 @@ const BugReportModal = ({ isOpen, onClose, gameInfo }) => {
   const [subject, setSubject] = useState('')
   const [description, setDescription] = useState('')
   const [device, setDevice] = useState('')
+  const [os, setOs] = useState('')
+  const [osVersion, setOsVersion] = useState('')
   const [tokens, setTokens] = useState([])
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -20,6 +22,8 @@ const BugReportModal = ({ isOpen, onClose, gameInfo }) => {
       setSubject('')
       setDescription('')
       setDevice('')
+      setOs('')
+      setOsVersion('')
       setError(null)
       setSuccess(false)
     }
@@ -62,7 +66,9 @@ const BugReportModal = ({ isOpen, onClose, gameInfo }) => {
         catalog: gameInfo.catalog,
         subject: subject.trim(),
         description: description.trim(),
-        device: device || null
+        device: device || null,
+        os: os || null,
+        os_version: osVersion.trim() || null
       })
       
       setSuccess(true)
@@ -146,6 +152,32 @@ const BugReportModal = ({ isOpen, onClose, gameInfo }) => {
                       ))}
                     </select>
                   )}
+                </div>
+                
+                <div className="bug-report-field">
+                  <label htmlFor="os">OS (Optional)</label>
+                  <select
+                    id="os"
+                    value={os}
+                    onChange={(e) => setOs(e.target.value)}
+                    disabled={submitting}
+                  >
+                    <option value="">Select an OS...</option>
+                    <option value="batocera">Batocera</option>
+                    <option value="retrobat">RetroBat</option>
+                  </select>
+                </div>
+                
+                <div className="bug-report-field">
+                  <label htmlFor="os_version">OS Version (Optional)</label>
+                  <input
+                    id="os_version"
+                    type="text"
+                    value={osVersion}
+                    onChange={(e) => setOsVersion(e.target.value)}
+                    placeholder="e.g., v40, v39, etc."
+                    disabled={submitting}
+                  />
                 </div>
                 
                 {error && (

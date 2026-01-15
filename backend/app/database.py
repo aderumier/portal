@@ -212,6 +212,8 @@ class BugReport(Base):
     subject = Column(String, nullable=False)
     description = Column(Text, nullable=False)
     device = Column(String, nullable=True)  # Token name
+    os = Column(String, nullable=True)  # 'batocera' or 'retrobat'
+    os_version = Column(String, nullable=True)  # OS version string
     status = Column(String, nullable=False, default='new')  # 'new', 'notabug', 'resolved'
     created_at = Column(DateTime, server_default=func.now())
     

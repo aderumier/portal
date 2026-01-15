@@ -325,6 +325,29 @@ def migrate_database():
     except sqlite3.OperationalError as e:
         print(f"  ⚠ Could not migrate api_tokens table (table may not exist yet): {e}")
     
+    # Migrate bugreports table - add os and os_version columns
+    try:
+        cursor.execute("PRAGMA table_info(bugreports)")
+        existing_bugreport_columns = [col[1] for col in cursor.fetchall()]
+        print(f"Existing bugreports columns: {existing_bugreport_columns}")
+        
+        bugreport_columns_to_add = [
+            ("os", "TEXT"),
+            ("os_version", "TEXT"),
+        ]
+        
+        for col_name, col_def in bugreport_columns_to_add:
+            if col_name not in existing_bugreport_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE bugreports ADD COLUMN {col_name} {col_def}")
+                    print(f"  ✓ Added column {col_name} to bugreports table")
+                except sqlite3.OperationalError as e:
+                    print(f"  ✗ Error adding column {col_name} to bugreports: {e}")
+            else:
+                print(f"  - Column {col_name} already exists in bugreports table")
+    except sqlite3.OperationalError as e:
+        print(f"  ⚠ Could not migrate bugreports table (table may not exist yet): {e}")
+    
     conn.commit()
     conn.close()
     print("Migration completed!")

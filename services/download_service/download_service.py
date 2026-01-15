@@ -211,6 +211,14 @@ _websocket_event_loop = None  # Event loop for WebSocket operations
 _websocket_recv_lock = None  # Async lock for coordinating message reception (initialized in websocket_client)
 _archive_download_active = False  # Flag to indicate if archive download is in progress
 
+# Global UPnP connection info (set during setup, used for each WebSocket connection)
+_p2p_connection_info = {
+    "external_ip": None,
+    "external_port": None,
+    "internal_port": None,
+    "upnp_enabled": False
+}
+
 async def download_directory_via_websocket_async(
     download_id, remaining_files_list, dest_base_path, system, 
     files_list, bytes_already_transferred, paused_ref, download_info
@@ -4493,6 +4501,21 @@ async def websocket_client():
                                         if token_id:
                                             logger.info(f"Connected with token_id: {token_id}")
                                         
+                                        # Register P2P client connection info on each WebSocket connection
+                                        if P2P_CLIENT_AVAILABLE:
+                                            try:
+                                                global _p2p_connection_info
+                                                # Use stored UPnP info, or default to internal port only
+                                                if _p2p_connection_info.get("internal_port"):
+                                                    await register_p2p_client(
+                                                        external_ip=_p2p_connection_info.get("external_ip"),
+                                                        external_port=_p2p_connection_info.get("external_port"),
+                                                        internal_port=_p2p_connection_info.get("internal_port"),
+                                                        upnp_enabled=_p2p_connection_info.get("upnp_enabled", False)
+                                                    )
+                                            except Exception as e:
+                                                logger.error(f"Error registering P2P client on WebSocket connection: {e}", exc_info=True)
+                                        
                                         # Send startup logs on first connection
                                         if is_first_connection:
                                             logger.info("First connection detected - sending startup logs to server...")
@@ -4922,14 +4945,14 @@ async def setup_upnp_port_mapping(port: int):
             else:
                 logger.info(f"UPnP: Port mapping added successfully (port {port})")
             
-            # Register P2P client with backend
-            logger.info("UPnP: Registering P2P client with backend...")
-            await register_p2p_client(
-                external_ip=external_ip,
-                external_port=actual_external_port,
-                internal_port=port,
-                upnp_enabled=True
-            )
+            # Store UPnP connection info globally (will be used for each WebSocket connection)
+            global _p2p_connection_info
+            _p2p_connection_info = {
+                "external_ip": external_ip,
+                "external_port": actual_external_port,
+                "internal_port": port,
+                "upnp_enabled": True
+            }
             
             return upnp_helper
         else:
@@ -4943,6 +4966,8 @@ async def setup_upnp_port_mapping(port: int):
 
 def main():
     """Main function to run the download service."""
+    global _p2p_connection_info
+    
     if not API_TOKEN:
         logger.error("API_TOKEN not set in environment variables")
         logger.error("Please set API_TOKEN in your .env file")
@@ -4969,9 +4994,23 @@ def main():
                     logger.info("UPnP port mapping setup completed successfully")
                 else:
                     logger.info("UPnP port mapping setup skipped or failed (service will continue without UPnP)")
+                    # Initialize P2P connection info without UPnP
+                    _p2p_connection_info = {
+                        "external_ip": None,
+                        "external_port": None,
+                        "internal_port": P2P_PORT,
+                        "upnp_enabled": False
+                    }
             except Exception as e:
                 logger.error(f"Error setting up UPnP port mapping: {e}", exc_info=True)
                 logger.info("Continuing without UPnP port mapping...")
+                # Initialize P2P connection info without UPnP
+                _p2p_connection_info = {
+                    "external_ip": None,
+                    "external_port": None,
+                    "internal_port": P2P_PORT,
+                    "upnp_enabled": False
+                }
         except Exception as e:
             logger.error(f"Failed to start P2P server: {e}", exc_info=True)
             logger.warning("Continuing without P2P server...")

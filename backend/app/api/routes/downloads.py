@@ -18,6 +18,7 @@ import json
 import os
 import asyncio
 import time
+import re
 from pathlib import Path
 import tarfile
 import io
@@ -149,16 +150,55 @@ async def discover_download_files(
     catalog_version = queue_item.catalog_version
     catalog_type = 'releases' if catalog_version else 'wip'
     
+    # Extract game ID from path (remove snapshot prefix if present)
+    # The catalog stores game IDs without snapshot paths (e.g., "crimepatrol-hd.(daphne|hypseus)")
+    # but queue_item.game_id may include snapshot path (e.g., ".zfs/snapshot/v2-RGS_singe/crimepatrol-hd.(daphne|hypseus)")
+    lookup_game_id = queue_item.game_id
+    
+    # Remove snapshot path prefix if present (for releases catalog)
+    # Use same pattern matching as in add_to_queue for consistency
+    if catalog_type == 'releases' and catalog_version and '.zfs/snapshot' in lookup_game_id:
+        escaped_version = re.escape(catalog_version)
+        pattern = re.compile(r'\.zfs/snapshot/' + escaped_version + r'/(.*)')
+        match = pattern.match(lookup_game_id)
+        
+        if match:
+            lookup_game_id = match.group(1)
+            logger.debug(f"Extracted game_id '{lookup_game_id}' from snapshot path '{queue_item.game_id}'")
+        else:
+            # Fallback: try simple split if pattern doesn't match
+            parts = lookup_game_id.split('.zfs/snapshot/', 1)
+            if len(parts) > 1:
+                after_snapshot = parts[1]
+                if '/' in after_snapshot:
+                    lookup_game_id = '/'.join(after_snapshot.split('/')[1:])
+                else:
+                    lookup_game_id = after_snapshot
+    
     # Resolve unified ROM key
     resolved_game_id = queue_item.game_id
     system = ''  # Initialize system to avoid UnboundLocalError
     try:
-        game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+        game = download_service.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+        
+        # If not found and lookup_game_id contains '/', try removing potential system directory prefix
+        if not game and '/' in lookup_game_id and not lookup_game_id.startswith('.'):
+            # Try removing first directory component (might be system directory)
+            parts = lookup_game_id.split('/', 1)
+            if len(parts) == 2:
+                potential_game_id = parts[1]
+                # Only try if it looks like a valid game ID (has extension or unified key pattern)
+                if '.' in potential_game_id or '(' in potential_game_id:
+                    logger.debug(f"Game not found with '{lookup_game_id}', trying without system prefix: '{potential_game_id}'")
+                    game = download_service.game_service.get_game_by_id(potential_game_id, catalog_type=catalog_type)
+                    if game:
+                        lookup_game_id = potential_game_id
+        
         if game:
             system = game.get('system', '')
             resolved_game_id = download_service._resolve_unified_rom_key(queue_item.game_id, system, platform, catalog_type)
         else:
-            logger.warning(f"Game not found for game_id: {queue_item.game_id} (catalog_type: {catalog_type})")
+            logger.warning(f"Game not found for game_id: {queue_item.game_id} (lookup_game_id: {lookup_game_id}, catalog_type: {catalog_type})")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Game not found"

@@ -157,7 +157,7 @@ class P2PInventoryService:
             client_key = f"p2p:client:{token_id}"
             # Store with 48 hour TTL (clients re-register periodically)
             await redis_client.setex(client_key, 48 * 3600, json.dumps(connection_info))
-            logger.debug(f"Updated P2P client connection info for token_id {token_id}")
+            logger.info(f"Updated P2P client connection info in Redis for token_id {token_id}: external_ip={connection_info.get('external_ip')}, external_port={connection_info.get('external_port')}, upnp_enabled={connection_info.get('upnp_enabled')}")
             return True
         except Exception as e:
             logger.error(f"Error updating P2P client connection info for token_id {token_id}: {e}")
