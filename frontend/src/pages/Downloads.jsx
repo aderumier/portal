@@ -360,6 +360,17 @@ const Downloads = () => {
                       <span>IP: {device.connection_info.ip}</span>
                       <span>Platform: {device.connection_info.platform}</span>
                       <span>Version: {device.connection_info.client_version}</span>
+                      {device.connection_info.upnp_enabled !== undefined && (
+                        <span>UPnP: {device.connection_info.upnp_enabled ? 'ON' : 'OFF'}</span>
+                      )}
+                      {device.connection_info.external_port && (
+                        <span>Public Port: {device.connection_info.external_port}</span>
+                      )}
+                      {device.connection_info.p2p_port_accessible !== undefined && (
+                        <span className={`port-status ${device.connection_info.p2p_port_accessible ? 'port-accessible' : 'port-not-accessible'}`}>
+                          Port: {device.connection_info.p2p_port_accessible ? 'Available' : 'Not Available'}
+                        </span>
+                      )}
                     </div>
                   )}
                   <div className="device-meta">

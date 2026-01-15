@@ -87,6 +87,23 @@ async def preload_game_data():
     # Start background task for promoting user_queue items to pending
     asyncio.create_task(promote_user_queue_items())
     
+    # Start background task for rebuilding p2p_index hourly
+    if settings.P2P_ENABLED:
+        asyncio.create_task(rebuild_p2p_index_periodically())
+    
+    # Run initial p2p_index rebuild at startup
+    if settings.P2P_ENABLED:
+        try:
+            from app.services.p2p_inventory import P2PInventoryService
+            logger.info("Rebuilding p2p_index at startup...")
+            success = await P2PInventoryService.rebuild_index()
+            if success:
+                logger.info("p2p_index rebuild completed at startup")
+            else:
+                logger.warning("p2p_index rebuild failed at startup")
+        except Exception as e:
+            logger.error(f"Error rebuilding p2p_index at startup: {e}", exc_info=True)
+    
     # Initialize GeoIP instance on startup
     try:
         from app.services.geoip import get_geoip_instance
@@ -377,6 +394,35 @@ async def promote_user_queue_items():
         except Exception as e:
             logger.error(f"Critical error in promote_user_queue_items background task: {e}", exc_info=True)
             await asyncio.sleep(5)  # Wait before retrying
+
+async def rebuild_p2p_index_periodically():
+    """Background task to periodically rebuild the p2p_index.
+    
+    Runs every hour (3600 seconds) and atomically rebuilds the index.
+    The index will rebuild naturally as clients upload inventories and downloads complete.
+    """
+    from app.services.p2p_inventory import P2PInventoryService
+    
+    # Wait a bit before first run to let server fully start
+    await asyncio.sleep(60)  # Wait 1 minute after startup
+    
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Run every hour (3600 seconds)
+            
+            logger.info("Starting periodic p2p_index rebuild...")
+            success = await P2PInventoryService.rebuild_index()
+            if success:
+                logger.info("Periodic p2p_index rebuild completed")
+            else:
+                logger.warning("Periodic p2p_index rebuild failed")
+                
+        except asyncio.CancelledError:
+            logger.info("p2p_index rebuild task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in rebuild_p2p_index_periodically background task: {e}", exc_info=True)
+            await asyncio.sleep(60)  # Wait 1 minute before retrying on error
 
 async def cleanup_stuck_downloads():
     """Background task to detect and clean up stuck downloads.

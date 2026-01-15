@@ -3527,6 +3527,90 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
         
         logger.info(f"Attempting P2P download for {system}/{rom_path} from {len(p2p_peers)} peer(s)")
         
+        # Check if file already exists and is complete - verify checksum before trying any peers
+        if os.path.exists(dest_path):
+            existing_size = os.path.getsize(dest_path)
+            if expected_size and existing_size == expected_size:
+                # File already complete - verify checksum before deciding to re-download
+                logger.info(f"File already exists with correct size ({existing_size} bytes), verifying checksum...")
+                if expected_checksum:
+                    actual_checksum = calculate_partial_checksum(dest_path)
+                    if actual_checksum:
+                        # Compare file sizes
+                        if actual_checksum['file_size'] == expected_checksum['file_size']:
+                            # For small files, compare full_hash
+                            if 'full_hash' in expected_checksum:
+                                if 'full_hash' in actual_checksum:
+                                    if actual_checksum['full_hash'].lower() == expected_checksum['full_hash'].lower():
+                                        logger.info(f"File already complete and checksum verified - skipping download")
+                                        # Return first peer's token_id if available, otherwise True
+                                        if p2p_peers and p2p_peers[0].get('token_id') is not None:
+                                            return p2p_peers[0].get('token_id')
+                                        return True  # File is valid, no need to download
+                                    else:
+                                        logger.warning(f"File exists but checksum mismatch - will re-download")
+                                        try:
+                                            os.remove(dest_path)
+                                            logger.info(f"Deleted existing file with mismatched checksum: {dest_path}")
+                                        except Exception as e:
+                                            logger.warning(f"Failed to delete existing file: {e}")
+                                else:
+                                    logger.warning(f"Could not calculate full_hash for existing file - will re-download")
+                                    try:
+                                        os.remove(dest_path)
+                                    except Exception:
+                                        pass
+                            else:
+                                # For large files, compare beginning_hash and end_hash
+                                if 'beginning_hash' in actual_checksum and 'end_hash' in actual_checksum:
+                                    if (actual_checksum['beginning_hash'].lower() == expected_checksum['beginning_hash'].lower() and
+                                        actual_checksum['end_hash'].lower() == expected_checksum['end_hash'].lower()):
+                                        logger.info(f"File already complete and checksum verified - skipping download")
+                                        # Return first peer's token_id if available, otherwise True
+                                        if p2p_peers and p2p_peers[0].get('token_id') is not None:
+                                            return p2p_peers[0].get('token_id')
+                                        return True  # File is valid, no need to download
+                                    else:
+                                        logger.warning(f"File exists but checksum mismatch - will re-download")
+                                        try:
+                                            os.remove(dest_path)
+                                            logger.info(f"Deleted existing file with mismatched checksum: {dest_path}")
+                                        except Exception as e:
+                                            logger.warning(f"Failed to delete existing file: {e}")
+                                else:
+                                    logger.warning(f"Could not calculate partial checksum for existing file - will re-download")
+                                    try:
+                                        os.remove(dest_path)
+                                    except Exception:
+                                        pass
+                        else:
+                            logger.warning(f"File size mismatch in checksum - will re-download")
+                            try:
+                                os.remove(dest_path)
+                            except Exception:
+                                pass
+                    else:
+                        logger.warning(f"Could not calculate checksum for existing file - will re-download")
+                        try:
+                            os.remove(dest_path)
+                        except Exception:
+                            pass
+                else:
+                    # No checksum available - assume file is valid if size matches
+                    logger.info(f"File already complete (no checksum to verify) - skipping download")
+                    # Return first peer's token_id if available, otherwise True
+                    if p2p_peers and p2p_peers[0].get('token_id') is not None:
+                        return p2p_peers[0].get('token_id')
+                    return True  # File size matches, assume it's valid
+            elif expected_size and existing_size > expected_size:
+                # File is larger than expected - might be corrupted, delete it
+                logger.warning(f"File exists but is larger than expected ({existing_size} > {expected_size}) - deleting")
+                try:
+                    os.remove(dest_path)
+                    logger.info(f"Deleted oversized file: {dest_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete existing file: {e}")
+        
         # Try each peer in the list (already sorted by upload bandwidth)
         for peer_idx, peer in enumerate(p2p_peers):
             # Check if download is paused
@@ -3546,20 +3630,13 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
             
             logger.info(f"Trying peer {peer_idx + 1}/{len(p2p_peers)}: {peer_url}")
             
-            # Determine resume point
+            # Determine resume point (file may have been partially downloaded from previous peer attempt)
             resume_from = 0
             if os.path.exists(dest_path):
                 existing_size = os.path.getsize(dest_path)
                 if expected_size and existing_size < expected_size:
                     resume_from = existing_size
                     logger.info(f"Resuming P2P download from byte {resume_from}")
-                elif expected_size and existing_size >= expected_size:
-                    # File already complete or larger than expected, delete it
-                    try:
-                        os.remove(dest_path)
-                        logger.info(f"Deleted existing file for fresh P2P download: {dest_path}")
-                    except Exception as e:
-                        logger.warning(f"Failed to delete existing file: {e}")
             
             # Download from peer
             result = download_file_via_p2p(
@@ -4257,7 +4334,8 @@ def mark_completed(download_id, download_info=None):
     
     Args:
         download_id: Download ID
-        download_info: Optional download info dict (used to update P2P inventory and pass p2p_source_token_id)
+        download_info: Optional download info dict (used to pass p2p_source_token_id)
+                       Note: Backend handles p2p_index registration automatically
     """
     try:
         headers = {
@@ -4303,24 +4381,8 @@ def mark_completed(download_id, download_info=None):
         response.raise_for_status()
         logger.info(f"Marked download {download_id} as completed")
         
-        # Add downloaded game to P2P inventory if download_info is provided
-        if download_info:
-            system = download_info.get('system')
-            game_id = download_info.get('game_id')
-            if system and game_id:
-                # Get the ROM path from game_details if available, otherwise use game_id
-                game_details = download_info.get('game_details', {})
-                rom_path = game_details.get('path', game_id)
-                # Remove ./ prefix if present
-                rom_path = rom_path.lstrip('./')
-                # Remove system prefix if present
-                if rom_path.startswith(f"{system}/"):
-                    rom_path = rom_path[len(system) + 1:]
-                
-                try:
-                    add_rom_to_p2p_inventory(system, rom_path)
-                except Exception as e:
-                    logger.warning(f"Failed to add ROM to P2P inventory: {e}")
+        # Note: Backend now handles p2p_index registration automatically in complete_download
+        # No need to call add_rom_to_p2p_inventory here anymore
         
         return True
     except requests.exceptions.HTTPError as e:

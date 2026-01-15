@@ -3147,6 +3147,10 @@ async def get_connected_devices(
     db: Session = Depends(get_db)
 ):
     """Get all non-revoked tokens with their connection status for the current user."""
+    from app.services.p2p_inventory import P2PInventoryService
+    from app.services.discord import get_redis_cache_client
+    import json
+    
     user_id = current_user['id']
     
     # Get all non-revoked tokens for the user
@@ -3161,6 +3165,9 @@ async def get_connected_devices(
     # Get connected clients from WebSocket manager
     ws_manager = get_websocket_manager()
     connected_clients = await ws_manager.get_all_connections()
+    
+    # Get Redis cache client for WebSocket connection info
+    redis_cache_client = get_redis_cache_client()
     
     # Create a set of connected token_ids for quick lookup
     connected_token_ids = set()
@@ -3187,6 +3194,31 @@ async def get_connected_devices(
                     "platform": conn.get("platform", "unknown"),
                     "connected_at": conn.get("connected_at")
                 }
+                
+                # Get P2P connection info from Redis (upnp_enabled, external_port)
+                p2p_info = await P2PInventoryService.get_client_connection_info(token.id)
+                if p2p_info:
+                    connection_info["upnp_enabled"] = p2p_info.get("upnp_enabled", False)
+                    connection_info["external_port"] = p2p_info.get("external_port")
+                    connection_info["internal_port"] = p2p_info.get("internal_port")
+                else:
+                    connection_info["upnp_enabled"] = False
+                    connection_info["external_port"] = None
+                    connection_info["internal_port"] = None
+                
+                # Get WebSocket connection info from Redis (p2p_port_accessible)
+                p2p_port_accessible = None
+                if redis_cache_client:
+                    try:
+                        ws_key = f"ws_client:{token.id}"
+                        ws_info_str = await redis_cache_client.get(ws_key)
+                        if ws_info_str:
+                            ws_info = json.loads(ws_info_str)
+                            p2p_port_accessible = ws_info.get("p2p_port_accessible")
+                    except Exception as e:
+                        logger.debug(f"Error getting WebSocket info for token_id {token.id}: {e}")
+                
+                connection_info["p2p_port_accessible"] = p2p_port_accessible
         
         devices.append({
             "token_id": token.id,
