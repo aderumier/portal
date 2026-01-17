@@ -1878,7 +1878,8 @@ def download_file_via_http(http_url, dest_path, resume_from=0, expected_size=Non
                     response.close()
                 except:
                     pass
-            # Retry on HTTP errors if we have retries left (except for 403/404 which return immediately above)
+            # Retry on HTTP errors if we have retries left (except for 403/404/410 which return immediately above)
+            # 410 (Gone) means download was removed from queue - should NOT retry
             if retry_count < max_retries:
                 retry_count += 1
                 wait_time = min(2 ** (retry_count - 1), 16)
@@ -2500,7 +2501,6 @@ def normalize_media_path(path):
     
     # Remove snapshot paths (e.g., "system/.zfs/snapshot/v1/media/..." -> "system/media/...")
     # Pattern: system/.zfs/snapshot/v(anything)/media/... -> system/media/...
-    import re
     # Match pattern: system/.zfs/snapshot/v(anything)/path
     snapshot_pattern = r'^([^/]+)/\.zfs/snapshot/v[^/]+/(.+)$'
     match = re.match(snapshot_pattern, normalized)
@@ -2527,7 +2527,6 @@ def remove_snapshot_path_from_game_id(game_id):
     normalized = game_id.lstrip('./')
     
     # Remove snapshot paths (e.g., ".zfs/snapshot/v1/game.rom" -> "game.rom")
-    import re
     # Match pattern: .zfs/snapshot/v(anything)/path
     pattern = r'^\.zfs/snapshot/v[^/]+/(.+)$'
     match = re.match(pattern, normalized)

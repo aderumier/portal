@@ -1683,6 +1683,12 @@ class DownloadService:
                         save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
                         logger.info(f"Detected PS3 .m3u file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
                 
+                # Check if this is a win98 .zip file and calculate save_location
+                if system and system.lower() == 'win98' and resolved_game_id.lower().endswith('.zip'):
+                    # For win98 .zip files, save files go to SAVEDIR/win98/
+                    save_location = "win98"
+                    logger.info(f"Detected win98 .zip file, save_location: {save_location}")
+                
                 download_info = {
                     'download_id': resumable_download.id,
                     'game_id': resolved_game_id,  # Use resolved game_id (unified key already resolved)
@@ -1951,6 +1957,12 @@ class DownloadService:
                     save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
                     is_windows_platform = is_windows
                     logger.info(f"Detected PS3 .m3u file, save_location: {save_location} (platform: {'windows' if is_windows_platform else 'linux'})")
+            
+            # Check if this is a win98 .zip file and calculate save_location
+            if system and system.lower() == 'win98' and resolved_game_id.lower().endswith('.zip'):
+                # For win98 .zip files, save files go to SAVEDIR/win98/
+                save_location = "win98"
+                logger.info(f"Detected win98 .zip file, save_location: {save_location}")
             
             download_info = {
                 'download_id': pending_download.id,

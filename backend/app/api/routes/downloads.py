@@ -232,10 +232,81 @@ async def discover_download_files(
     # Get all files for this download
     all_files_list = []
     if os.path.isfile(base_path):
-        from app.services.download import detect_and_parse_special_file
-        parsed_info = detect_and_parse_special_file(base_path, system=system)
-        
-        if parsed_info and parsed_info.get('files'):
+        # Check for win98 system with .zip extension (needs special handling for save files)
+        if system and system.lower() == 'win98' and base_path.lower().endswith('.zip'):
+            # Extract ROM filename without extension
+            rom_filename = os.path.basename(base_path)
+            rom_name_without_ext = os.path.splitext(rom_filename)[0]
+            source_dir = os.path.dirname(base_path)
+            
+            # Build path to save directory (_saves_/win98/)
+            save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'win98')
+            dir_full_path = os.path.normpath(save_dir_path)
+            
+            # Find files matching specific patterns
+            if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                # Ensure the directory is within the games directory (security check)
+                try:
+                    if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                        # Pattern 1: <romname>.pure.zip (exact match)
+                        pure_zip_filename = f"{rom_name_without_ext}.pure.zip"
+                        pure_zip_path = os.path.join(dir_full_path, pure_zip_filename)
+                        if os.path.exists(pure_zip_path) and os.path.isfile(pure_zip_path):
+                            file_size = os.path.getsize(pure_zip_path)
+                            if requested_files is None or pure_zip_filename in requested_files:
+                                all_files_list.append({
+                                    'source_path': pure_zip_path,
+                                    'relative_path': pure_zip_filename,  # Just filename, no directory structure
+                                    'size': file_size
+                                })
+                        
+                        # Pattern 2: <romname>-\S+.sav (pattern match)
+                        # Build regex pattern: escape romname and match -<any_non_whitespace>.sav
+                        escaped_romname = re.escape(rom_name_without_ext)
+                        sav_pattern = re.compile(f"^{escaped_romname}-\\S+\\.sav$")
+                        
+                        for filename in os.listdir(dir_full_path):
+                            if sav_pattern.match(filename):
+                                file_full_path = os.path.join(dir_full_path, filename)
+                                if os.path.isfile(file_full_path):
+                                    if requested_files is None or filename in requested_files:
+                                        file_size = os.path.getsize(file_full_path)
+                                        all_files_list.append({
+                                            'source_path': file_full_path,
+                                            'relative_path': filename,  # Just filename, no directory structure
+                                            'size': file_size
+                                        })
+                        
+                        # Include the ROM zip file itself in the download
+                        # The ROM zip file should be saved to roms directory, not save directory
+                        win98_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                        if requested_files is None or win98_rel_path in requested_files:
+                            all_files_list.append({
+                                'source_path': base_path,
+                                'relative_path': win98_rel_path,
+                                'size': os.path.getsize(base_path)
+                            })
+                    else:
+                        logger.warning(f"Directory {dir_full_path} is outside games directory, skipping")
+                except ValueError:
+                    logger.warning(f"Directory {dir_full_path} path validation failed, skipping")
+            else:
+                logger.warning(f"Win98 save directory does not exist: {dir_full_path}")
+                # Still add the ROM zip file even if save directory doesn't exist
+                source_dir = os.path.dirname(base_path)
+                win98_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                if requested_files is None or win98_rel_path in requested_files:
+                    all_files_list.append({
+                        'source_path': base_path,
+                        'relative_path': win98_rel_path,
+                        'size': os.path.getsize(base_path)
+                    })
+        else:
+            # Regular file handling - check for special files
+            from app.services.download import detect_and_parse_special_file
+            parsed_info = detect_and_parse_special_file(base_path, system=system)
+            
+            if parsed_info and parsed_info.get('files'):
                 # This is a special file (.m3u, .cue, .xbox360, .psvita, .psn, .m3u ps3)
                 source_dir = os.path.dirname(base_path)
                 parsed_files = parsed_info['files']
@@ -1635,7 +1706,6 @@ async def download_file(
         
         if range_header:
             # Parse Range header: "bytes=start-end" or "bytes=start-"
-            import re
             match = re.match(r'bytes=(\d+)-(\d*)', range_header)
             if match:
                 start_byte = int(match.group(1))
@@ -1828,6 +1898,125 @@ async def download_file(
         # If path contains .zfs/snapshot, it's from Releases catalog
         # The game_id should be in format: .zfs/snapshot/v10.5/game.zip
         # So base_path will be: GAMES_PATH/system/.zfs/snapshot/v10.5/game.zip
+        
+        # Check if this is a win98 .zip file (needs special handling for save files)
+        if relative_path is None and system and system.lower() == 'win98' and base_path.lower().endswith('.zip'):
+            # For win98 .zip files: find save files matching specific patterns
+            # Extract ROM filename without extension
+            rom_filename = os.path.basename(base_path)
+            rom_name_without_ext = os.path.splitext(rom_filename)[0]
+            source_dir = os.path.dirname(base_path)
+            
+            # Build path to save directory (_saves_/win98/)
+            save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'win98')
+            dir_full_path = os.path.normpath(save_dir_path)
+            
+            files_list = []
+            base_path_type = 'file'
+            
+            # Find files matching specific patterns
+            if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                # Ensure the directory is within the games directory (security check)
+                try:
+                    if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                        # Pattern 1: <romname>.pure.zip (exact match)
+                        pure_zip_filename = f"{rom_name_without_ext}.pure.zip"
+                        pure_zip_path = os.path.join(dir_full_path, pure_zip_filename)
+                        if os.path.exists(pure_zip_path) and os.path.isfile(pure_zip_path):
+                            file_size = os.path.getsize(pure_zip_path)
+                            files_list.append({
+                                'relative_path': pure_zip_filename,  # Just filename, no directory structure
+                                'size': file_size
+                            })
+                        
+                        # Pattern 2: <romname>-\S+.sav (pattern match)
+                        # Build regex pattern: escape romname and match -<any_non_whitespace>.sav
+                        escaped_romname = re.escape(rom_name_without_ext)
+                        sav_pattern = re.compile(f"^{escaped_romname}-\\S+\\.sav$")
+                        
+                        for filename in os.listdir(dir_full_path):
+                            if sav_pattern.match(filename):
+                                file_full_path = os.path.join(dir_full_path, filename)
+                                if os.path.isfile(file_full_path):
+                                    file_size = os.path.getsize(file_full_path)
+                                    files_list.append({
+                                        'relative_path': filename,  # Just filename, no directory structure
+                                        'size': file_size
+                                    })
+                        
+                        # Include the ROM zip file itself in the download
+                        # The ROM zip file should be saved to roms directory, not save directory
+                        # Get the normalized game path for roms directory (same logic as get_next_download)
+                        win98_rel_path = os.path.relpath(base_path, source_dir)
+                        win98_file_size = os.path.getsize(base_path)
+                        
+                        # Get normalized rom_path (without system prefix and snapshot path) for client destination
+                        # Use the same normalization method as get_next_download for consistency
+                        normalized_rom_path = download_service._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
+                        # Remove system prefix if present (client will add it back with batocera_system)
+                        if normalized_rom_path.startswith(f"{system}/"):
+                            normalized_rom_path = normalized_rom_path[len(system) + 1:]
+                        
+                        # Get target system (batocera_system) from queue_item's download info or derive from game
+                        # This should match what's in download_info['batocera_system']
+                        target_system = system
+                        try:
+                            game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+                            if game:
+                                # Use the same logic as get_next_download to determine target_system
+                                game_system = game.get('system', '')
+                                if game_system:
+                                    target_system = game_system
+                        except Exception as e:
+                            logger.debug(f"Could not get game for target_system: {e}")
+                        
+                        # Include destination info: relative path for API calls, destination_rom_path for saving to roms
+                        files_list.append({
+                            'relative_path': win98_rel_path.replace('\\', '/'),  # For API calls to download_file endpoint
+                            'size': win98_file_size,
+                            'destination_rom_path': normalized_rom_path,  # Path relative to ROMS_PATH/system/ for saving
+                            'destination_system': target_system  # System name for destination path (batocera_system)
+                        })
+                    else:
+                        logger.warning(f"Directory {dir_full_path} is outside games directory, skipping")
+                except ValueError:
+                    logger.warning(f"Directory {dir_full_path} path validation failed, skipping")
+            else:
+                logger.warning(f"Win98 save directory does not exist: {dir_full_path}")
+                # Still add the ROM zip file even if save directory doesn't exist
+                win98_rel_path = os.path.relpath(base_path, source_dir)
+                win98_file_size = os.path.getsize(base_path)
+                
+                # Get normalized rom_path for client destination
+                normalized_rom_path = download_service._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
+                if normalized_rom_path.startswith(f"{system}/"):
+                    normalized_rom_path = normalized_rom_path[len(system) + 1:]
+                
+                target_system = system
+                try:
+                    game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+                    if game:
+                        game_system = game.get('system', '')
+                        if game_system:
+                            target_system = game_system
+                except Exception as e:
+                    logger.debug(f"Could not get game for target_system: {e}")
+                
+                files_list.append({
+                    'relative_path': win98_rel_path.replace('\\', '/'),
+                    'size': win98_file_size,
+                    'destination_rom_path': normalized_rom_path,
+                    'destination_system': target_system
+                })
+            
+            return ORJSONResponse({
+                'is_directory': True,  # Generic flag for all multi-file downloads
+                'files': files_list,
+                'total_files': len(files_list),
+                'total_size': sum(f['size'] for f in files_list),
+                'base_path_type': base_path_type,  # Indicates how to interpret paths
+                'source_file': rom_filename  # Original file that was parsed (for logging)
+            })
         
         # Check if this is a special file type that needs parsing (when relative_path is not provided)
         if relative_path is None and os.path.isfile(base_path):
@@ -2157,8 +2346,36 @@ async def download_file(
                     detail="Invalid relative path"
                 )
             
+            # Check if this is a win98 .zip file (needs special handling for save files)
+            if os.path.isfile(base_path) and system and system.lower() == 'win98' and base_path.lower().endswith('.zip'):
+                # For win98 .zip files: serve save files from _saves_/win98/
+                # Extract ROM filename
+                rom_filename = os.path.basename(base_path)
+                
+                # Check if relative_path is the ROM zip file itself
+                if relative_path == rom_filename:
+                    # Serve ROM zip from normal location
+                    file_path = base_path
+                else:
+                    # Serve save file from _saves_/win98/ directory
+                    # Save files are directly in _saves_/win98/, not in a subdirectory
+                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'win98')
+                    file_path = os.path.normpath(os.path.join(save_dir_path, relative_path))
+                
+                # Ensure the file is within the games directory (security check)
+                try:
+                    if not os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_path)]) == os.path.abspath(settings.GAMES_PATH):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid relative path (outside games directory)"
+                        )
+                except ValueError:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Invalid relative path"
+                    )
             # Check if base_path is a special file type - if so, relative_path handling depends on base_path_type
-            if os.path.isfile(base_path):
+            elif os.path.isfile(base_path):
                 from app.services.download import detect_and_parse_special_file
                 parsed_info = detect_and_parse_special_file(base_path, system=system)
                 
