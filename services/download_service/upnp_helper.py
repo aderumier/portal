@@ -158,10 +158,11 @@ class UPnPHelper:
             last_exception = None
             for try_port in ports_to_try:
                 try:
-                    logger.info(f"Adding UPnP port mapping: {try_port} -> {local_ip}:{internal_port}")
+                    logger.info(f"Adding UPnP port mapping: {try_port} -> {local_ip}:{internal_port} (TCP and UDP)")
                     
                     def _add_port_mapping(port):
-                        result = self.upnp.addportmapping(
+                        # Add TCP mapping
+                        tcp_result = self.upnp.addportmapping(
                             port,
                             'TCP',
                             local_ip,
@@ -169,7 +170,17 @@ class UPnPHelper:
                             description,
                             ''
                         )
-                        return result
+                        # Add UDP mapping
+                        udp_result = self.upnp.addportmapping(
+                            port,
+                            'UDP',
+                            local_ip,
+                            internal_port,
+                            description,
+                            ''
+                        )
+                        # Return True only if both succeeded
+                        return tcp_result and udp_result
                     
                     result = await asyncio.to_thread(_add_port_mapping, try_port)
                     
@@ -177,7 +188,7 @@ class UPnPHelper:
                         self.internal_port = internal_port
                         self.external_port = try_port
                         self.port_mapped = True
-                        logger.info(f"UPnP port mapping added successfully: {try_port} -> {local_ip}:{internal_port}")
+                        logger.info(f"UPnP port mapping added successfully: {try_port} -> {local_ip}:{internal_port} (TCP and UDP)")
                         return True
                     else:
                         logger.debug(f"Failed to add UPnP port mapping on port {try_port} (returned False), trying next port...")
@@ -210,11 +221,15 @@ class UPnPHelper:
             return False
         
         try:
-            logger.info(f"Removing UPnP port mapping: {external_port}")
+            logger.info(f"Removing UPnP port mapping: {external_port} (TCP and UDP)")
             
             def _delete_port_mapping():
-                result = self.upnp.deleteportmapping(external_port, 'TCP', '')
-                return result
+                # Delete TCP mapping
+                tcp_result = self.upnp.deleteportmapping(external_port, 'TCP', '')
+                # Delete UDP mapping
+                udp_result = self.upnp.deleteportmapping(external_port, 'UDP', '')
+                # Return True if at least one succeeded (in case one doesn't exist)
+                return tcp_result or udp_result
             
             result = await asyncio.to_thread(_delete_port_mapping)
             
@@ -222,7 +237,7 @@ class UPnPHelper:
                 self.port_mapped = False
                 self.internal_port = None
                 self.external_port = None
-                logger.info(f"UPnP port mapping removed successfully: {external_port}")
+                logger.info(f"UPnP port mapping removed successfully: {external_port} (TCP and UDP)")
                 return True
             else:
                 logger.error("Failed to delete UPnP port mapping (returned False)")
