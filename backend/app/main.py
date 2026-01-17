@@ -91,6 +91,9 @@ async def preload_game_data():
     if settings.P2P_ENABLED:
         asyncio.create_task(rebuild_p2p_index_periodically())
     
+    # Start background task for refreshing Redis TTL for active WebSocket connections
+    asyncio.create_task(refresh_websocket_connection_ttl_periodically())
+    
     # Run initial p2p_index rebuild at startup
     if settings.P2P_ENABLED:
         try:
@@ -422,6 +425,34 @@ async def rebuild_p2p_index_periodically():
             break
         except Exception as e:
             logger.error(f"Error in rebuild_p2p_index_periodically background task: {e}", exc_info=True)
+            await asyncio.sleep(60)  # Wait 1 minute before retrying on error
+
+async def refresh_websocket_connection_ttl_periodically():
+    """Background task to periodically refresh Redis TTL for active WebSocket connections.
+    
+    Runs every hour (3600 seconds) to ensure connection info doesn't expire
+    while clients are still connected. This prevents loss of p2p_port_accessible
+    status and other connection metadata.
+    """
+    from app.services.websocket_manager import get_websocket_manager
+    
+    # Wait a bit before first run to let server fully start
+    await asyncio.sleep(60)  # Wait 1 minute after startup
+    
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Run every hour (3600 seconds)
+            
+            logger.debug("Starting periodic WebSocket connection TTL refresh...")
+            ws_manager = get_websocket_manager()
+            await ws_manager.refresh_ttl_for_active_connections()
+            logger.debug("Periodic WebSocket connection TTL refresh completed")
+                
+        except asyncio.CancelledError:
+            logger.info("WebSocket connection TTL refresh task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in refresh_websocket_connection_ttl_periodically background task: {e}", exc_info=True)
             await asyncio.sleep(60)  # Wait 1 minute before retrying on error
 
 async def cleanup_stuck_downloads():

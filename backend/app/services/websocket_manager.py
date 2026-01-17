@@ -250,6 +250,44 @@ class WebSocketManager:
         except Exception as e:
             logger.error(f"Error getting all connections from Redis: {e}")
             return []
+    
+    async def refresh_ttl_for_active_connections(self):
+        """Refresh TTL for all active WebSocket connections in Redis.
+        
+        This ensures that connection info doesn't expire while clients are still connected.
+        """
+        redis_client = await self._get_redis_client()
+        if not redis_client:
+            return
+        
+        try:
+            async with self._lock:
+                active_token_ids = list(self.active_connections.keys())
+            
+            if not active_token_ids:
+                logger.debug("No active connections to refresh TTL for")
+                return
+            
+            refreshed_count = 0
+            for token_id in active_token_ids:
+                try:
+                    redis_key = f"{self._redis_key_prefix}{token_id}"
+                    data = await redis_client.get(redis_key)
+                    if data:
+                        # Refresh TTL by setting the same value with new expiration
+                        await redis_client.setex(redis_key, 86400, data)  # 24 hour TTL
+                        refreshed_count += 1
+                        logger.debug(f"Refreshed TTL for token_id {token_id}")
+                    else:
+                        # Connection info not in Redis, but connection is active - recreate it
+                        logger.debug(f"Connection info missing in Redis for active token_id {token_id}, will be recreated on next update")
+                except Exception as e:
+                    logger.warning(f"Failed to refresh TTL for token_id {token_id}: {e}")
+            
+            if refreshed_count > 0:
+                logger.info(f"Refreshed TTL for {refreshed_count} active connection(s)")
+        except Exception as e:
+            logger.error(f"Error refreshing TTL for active connections: {e}", exc_info=True)
 
 
 # Global singleton instance

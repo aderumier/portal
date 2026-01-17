@@ -39,6 +39,7 @@ async def test_tcp_port(host: str, port: int, timeout: float = 2.0) -> bool:
     Returns:
         True if port is accessible, False otherwise
     """
+    logger.debug(f"Testing TCP port {host}:{port} with timeout {timeout}s")
     try:
         import asyncio
         reader, writer = await asyncio.wait_for(
@@ -48,6 +49,7 @@ async def test_tcp_port(host: str, port: int, timeout: float = 2.0) -> bool:
         # Connection successful - close immediately
         writer.close()
         await writer.wait_closed()
+        logger.info(f"TCP port test succeeded for {host}:{port} - port is accessible")
         return True
     except asyncio.TimeoutError:
         logger.warning(f"TCP port test failed for {host}:{port}: Connection timeout after {timeout}s")
@@ -84,10 +86,6 @@ class MarkCompletedRequest(BaseModel):
     client_version: Optional[str] = None  # Download client version
     log_content: Optional[str] = None  # Download task log content
     p2p_source_token_id: Optional[int] = None  # Source peer's token_id for P2P downloads
-
-class ArchiveDownloadRequest(BaseModel):
-    download_id: int
-    files: Optional[list[str]] = None  # List of relative paths to include (optional, if not provided includes all files)
 
 class MarkErrorRequest(BaseModel):
     download_id: int
@@ -2725,292 +2723,6 @@ async def receive_client_logs(
         )
 
 
-@router.post("/file/archive")
-async def download_files_as_binary(
-    request: Request,
-    body: ArchiveDownloadRequest,
-    current_user: dict = Depends(require_auth_user),
-    db: Session = Depends(get_db)
-):
-    """Stream multiple files using a custom binary format.
-    
-    Binary format:
-    - For each file:
-      - 4 bytes (uint32 BE): path_length
-      - N bytes: path (UTF-8 encoded)
-      - 8 bytes (uint64 BE): file_size
-      - M bytes: file_data (raw bytes)
-    - End marker: 4 zero bytes (path_length = 0)
-    
-    If 'files' parameter is provided, only those files will be included.
-    Otherwise, all files for the download will be included.
-    """
-    try:
-        download_id = body.download_id
-        requested_files_list = body.files
-        
-        # Get token_id from request state
-        token_id = getattr(request.state, 'token_id', None)
-        if token_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="API token authentication required"
-            )
-        
-        user_id = current_user['id']
-        
-        # Get list of files to include
-        requested_files = None
-        if requested_files_list:
-            requested_files = set(requested_files_list)
-        
-        # Get queue item for bandwidth allocation
-        queue_item = db.query(DownloadQueue).filter(
-            DownloadQueue.id == download_id,
-            DownloadQueue.user_id == user_id,
-            DownloadQueue.token_id == token_id
-        ).first()
-        
-        if not queue_item:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Download not found"
-            )
-        
-        # Discover files using helper function
-        all_files_list, system, resolved_game_id = await discover_download_files(
-            download_id, token_id, user_id, requested_files, db
-        )
-        
-        if not all_files_list:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No files found to archive"
-            )
-        
-        # Get allocated bandwidth for throttling
-        allocated_bandwidth = 0
-        bandwidth_manager = None
-        
-        if queue_item.status in ['downloading'] and queue_item.queue_type:
-            from app.services.bandwidth import BandwidthManager
-            bandwidth_manager = BandwidthManager(db)
-            allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
-            
-            # Apply user's custom bandwidth limit if set
-            from app.database import User
-            db_user = db.query(User).filter(User.user_id == queue_item.user_id).first()
-            if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
-                allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
-                logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
-            
-            logger.info(f"Allocated bandwidth for archive download: {allocated_bandwidth} bytes/s ({allocated_bandwidth / 125000:.2f} Mbits/s)")
-        
-        # Async generator to stream binary format
-        async def generate_binary_stream():
-            """Stream files in custom binary format with bandwidth throttling.
-            
-            Format per file:
-            - 4 bytes (uint32 BE): path_length
-            - N bytes: path (UTF-8)
-            - 8 bytes (uint64 BE): file_size
-            - M bytes: file_data
-            End marker: 4 zero bytes
-            """
-            import time
-            
-            try:
-                # Throttling setup
-                if allocated_bandwidth > 0:
-                    chunk_size = 64 * 1024  # 64KB chunks for throttling
-                    bytes_per_second = allocated_bandwidth
-                    seconds_per_chunk = chunk_size / bytes_per_second
-                    logger.info(f"Starting throttled binary archive stream: chunk_size={chunk_size}, bytes_per_second={bytes_per_second}, seconds_per_chunk={seconds_per_chunk:.3f}s")
-                    
-                    chunk_count = 0
-                    total_bytes = 0
-                    start_time = time.time()
-                    last_chunk_time = start_time
-                    last_user_count_check = start_time
-                    user_count_check_interval = 2.0
-                    last_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type) if bandwidth_manager else 0
-                    pause_check_interval = 2.0
-                    last_pause_check = start_time
-                    bandwidth_changed = False
-                else:
-                    # No throttling
-                    chunk_size = 1024 * 1024  # 1MB chunks
-                    bytes_per_second = 0
-                    seconds_per_chunk = 0
-                    chunk_count = 0
-                    total_bytes = 0
-                    start_time = time.time()
-                    last_chunk_time = start_time
-                    pause_check_interval = 2.0
-                    last_pause_check = start_time
-                    logger.info("Binary archive stream: no throttling (allocated_bandwidth is 0)")
-                
-                for file_info in all_files_list:
-                    source_path = file_info['source_path']
-                    relative_path = file_info['relative_path']
-                    file_size = file_info['size']
-                    
-                    # Check if download is paused (use Redis for active downloads)
-                    if allocated_bandwidth > 0:
-                        current_time = time.time()
-                        if current_time - last_pause_check >= pause_check_interval:
-                            from app.services.redis_downloads import RedisDownloadTracker
-                            redis_status = await RedisDownloadTracker.get_download_status(download_id)
-                            if redis_status and redis_status.get('status') == 'paused':
-                                logger.info(f"Download {download_id} was paused during archive streaming - stopping")
-                                return
-                            last_pause_check = current_time
-                    
-                    # Encode path as UTF-8
-                    path_bytes = relative_path.encode('utf-8')
-                    path_length = len(path_bytes)
-                    
-                    # Build header: path_length (4 bytes) + path + file_size (8 bytes)
-                    header = struct.pack('>I', path_length)  # 4 bytes, big-endian uint32
-                    header += path_bytes  # path as UTF-8
-                    header += struct.pack('>Q', file_size)  # 8 bytes, big-endian uint64
-                    
-                    # Yield header (throttle if needed)
-                    if allocated_bandwidth > 0:
-                        # Throttle header sending
-                        current_time = time.time()
-                        expected_time = last_chunk_time + (len(header) / bytes_per_second)
-                        if current_time < expected_time:
-                            sleep_time = expected_time - current_time
-                            if sleep_time > 0.5:
-                                sleep_time = 0.5
-                            if sleep_time > 0:
-                                await asyncio.sleep(sleep_time)
-                        yield header
-                        last_chunk_time = time.time()
-                        total_bytes += len(header)
-                    else:
-                        yield header
-                    
-                    # Stream file data in chunks with throttling
-                    with open(source_path, 'rb') as f:
-                        while True:
-                            # Check if download is paused (use Redis for active downloads)
-                            if allocated_bandwidth > 0:
-                                current_time = time.time()
-                                if current_time - last_pause_check >= pause_check_interval:
-                                    from app.services.redis_downloads import RedisDownloadTracker
-                                    redis_status = await RedisDownloadTracker.get_download_status(download_id)
-                                    if redis_status and redis_status.get('status') == 'paused':
-                                        logger.info(f"Download {download_id} was paused during archive streaming - stopping")
-                                        return
-                                    last_pause_check = current_time
-                                
-                                # Check for bandwidth changes
-                                if current_time - last_user_count_check >= user_count_check_interval:
-                                    bandwidth_changed = False
-                                    current_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
-                                    
-                                    # Recompute bandwidth allocation
-                                    new_allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
-                                    
-                                    # Re-apply user's custom bandwidth limit
-                                    from app.database import SessionLocal, User
-                                    fresh_db = SessionLocal()
-                                    try:
-                                        fresh_user = fresh_db.query(User).filter(User.user_id == queue_item.user_id).first()
-                                        if fresh_user and fresh_user.bandwidth_limit is not None and fresh_user.bandwidth_limit > 0:
-                                            new_allocated_bandwidth = min(new_allocated_bandwidth, fresh_user.bandwidth_limit)
-                                    finally:
-                                        fresh_db.close()
-                                    
-                                    # Update bandwidth if changed
-                                    if new_allocated_bandwidth > 0 and new_allocated_bandwidth != bytes_per_second:
-                                        bandwidth_changed = True
-                                        old_bytes_per_second = bytes_per_second
-                                        bytes_per_second = new_allocated_bandwidth
-                                        old_seconds_per_chunk = seconds_per_chunk
-                                        seconds_per_chunk = chunk_size / bytes_per_second
-                                        
-                                        if current_active_user_count != last_active_user_count:
-                                            logger.info(f"Archive stream: user count changed ({last_active_user_count} -> {current_active_user_count}), recomputed bandwidth: {old_bytes_per_second} -> {bytes_per_second} bytes/s")
-                                        else:
-                                            logger.info(f"Archive stream: user bandwidth limit changed, recomputed bandwidth: {old_bytes_per_second} -> {bytes_per_second} bytes/s")
-                                        last_active_user_count = current_active_user_count
-                                    
-                                    last_user_count_check = current_time
-                                    
-                                    if bandwidth_changed:
-                                        last_chunk_time = time.time()
-                            
-                            chunk = f.read(chunk_size)
-                            if not chunk:
-                                break
-                            
-                            # Apply throttling if needed
-                            if allocated_bandwidth > 0:
-                                current_time = time.time()
-                                expected_time = last_chunk_time + seconds_per_chunk
-                                
-                                # Sleep to throttle
-                                if current_time < expected_time:
-                                    sleep_time = expected_time - current_time
-                                    if sleep_time > 0.5:
-                                        sleep_time = 0.5
-                                    if sleep_time > 0:
-                                        await asyncio.sleep(sleep_time)
-                                
-                                yield chunk
-                                last_chunk_time = time.time()
-                                chunk_count += 1
-                                total_bytes += len(chunk)
-                                
-                                # Log progress every 100 chunks
-                                if chunk_count % 100 == 0:
-                                    elapsed_total = time.time() - start_time
-                                    current_rate = total_bytes / elapsed_total if elapsed_total > 0 else 0
-                                    logger.debug(f"Archive stream: {total_bytes} bytes ({chunk_count} chunks), rate: {current_rate / 125000:.2f} Mbits/s (target: {bytes_per_second / 125000:.2f} Mbits/s)")
-                            else:
-                                yield chunk
-                
-                # End marker: 4 zero bytes
-                end_marker = struct.pack('>I', 0)
-                if allocated_bandwidth > 0:
-                    # Throttle end marker
-                    current_time = time.time()
-                    expected_time = last_chunk_time + (len(end_marker) / bytes_per_second)
-                    if current_time < expected_time:
-                        sleep_time = expected_time - current_time
-                        if sleep_time > 0.5:
-                            sleep_time = 0.5
-                        if sleep_time > 0:
-                            await asyncio.sleep(sleep_time)
-                
-                yield end_marker
-                    
-            except Exception as e:
-                logger.error(f"Error generating binary stream: {e}", exc_info=True)
-                raise
-        
-        return StreamingResponse(
-            generate_binary_stream(),
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="download_{download_id}.bin"',
-                "Content-Type": "application/octet-stream"
-            }
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in download_files_as_binary: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error creating binary archive: {str(e)}"
-        )
-
-
 @router.get("/clients/connected")
 async def get_connected_clients(
     current_user: dict = Depends(require_admin_role),
@@ -3434,15 +3146,18 @@ async def register_p2p_client(
             """Background task to check port and update connection info."""
             try:
                 if external_ip and port_to_test:
+                    logger.info(f"Starting P2P port test for token_id {token_id}: testing {external_ip}:{port_to_test} (UPnP: {body.upnp_enabled}, timeout: 2.0s)")
                     p2p_port_accessible = await test_tcp_port(external_ip, port_to_test, timeout=2.0)
-                    logger.info(f"P2P port test for token_id {token_id}: {external_ip}:{port_to_test} - {'accessible' if p2p_port_accessible else 'not accessible'}")
+                    logger.info(f"P2P port test completed for token_id {token_id}: {external_ip}:{port_to_test} - {'accessible' if p2p_port_accessible else 'not accessible'}")
                     
                     # Update WebSocket connection info with port accessibility result if client is connected
                     from app.services.websocket_manager import get_websocket_manager
                     ws_manager = get_websocket_manager()
+                    logger.debug(f"Updating connection info in Redis for token_id {token_id} with port_accessible={p2p_port_accessible}")
                     await ws_manager.update_connection_info_port_check(token_id, p2p_port_accessible)
+                    logger.info(f"Successfully updated port check result in Redis for token_id {token_id}: {p2p_port_accessible}")
                 else:
-                    logger.debug(f"P2P port test skipped for token_id {token_id}: missing IP or port")
+                    logger.warning(f"P2P port test skipped for token_id {token_id}: missing IP ({external_ip}) or port ({port_to_test})")
             except Exception as e:
                 logger.error(f"Error in background port check for token_id {token_id}: {e}", exc_info=True)
         
