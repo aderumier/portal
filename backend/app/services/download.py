@@ -339,6 +339,35 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
                 'source_file': source_filename
             }
     
+    # Check for msu-md and nes-msu systems: return all files from the ROM file's directory
+    if system and system.lower() in ('msu-md', 'nes-msu'):
+        source_dir = os.path.dirname(file_path)
+        if os.path.exists(source_dir) and os.path.isdir(source_dir):
+            try:
+                # Security check: ensure directory is within GAMES_PATH
+                from app.config import settings
+                if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(source_dir)]) == os.path.abspath(settings.GAMES_PATH):
+                    # List all files in the directory
+                    files = []
+                    for filename in os.listdir(source_dir):
+                        file_full_path = os.path.join(source_dir, filename)
+                        # Only include files, not directories
+                        if os.path.isfile(file_full_path):
+                            # Calculate relative path from source directory
+                            rel_path = os.path.relpath(file_full_path, source_dir).replace('\\', '/')
+                            files.append(rel_path)
+                    
+                    logger.info(f"{system}: Found {len(files)} files in directory {source_dir}")
+                    return {
+                        'files': files,
+                        'base_path_type': 'file',
+                        'source_file': source_filename
+                    }
+            except ValueError:
+                logger.warning(f"{system}: Security check failed for directory {source_dir}")
+            except Exception as e:
+                logger.error(f"{system}: Error scanning directory {source_dir}: {e}", exc_info=True)
+    
     # Check for .psn files
     if file_lower.endswith('.psn'):
         directory_name = parse_psn_file(file_path)

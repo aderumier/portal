@@ -49,8 +49,17 @@ async def test_tcp_port(host: str, port: int, timeout: float = 2.0) -> bool:
         writer.close()
         await writer.wait_closed()
         return True
-    except (asyncio.TimeoutError, ConnectionRefusedError, OSError, Exception) as e:
-        logger.debug(f"TCP port test failed for {host}:{port}: {type(e).__name__}")
+    except asyncio.TimeoutError:
+        logger.warning(f"TCP port test failed for {host}:{port}: Connection timeout after {timeout}s")
+        return False
+    except ConnectionRefusedError:
+        logger.warning(f"TCP port test failed for {host}:{port}: Connection refused (port not open or firewall blocking)")
+        return False
+    except OSError as e:
+        logger.warning(f"TCP port test failed for {host}:{port}: Network error - {type(e).__name__}: {str(e)}")
+        return False
+    except Exception as e:
+        logger.warning(f"TCP port test failed for {host}:{port}: Unexpected error - {type(e).__name__}: {str(e)}")
         return False
 
 class AddToQueueRequest(BaseModel):
@@ -229,144 +238,144 @@ async def discover_download_files(
         parsed_info = detect_and_parse_special_file(base_path, system=system)
         
         if parsed_info and parsed_info.get('files'):
-            # This is a special file (.m3u, .cue, .xbox360, .psvita, .psn, .m3u ps3)
-            source_dir = os.path.dirname(base_path)
-            parsed_files = parsed_info['files']
-            source_file = parsed_info.get('source_file', '')
-            
-            # Handle different special file types
-            if source_file.lower().endswith('.xbox360'):
-                if parsed_files:
-                    directory_name = parsed_files[0]
-                    dir_full_path = os.path.normpath(os.path.join(source_dir, directory_name))
-                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
-                        try:
-                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
-                                for root, dirs, files in os.walk(dir_full_path):
-                                    for filename in files:
-                                        file_full_path = os.path.join(root, filename)
-                                        rel_path_from_dir = os.path.relpath(file_full_path, dir_full_path)
-                                        rel_path = os.path.join(directory_name, rel_path_from_dir).replace('\\', '/')
-                                        if requested_files is None or rel_path in requested_files:
-                                            all_files_list.append({
-                                                'source_path': file_full_path,
-                                                'relative_path': rel_path,
-                                                'size': os.path.getsize(file_full_path)
-                                            })
-                                xbox360_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
-                                if requested_files is None or xbox360_rel_path in requested_files:
-                                    all_files_list.append({
-                                        'source_path': base_path,
-                                        'relative_path': xbox360_rel_path,
-                                        'size': os.path.getsize(base_path)
-                                    })
-                        except ValueError:
-                            pass
-            elif source_file.lower().endswith('.psvita'):
-                if parsed_files:
-                    directory_name = parsed_files[0]
-                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'psvita', 'vita3k', 'ux0', 'app', directory_name)
-                    dir_full_path = os.path.normpath(save_dir_path)
-                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
-                        try:
-                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
-                                for root, dirs, files in os.walk(dir_full_path):
-                                    for filename in files:
-                                        file_full_path = os.path.join(root, filename)
-                                        rel_path = os.path.relpath(file_full_path, dir_full_path).replace('\\', '/')
-                                        if requested_files is None or rel_path in requested_files:
-                                            all_files_list.append({
-                                                'source_path': file_full_path,
-                                                'relative_path': rel_path,
-                                                'size': os.path.getsize(file_full_path)
-                                            })
-                                psvita_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
-                                if requested_files is None or psvita_rel_path in requested_files:
-                                    all_files_list.append({
-                                        'source_path': base_path,
-                                        'relative_path': psvita_rel_path,
-                                        'size': os.path.getsize(base_path)
-                                    })
-                        except ValueError:
-                            pass
-            elif source_file.lower().endswith('.psn'):
-                if parsed_files:
-                    directory_name = parsed_files[0]
-                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game', directory_name)
-                    dir_full_path = os.path.normpath(save_dir_path)
-                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
-                        try:
-                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
-                                for root, dirs, files in os.walk(dir_full_path):
-                                    for filename in files:
-                                        file_full_path = os.path.join(root, filename)
-                                        rel_path = os.path.relpath(file_full_path, dir_full_path).replace('\\', '/')
-                                        if requested_files is None or rel_path in requested_files:
-                                            all_files_list.append({
-                                                'source_path': file_full_path,
-                                                'relative_path': rel_path,
-                                                'size': os.path.getsize(file_full_path)
-                                            })
-                                psn_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
-                                if requested_files is None or psn_rel_path in requested_files:
-                                    all_files_list.append({
-                                        'source_path': base_path,
-                                        'relative_path': psn_rel_path,
-                                        'size': os.path.getsize(base_path)
-                                    })
-                        except ValueError:
-                            pass
-            elif source_file.lower().endswith('.m3u') and system and system.lower() == 'ps3':
-                if parsed_files:
-                    directory_name = parsed_files[0]
-                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game', directory_name)
-                    dir_full_path = os.path.normpath(save_dir_path)
-                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
-                        try:
-                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
-                                for root, dirs, files in os.walk(dir_full_path):
-                                    for filename in files:
-                                        file_full_path = os.path.join(root, filename)
-                                        rel_path = os.path.relpath(file_full_path, dir_full_path).replace('\\', '/')
-                                        if requested_files is None or rel_path in requested_files:
-                                            all_files_list.append({
-                                                'source_path': file_full_path,
-                                                'relative_path': rel_path,
-                                                'size': os.path.getsize(file_full_path)
-                                            })
-                                m3u_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
-                                if requested_files is None or m3u_rel_path in requested_files:
-                                    all_files_list.append({
-                                        'source_path': base_path,
-                                        'relative_path': m3u_rel_path,
-                                        'size': os.path.getsize(base_path)
-                                    })
-                        except ValueError:
-                            pass
-            else:
-                # For .m3u and .cue files: files are relative to the source file's directory
-                for rel_file in parsed_files:
-                    file_full_path = os.path.normpath(os.path.join(source_dir, rel_file))
-                    if os.path.exists(file_full_path) and os.path.isfile(file_full_path):
-                        try:
-                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_full_path)]) == os.path.abspath(settings.GAMES_PATH):
-                                rel_path = rel_file.replace('\\', '/')
-                                if requested_files is None or rel_path in requested_files:
-                                    all_files_list.append({
-                                        'source_path': file_full_path,
-                                        'relative_path': rel_path,
-                                        'size': os.path.getsize(file_full_path)
-                                    })
-                        except ValueError:
-                            pass
-                if source_file:
-                    rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
-                    if requested_files is None or rel_path in requested_files:
-                        all_files_list.append({
-                            'source_path': base_path,
-                            'relative_path': rel_path,
-                            'size': os.path.getsize(base_path)
-                        })
+                # This is a special file (.m3u, .cue, .xbox360, .psvita, .psn, .m3u ps3)
+                source_dir = os.path.dirname(base_path)
+                parsed_files = parsed_info['files']
+                source_file = parsed_info.get('source_file', '')
+                
+                # Handle different special file types
+                if source_file.lower().endswith('.xbox360'):
+                    if parsed_files:
+                        directory_name = parsed_files[0]
+                        dir_full_path = os.path.normpath(os.path.join(source_dir, directory_name))
+                        if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                            try:
+                                if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                    for root, dirs, files in os.walk(dir_full_path):
+                                        for filename in files:
+                                            file_full_path = os.path.join(root, filename)
+                                            rel_path_from_dir = os.path.relpath(file_full_path, dir_full_path)
+                                            rel_path = os.path.join(directory_name, rel_path_from_dir).replace('\\', '/')
+                                            if requested_files is None or rel_path in requested_files:
+                                                all_files_list.append({
+                                                    'source_path': file_full_path,
+                                                    'relative_path': rel_path,
+                                                    'size': os.path.getsize(file_full_path)
+                                                })
+                                    xbox360_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                                    if requested_files is None or xbox360_rel_path in requested_files:
+                                        all_files_list.append({
+                                            'source_path': base_path,
+                                            'relative_path': xbox360_rel_path,
+                                            'size': os.path.getsize(base_path)
+                                        })
+                            except ValueError:
+                                pass
+                elif source_file.lower().endswith('.psvita'):
+                    if parsed_files:
+                        directory_name = parsed_files[0]
+                        save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'psvita', 'vita3k', 'ux0', 'app', directory_name)
+                        dir_full_path = os.path.normpath(save_dir_path)
+                        if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                            try:
+                                if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                    for root, dirs, files in os.walk(dir_full_path):
+                                        for filename in files:
+                                            file_full_path = os.path.join(root, filename)
+                                            rel_path = os.path.relpath(file_full_path, dir_full_path).replace('\\', '/')
+                                            if requested_files is None or rel_path in requested_files:
+                                                all_files_list.append({
+                                                    'source_path': file_full_path,
+                                                    'relative_path': rel_path,
+                                                    'size': os.path.getsize(file_full_path)
+                                                })
+                                    psvita_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                                    if requested_files is None or psvita_rel_path in requested_files:
+                                        all_files_list.append({
+                                            'source_path': base_path,
+                                            'relative_path': psvita_rel_path,
+                                            'size': os.path.getsize(base_path)
+                                        })
+                            except ValueError:
+                                pass
+                elif source_file.lower().endswith('.psn'):
+                    if parsed_files:
+                        directory_name = parsed_files[0]
+                        save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game', directory_name)
+                        dir_full_path = os.path.normpath(save_dir_path)
+                        if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                            try:
+                                if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                    for root, dirs, files in os.walk(dir_full_path):
+                                        for filename in files:
+                                            file_full_path = os.path.join(root, filename)
+                                            rel_path = os.path.relpath(file_full_path, dir_full_path).replace('\\', '/')
+                                            if requested_files is None or rel_path in requested_files:
+                                                all_files_list.append({
+                                                    'source_path': file_full_path,
+                                                    'relative_path': rel_path,
+                                                    'size': os.path.getsize(file_full_path)
+                                                })
+                                    psn_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                                    if requested_files is None or psn_rel_path in requested_files:
+                                        all_files_list.append({
+                                            'source_path': base_path,
+                                            'relative_path': psn_rel_path,
+                                            'size': os.path.getsize(base_path)
+                                        })
+                            except ValueError:
+                                pass
+                elif source_file.lower().endswith('.m3u') and system and system.lower() == 'ps3':
+                    if parsed_files:
+                        directory_name = parsed_files[0]
+                        save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game', directory_name)
+                        dir_full_path = os.path.normpath(save_dir_path)
+                        if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                            try:
+                                if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                    for root, dirs, files in os.walk(dir_full_path):
+                                        for filename in files:
+                                            file_full_path = os.path.join(root, filename)
+                                            rel_path = os.path.relpath(file_full_path, dir_full_path).replace('\\', '/')
+                                            if requested_files is None or rel_path in requested_files:
+                                                all_files_list.append({
+                                                    'source_path': file_full_path,
+                                                    'relative_path': rel_path,
+                                                    'size': os.path.getsize(file_full_path)
+                                                })
+                                    m3u_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                                    if requested_files is None or m3u_rel_path in requested_files:
+                                        all_files_list.append({
+                                            'source_path': base_path,
+                                            'relative_path': m3u_rel_path,
+                                            'size': os.path.getsize(base_path)
+                                        })
+                            except ValueError:
+                                pass
+                else:
+                    # For .m3u and .cue files: files are relative to the source file's directory
+                    for rel_file in parsed_files:
+                        file_full_path = os.path.normpath(os.path.join(source_dir, rel_file))
+                        if os.path.exists(file_full_path) and os.path.isfile(file_full_path):
+                            try:
+                                if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                    rel_path = rel_file.replace('\\', '/')
+                                    if requested_files is None or rel_path in requested_files:
+                                        all_files_list.append({
+                                            'source_path': file_full_path,
+                                            'relative_path': rel_path,
+                                            'size': os.path.getsize(file_full_path)
+                                        })
+                            except ValueError:
+                                pass
+                    if source_file:
+                        rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                        if requested_files is None or rel_path in requested_files:
+                            all_files_list.append({
+                                'source_path': base_path,
+                                'relative_path': rel_path,
+                                'size': os.path.getsize(base_path)
+                            })
     elif os.path.isdir(base_path):
         # Regular directory
         for root, dirs, filenames in os.walk(base_path):
@@ -972,14 +981,48 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
         
         logger.debug(f"Connection registered in WebSocket manager for token_id {token_id}")
         
-        # Check if bandwidth test is needed
+        # Restore bandwidth values from SQL table to Redis if they're missing in Redis
         from app.database import ApiToken
         from datetime import datetime, timezone, timedelta
+        import json
         
         api_token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
         bandwidth_test_needed = False
         
         if api_token:
+            # Check Redis first - only restore from SQL if values are missing in Redis
+            redis_client = await ws_manager._get_redis_client()
+            if redis_client:
+                try:
+                    redis_key = f"{ws_manager._redis_key_prefix}{token_id}"
+                    data = await redis_client.get(redis_key)
+                    if data:
+                        connection_info = json.loads(data)
+                        upload_bandwidth_in_redis = connection_info.get("upload_bandwidth")
+                        download_bandwidth_in_redis = connection_info.get("download_bandwidth")
+                        
+                        # Only restore from SQL if values are missing in Redis
+                        needs_restore = False
+                        if upload_bandwidth_in_redis is None and api_token.upload_bandwidth is not None:
+                            connection_info["upload_bandwidth"] = api_token.upload_bandwidth
+                            needs_restore = True
+                            logger.info(f"Restoring upload_bandwidth from SQL to Redis for token_id {token_id}: {api_token.upload_bandwidth} Mbits/s")
+                        
+                        if download_bandwidth_in_redis is None and api_token.download_bandwidth is not None:
+                            connection_info["download_bandwidth"] = api_token.download_bandwidth
+                            needs_restore = True
+                            logger.info(f"Restoring download_bandwidth from SQL to Redis for token_id {token_id}: {api_token.download_bandwidth} Mbits/s")
+                        
+                        if needs_restore:
+                            await redis_client.setex(redis_key, 86400, json.dumps(connection_info))  # 24 hour TTL
+                            logger.debug(f"Restored bandwidth values in Redis for token_id {token_id}")
+                        else:
+                            logger.debug(f"Bandwidth values already present in Redis for token_id {token_id}, skipping SQL restore")
+                    else:
+                        logger.debug(f"Connection info not found in Redis for token_id {token_id}, cannot restore bandwidth values")
+                except Exception as e:
+                    logger.warning(f"Failed to check/restore bandwidth values in Redis for token_id {token_id}: {e}")
+            
             # Check if last_bandwidth_test_time is None or > 24 hours old
             if api_token.last_bandwidth_test_time is None:
                 bandwidth_test_needed = True
@@ -1209,6 +1252,7 @@ async def request_download(
             if system and rom_path:
                 # Use rom_path for P2P inventory lookup (normalized, system-relative, without snapshot paths)
                 # This matches what's stored in the p2p_index (normalized paths without snapshot prefixes)
+                logger.info(f"Finding P2P peers for download_id={download_id}, token_id={token_id}, system={system}, rom_path={rom_path}, file_size={download_info.get('file_size')}")
                 p2p_peers = await P2PInventoryService.find_eligible_peers(
                     system=system,
                     rom_path=rom_path,  # Use rom_path instead of game_id
@@ -1217,10 +1261,13 @@ async def request_download(
                     rom_file_size_bytes=download_info.get('file_size')
                 )
                 download_info['p2p_peers'] = p2p_peers
+                peer_list_str = ', '.join([f"{p['external_ip']}:{p['external_port']}" for p in p2p_peers])
+                logger.info(f"Sending P2P peer list to client for download_id={download_id}, token_id={token_id}: {len(p2p_peers)} peers - [{peer_list_str}]")
             else:
+                logger.debug(f"P2P peer lookup skipped for download_id={download_id}: missing system or rom_path (system={system}, rom_path={rom_path})")
                 download_info['p2p_peers'] = []
         except Exception as e:
-            logger.debug(f"Error finding P2P peers for download: {e}")
+            logger.warning(f"Error finding P2P peers for download_id={download_id}, token_id={token_id}: {e}", exc_info=True)
             download_info['p2p_peers'] = []
     
     return {
@@ -3379,36 +3426,39 @@ async def register_p2p_client(
                 detail="Failed to register P2P client"
             )
         
-        # Test P2P port accessibility
-        p2p_port_accessible = None
-        try:
-            # Use UPnP port if enabled, otherwise use internal port (default 8765)
-            port_to_test = body.external_port if body.upnp_enabled and body.external_port else (body.internal_port or 8765)
-            
-            if external_ip and port_to_test:
-                p2p_port_accessible = await test_tcp_port(external_ip, port_to_test)
-                logger.info(f"P2P port test for token_id {token_id}: {external_ip}:{port_to_test} - {'accessible' if p2p_port_accessible else 'not accessible'}")
-            else:
-                logger.debug(f"P2P port test skipped for token_id {token_id}: missing IP or port")
-        except Exception as e:
-            logger.warning(f"Error testing P2P port for token_id {token_id}: {e}")
+        # Test P2P port accessibility in background (non-blocking)
+        # Use UPnP port if enabled, otherwise use internal port (default 8765)
+        port_to_test = body.external_port if body.upnp_enabled and body.external_port else (body.internal_port or 8765)
         
-        # Update WebSocket connection info with port accessibility result if client is connected
-        if p2p_port_accessible is not None:
-            from app.services.websocket_manager import get_websocket_manager
-            ws_manager = get_websocket_manager()
-            await ws_manager.update_connection_info_port_check(token_id, p2p_port_accessible)
+        async def check_port_and_update():
+            """Background task to check port and update connection info."""
+            try:
+                if external_ip and port_to_test:
+                    p2p_port_accessible = await test_tcp_port(external_ip, port_to_test, timeout=2.0)
+                    logger.info(f"P2P port test for token_id {token_id}: {external_ip}:{port_to_test} - {'accessible' if p2p_port_accessible else 'not accessible'}")
+                    
+                    # Update WebSocket connection info with port accessibility result if client is connected
+                    from app.services.websocket_manager import get_websocket_manager
+                    ws_manager = get_websocket_manager()
+                    await ws_manager.update_connection_info_port_check(token_id, p2p_port_accessible)
+                else:
+                    logger.debug(f"P2P port test skipped for token_id {token_id}: missing IP or port")
+            except Exception as e:
+                logger.error(f"Error in background port check for token_id {token_id}: {e}", exc_info=True)
         
-        # Log UPnP status
+        # Run port check in background (fire and forget - doesn't block the response)
+        import asyncio
+        asyncio.create_task(check_port_and_update())
+        
+        # Log UPnP status (port check is running in background)
         upnp_status = "enabled" if body.upnp_enabled else "disabled"
         port_info = f"external:{body.external_port}" if body.external_port else f"internal:{body.internal_port}"
-        port_accessible_status = f", Port accessible: {p2p_port_accessible}" if p2p_port_accessible is not None else ""
-        logger.info(f"Registered P2P client for token_id '{token_id}': {external_ip}:{body.external_port or body.internal_port}, UPnP: {upnp_status}, Port: {port_info}{port_accessible_status}")
+        logger.info(f"Registered P2P client for token_id '{token_id}': {external_ip}:{body.external_port or body.internal_port}, UPnP: {upnp_status}, Port: {port_info} (port check running in background)")
         
         return {
             "success": True,
             "message": "P2P client registered successfully",
-            "port_accessible": p2p_port_accessible
+            "port_accessible": None  # Will be updated in background
         }
         
     except HTTPException:

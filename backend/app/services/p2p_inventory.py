@@ -221,14 +221,18 @@ class P2PInventoryService:
             
             # Find all clients that have this ROM
             candidate_token_ids = await P2PInventoryService.find_clients_with_rom(system, rom_path)
+            logger.info(f"P2P peer selection for {system}/{rom_path}: Found {len(candidate_token_ids)} candidate clients with ROM")
             
             # Remove the requesting client
             candidate_token_ids.discard(exclude_token_id)
+            logger.info(f"P2P peer selection: Excluding requesting client token_id={exclude_token_id}, {len(candidate_token_ids)} candidates remaining")
             
             if not candidate_token_ids:
+                logger.info(f"P2P peer selection: No eligible peers found for {system}/{rom_path}")
                 return []
             
             eligible_peers = []
+            filtered_count = 0
             
             # For each candidate, get connection info and filter
             for token_id in candidate_token_ids:
@@ -264,11 +268,15 @@ class P2PInventoryService:
                     
                     # Filter: must have p2p_port_accessible=True
                     if not p2p_port_accessible:
+                        filtered_count += 1
+                        logger.debug(f"P2P peer selection: Filtered out token_id={token_id} (port not accessible)")
                         continue
                     
                     # Filter: Skip if file is large (>10MB) and peer has slow upload (<20 Mbits/s)
                     if rom_file_size_bytes is not None and rom_file_size_bytes > 10485760:  # 10MB in bytes
                         if upload_bandwidth is None or upload_bandwidth < 20.0:
+                            filtered_count += 1
+                            logger.debug(f"P2P peer selection: Filtered out token_id={token_id} (slow upload: {upload_bandwidth} Mbits/s for large file: {rom_file_size_bytes} bytes)")
                             continue  # Skip slow peers for large files
                     
                     eligible_peers.append({
@@ -285,12 +293,27 @@ class P2PInventoryService:
             # Sort by upload_bandwidth (descending, None values last - but we set None to 0.0 above)
             eligible_peers.sort(key=lambda x: x['upload_bandwidth'], reverse=True)
             
+            # Log selection summary
+            logger.info(f"P2P peer selection for {system}/{rom_path}: {len(eligible_peers)} eligible peers found (filtered out {filtered_count} candidates)")
+            if eligible_peers:
+                bandwidths = [p['upload_bandwidth'] for p in eligible_peers]
+                logger.info(f"P2P peer selection: Upload bandwidths - min={min(bandwidths):.2f}, max={max(bandwidths):.2f}, avg={sum(bandwidths)/len(bandwidths):.2f} Mbits/s")
+            
             # Remove upload_bandwidth from results (not needed by client)
+            peers_to_send = []
             for peer in eligible_peers:
-                del peer['upload_bandwidth']
+                peer_data = {
+                    'external_ip': peer['external_ip'],
+                    'external_port': peer['external_port'],
+                    'token_id': peer['token_id']
+                }
+                peers_to_send.append(peer_data)
             
             # Return up to limit entries
-            return eligible_peers[:limit]
+            final_peers = peers_to_send[:limit]
+            peer_list_str = ', '.join([f"{p['external_ip']}:{p['external_port']}" for p in final_peers])
+            logger.info(f"P2P peer selection for {system}/{rom_path}: Returning {len(final_peers)} peers (limit={limit}): [{peer_list_str}]")
+            return final_peers
             
         except Exception as e:
             logger.error(f"Error finding eligible peers for {system}/{rom_path}: {e}", exc_info=True)

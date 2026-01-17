@@ -528,10 +528,11 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
     }
   }, [hasMoreGames, loading])
 
-  // Get unique subdirectories from backend counts (excluding root) - must be before early returns
+  // Get unique subdirectories from backend counts (excluding root and categories with only 1 game) - must be before early returns
   const subdirectories = React.useMemo(() => {
     return Object.keys(subdirectoryCounts)
       .filter(key => key !== '(root)')
+      .filter(key => (subdirectoryCounts[key] || 0) > 1) // Only show categories with more than 1 game
       .sort()
   }, [subdirectoryCounts])
   
