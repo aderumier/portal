@@ -26,6 +26,43 @@ import struct
 # Client version
 CLIENT_VERSION = "0.5"
 
+# Configure stdout/stderr for Windows to handle non-ASCII characters gracefully
+# This prevents encoding errors when third-party libraries (like internetspeedtest) print emojis
+if platform.system() == 'Windows':
+    class ASCIISafeStream:
+        """Wrapper for stdout/stderr that strips non-ASCII characters."""
+        def __init__(self, original_stream):
+            self.original_stream = original_stream
+            # Preserve original encoding attribute if it exists
+            if hasattr(original_stream, 'encoding'):
+                self.encoding = original_stream.encoding
+        
+        def write(self, text):
+            # Convert to ASCII-safe string before writing
+            if isinstance(text, str):
+                # Encode to ASCII with 'replace' error handling, then decode back
+                # This removes any non-ASCII characters
+                ascii_text = text.encode('ascii', 'replace').decode('ascii')
+                # Remove the replacement character for cleaner output
+                ascii_text = ascii_text.replace('\ufffd', '')
+                return self.original_stream.write(ascii_text)
+            else:
+                # For bytes, pass through (shouldn't happen with TextIOWrapper)
+                return self.original_stream.write(text)
+        
+        def flush(self):
+            return self.original_stream.flush()
+        
+        def __getattr__(self, name):
+            # Forward any other attribute access to the original stream
+            return getattr(self.original_stream, name)
+    
+    # Wrap stdout and stderr to sanitize non-ASCII characters
+    if not isinstance(sys.stdout, ASCIISafeStream):
+        sys.stdout = ASCIISafeStream(sys.stdout)
+    if not isinstance(sys.stderr, ASCIISafeStream):
+        sys.stderr = ASCIISafeStream(sys.stderr)
+
 def read_config_ini(config_path):
     """Read config.ini file and return a dictionary of settings.
     
@@ -104,6 +141,19 @@ else:
 log_dir = os.path.dirname(log_file_path)
 os.makedirs(log_dir, exist_ok=True)
 
+# Custom formatter that strips non-ASCII characters for Windows compatibility
+class ASCIIFormatter(logging.Formatter):
+    """Formatter that converts log messages to ASCII-only for Windows compatibility."""
+    def format(self, record):
+        # Get the formatted message from parent
+        formatted = super().format(record)
+        # Remove or replace non-ASCII characters
+        # Replace common emojis with ASCII equivalents, then remove any remaining non-ASCII
+        ascii_safe = formatted.encode('ascii', 'replace').decode('ascii')
+        # Replace replacement character (?) with empty string for cleaner output
+        ascii_safe = ascii_safe.replace('\ufffd', '')
+        return ascii_safe
+
 # Configure root logger with file handler only (no console output)
 logger = logging.getLogger()
 logger.setLevel(getattr(logging, log_level, logging.INFO))
@@ -120,7 +170,7 @@ file_handler = RotatingFileHandler(
     encoding='utf-8'  # Use UTF-8 encoding to support Unicode characters
 )
 file_handler.setLevel(getattr(logging, log_level, logging.INFO))
-file_handler.setFormatter(logging.Formatter(
+file_handler.setFormatter(ASCIIFormatter(
     '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 ))
@@ -139,7 +189,7 @@ class StartupLogHandler(logging.Handler):
         super().__init__()
         self.logs = []
         self.setLevel(logging.DEBUG)
-        self.setFormatter(logging.Formatter(
+        self.setFormatter(ASCIIFormatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         ))
@@ -174,7 +224,7 @@ class DownloadLogHandler(logging.Handler):
         self.download_id = download_id
         self.logs = []
         self.setLevel(logging.DEBUG)
-        self.setFormatter(logging.Formatter(
+        self.setFormatter(ASCIIFormatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         ))
