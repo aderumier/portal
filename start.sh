@@ -66,10 +66,14 @@ start_backend() {
         echo "Warning: Some dependencies may have failed to install. Check $LOG_DIR/backend_install.log"
     fi
     
-    # Start backend server using venv python
-    nohup $VENV_PYTHON -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$LOG_DIR/backend.log" 2>&1 &
+    # Get number of workers from environment (default: 4)
+    BACKEND_WORKERS=${BACKEND_WORKERS:-4}
+    echo "Starting backend with $BACKEND_WORKERS worker(s)..."
+    
+    # Start backend server using venv python with multiple workers
+    nohup $VENV_PYTHON -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers $BACKEND_WORKERS > "$LOG_DIR/backend.log" 2>&1 &
     BACKEND_PID=$!
-    echo "Backend started with PID: $BACKEND_PID"
+    echo "Backend started with PID: $BACKEND_PID (workers: $BACKEND_WORKERS)"
     echo "$BACKEND_PID" >> "$PID_FILE"
     
     # Wait a moment to check if it started successfully

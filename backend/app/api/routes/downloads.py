@@ -139,17 +139,16 @@ async def discover_download_files(
         )
     # If not in Redis, it's a user_queue item (not active) - no pause check needed
     
-    # Get platform from Redis
+    # Get platform from Redis connection info
     platform = 'linux'
     try:
-        ws_manager = get_websocket_manager()
-        redis_client = await ws_manager._get_redis_client()
-        if redis_client and token_id:
-            redis_key = f"ws_client:{token_id}"
-            conn_data = await redis_client.get(redis_key)
-            if conn_data:
-                conn_info = json.loads(conn_data)
-                platform = conn_info.get('platform', 'linux')
+        from app.services.websocket_manager import get_redis_ws_client
+        redis_client = get_redis_ws_client()
+        if redis_client:
+            key = f"ws:connections:{token_id}"
+            platform_str = await redis_client.hget(key, 'platform')
+            if platform_str:
+                platform = platform_str
     except Exception as e:
         logger.debug(f"Could not get platform from Redis: {e}")
     
@@ -981,6 +980,7 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
     Server will send notifications when games are added to user_queue for the connected token_id.
     """
     await websocket.accept()
+    logger.info(f"WebSocket connection accepted, websocket_id={id(websocket)}")
     
     # Get token, version, and platform from query parameters
     token = websocket.query_params.get("token")
@@ -1050,47 +1050,38 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
         
         logger.debug(f"Connection registered in WebSocket manager for token_id {token_id}")
         
-        # Restore bandwidth values from SQL table to Redis if they're missing in Redis
+        # Restore bandwidth values from SQL table to in-memory connection info if they're missing
         from app.database import ApiToken
         from datetime import datetime, timezone, timedelta
-        import json
         
         api_token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
         bandwidth_test_needed = False
         
         if api_token:
-            # Check Redis first - only restore from SQL if values are missing in Redis
-            redis_client = await ws_manager._get_redis_client()
+            # Restore bandwidth values from SQL to Redis if missing
+            from app.services.websocket_manager import get_redis_ws_client
+            redis_client = get_redis_ws_client()
             if redis_client:
                 try:
-                    redis_key = f"{ws_manager._redis_key_prefix}{token_id}"
-                    data = await redis_client.get(redis_key)
-                    if data:
-                        connection_info = json.loads(data)
-                        upload_bandwidth_in_redis = connection_info.get("upload_bandwidth")
-                        download_bandwidth_in_redis = connection_info.get("download_bandwidth")
-                        
-                        # Only restore from SQL if values are missing in Redis
-                        needs_restore = False
-                        if upload_bandwidth_in_redis is None and api_token.upload_bandwidth is not None:
-                            connection_info["upload_bandwidth"] = api_token.upload_bandwidth
-                            needs_restore = True
-                            logger.info(f"Restoring upload_bandwidth from SQL to Redis for token_id {token_id}: {api_token.upload_bandwidth} Mbits/s")
-                        
-                        if download_bandwidth_in_redis is None and api_token.download_bandwidth is not None:
-                            connection_info["download_bandwidth"] = api_token.download_bandwidth
-                            needs_restore = True
-                            logger.info(f"Restoring download_bandwidth from SQL to Redis for token_id {token_id}: {api_token.download_bandwidth} Mbits/s")
-                        
-                        if needs_restore:
-                            await redis_client.setex(redis_key, 86400, json.dumps(connection_info))  # 24 hour TTL
-                            logger.debug(f"Restored bandwidth values in Redis for token_id {token_id}")
-                        else:
-                            logger.debug(f"Bandwidth values already present in Redis for token_id {token_id}, skipping SQL restore")
-                    else:
-                        logger.debug(f"Connection info not found in Redis for token_id {token_id}, cannot restore bandwidth values")
+                    key = f"ws:connections:{token_id}"
+                    upload_bw = await redis_client.hget(key, 'upload_bandwidth')
+                    download_bw = await redis_client.hget(key, 'download_bandwidth')
+                    
+                    needs_update = False
+                    if (not upload_bw or upload_bw == '') and api_token.upload_bandwidth is not None:
+                        await redis_client.hset(key, 'upload_bandwidth', str(api_token.upload_bandwidth))
+                        needs_update = True
+                        logger.info(f"Restoring upload_bandwidth from SQL to Redis for token_id {token_id}: {api_token.upload_bandwidth} Mbits/s")
+                    
+                    if (not download_bw or download_bw == '') and api_token.download_bandwidth is not None:
+                        await redis_client.hset(key, 'download_bandwidth', str(api_token.download_bandwidth))
+                        needs_update = True
+                        logger.info(f"Restoring download_bandwidth from SQL to Redis for token_id {token_id}: {api_token.download_bandwidth} Mbits/s")
+                    
+                    if needs_update:
+                        logger.debug(f"Restored bandwidth values in Redis for token_id {token_id}")
                 except Exception as e:
-                    logger.warning(f"Failed to check/restore bandwidth values in Redis for token_id {token_id}: {e}")
+                    logger.warning(f"Failed to restore bandwidth values in Redis for token_id {token_id}: {e}")
             
             # Check if last_bandwidth_test_time is None or > 24 hours old
             if api_token.last_bandwidth_test_time is None:
@@ -1230,23 +1221,34 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
                         logger.debug(f"Error sending ping to token_id {token_id}: {e}")
                         break
                         
-        except WebSocketDisconnect:
-            logger.info(f"WebSocket disconnected: token_id={token_id}")
+        except WebSocketDisconnect as e:
+            logger.info(f"WebSocket disconnected (WebSocketDisconnect): token_id={token_id}, code={getattr(e, 'code', 'N/A')}, reason={getattr(e, 'reason', 'N/A')}")
         except RuntimeError as e:
             # Connection closed
-            logger.info(f"WebSocket connection closed for token_id {token_id}: {e}")
+            logger.info(f"WebSocket connection closed (RuntimeError): token_id={token_id}, error={e}")
         except Exception as e:
             logger.error(f"WebSocket error for token_id={token_id}: {e}", exc_info=True)
         finally:
             # Remove connection on disconnect (only if it's still this connection)
             # This prevents removing a new connection if this is the old one being replaced
+            logger.info(f"WebSocket finally block executing: token_id={token_id}, attempting to remove connection")
             try:
                 await ws_manager.remove_connection(token_id, websocket)
+                logger.info(f"Successfully removed WebSocket connection for token_id={token_id}")
             except Exception as e:
-                logger.debug(f"Error removing connection (may already be replaced): {e}")
+                logger.warning(f"Error removing connection for token_id={token_id} (may already be replaced): {e}", exc_info=True)
             
     except Exception as e:
-        logger.error(f"Error in WebSocket connection: {e}", exc_info=True)
+        logger.error(f"Error in WebSocket connection (outer exception): {e}", exc_info=True)
+        # Also remove connection if error occurs before message loop
+        try:
+            if 'token_id' in locals():
+                ws_manager = get_websocket_manager()
+                logger.info(f"Attempting to remove connection in outer exception handler: token_id={token_id}")
+                await ws_manager.remove_connection(token_id, websocket)
+                logger.info(f"Successfully removed WebSocket connection in outer exception handler for token_id={token_id}")
+        except Exception as remove_error:
+            logger.debug(f"Error removing connection in outer exception handler (connection may not have been registered): {remove_error}")
         try:
             await websocket.close(code=1011, reason="Internal server error")
         except:
@@ -1755,18 +1757,16 @@ async def download_file(
                         if not system:
                             system = game.get('system', '')
                         if not game_id:
-                            # Get platform from Redis for resolution
+                            # Get platform from Redis connection info for resolution
                             platform = None
                             try:
-                                ws_manager = get_websocket_manager()
-                                redis_client = await ws_manager._get_redis_client()
-                                if redis_client and token_id:
-                                    redis_key = f"ws_client:{token_id}"
-                                    conn_data = await redis_client.get(redis_key)
-                                    if conn_data:
-                                        import json
-                                        conn_info = json.loads(conn_data)
-                                        platform = conn_info.get('platform', 'linux')
+                                from app.services.websocket_manager import get_redis_ws_client
+                                redis_client = get_redis_ws_client()
+                                if redis_client:
+                                    key = f"ws:connections:{token_id}"
+                                    platform_str = await redis_client.hget(key, 'platform')
+                                    if platform_str:
+                                        platform = platform_str
                             except Exception as e:
                                 logger.debug(f"Could not get platform from Redis: {e}")
                             
@@ -1811,16 +1811,14 @@ async def download_file(
         # Get platform from Redis connection info (if available) - needed for unified key resolution
         platform = None
         try:
-            ws_manager = get_websocket_manager()
-            redis_client = await ws_manager._get_redis_client()
-            if redis_client and token_id:
-                redis_key = f"ws_client:{token_id}"
-                conn_data = await redis_client.get(redis_key)
-                if conn_data:
-                    import json
-                    conn_info = json.loads(conn_data)
-                    platform = conn_info.get('platform', 'linux')  # Default to linux
-                    logger.debug(f"Got platform from Redis connection info: {platform}")
+            from app.services.websocket_manager import get_redis_ws_client
+            redis_client = get_redis_ws_client()
+            if redis_client:
+                key = f"ws:connections:{token_id}"
+                platform_str = await redis_client.hget(key, 'platform')
+                if platform_str:
+                    platform = platform_str  # Default to linux
+                    logger.debug(f"Got platform from Redis: {platform}")
         except Exception as e:
             logger.debug(f"Could not get platform from Redis: {e}")
         
@@ -3055,25 +3053,17 @@ async def submit_bandwidth_test(
         
         # Update Redis connection info with bandwidth values
         ws_manager = get_websocket_manager()
-        # Get current connection info and update it
-        connections = await ws_manager.get_all_connections()
-        for conn in connections:
-            if conn.get("token_id") == token_id:
-                # Update Redis with new bandwidth values
-                redis_client = await ws_manager._get_redis_client()
-                if redis_client:
-                    try:
-                        redis_key = f"{ws_manager._redis_key_prefix}{token_id}"
-                        data = await redis_client.get(redis_key)
-                        if data:
-                            connection_info = json.loads(data)
-                            connection_info["upload_bandwidth"] = upload_bandwidth
-                            connection_info["download_bandwidth"] = download_bandwidth
-                            await redis_client.setex(redis_key, 86400, json.dumps(connection_info))  # 24 hour TTL
-                            logger.debug(f"Updated bandwidth in Redis for token_id {token_id}")
-                    except Exception as e:
-                        logger.warning(f"Failed to update bandwidth in Redis: {e}")
-                break
+        # Update bandwidth values in Redis
+        from app.services.websocket_manager import get_redis_ws_client
+        redis_client = get_redis_ws_client()
+        if redis_client:
+            try:
+                key = f"ws:connections:{token_id}"
+                await redis_client.hset(key, 'upload_bandwidth', str(upload_bandwidth))
+                await redis_client.hset(key, 'download_bandwidth', str(download_bandwidth))
+                logger.debug(f"Updated bandwidth in Redis for token_id {token_id}: upload={upload_bandwidth:.2f} Mbits/s, download={download_bandwidth:.2f} Mbits/s")
+            except Exception as e:
+                logger.warning(f"Failed to update bandwidth in Redis for token_id {token_id}: {e}")
         
         return {
             "success": True,

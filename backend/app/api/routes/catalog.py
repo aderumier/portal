@@ -306,4 +306,3 @@ async def set_catalog_preference(
     """Set user's catalog type preference in session."""
     request.session['catalog_type'] = catalog_type
     return {"catalog_type": catalog_type, "message": "Preference updated"}
-

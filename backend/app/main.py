@@ -94,6 +94,9 @@ async def preload_game_data():
     # Start background task for refreshing Redis TTL for active WebSocket connections
     asyncio.create_task(refresh_websocket_connection_ttl_periodically())
     
+    # Start background task for cleaning up dead WebSocket connections
+    asyncio.create_task(cleanup_dead_websocket_connections())
+    
     # Run initial p2p_index rebuild at startup
     if settings.P2P_ENABLED:
         try:
@@ -454,6 +457,31 @@ async def refresh_websocket_connection_ttl_periodically():
         except Exception as e:
             logger.error(f"Error in refresh_websocket_connection_ttl_periodically background task: {e}", exc_info=True)
             await asyncio.sleep(60)  # Wait 1 minute before retrying on error
+
+async def cleanup_dead_websocket_connections():
+    """Background task to periodically clean up dead WebSocket connections.
+    
+    Runs every minute to check and remove connections that are no longer active.
+    This ensures that /connected-clients only shows actually connected clients.
+    """
+    from app.services.websocket_manager import get_websocket_manager
+    
+    while True:
+        try:
+            await asyncio.sleep(60)  # Run every minute
+            
+            ws_manager = get_websocket_manager()
+            # Call get_all_connections which will automatically clean up dead connections
+            connections = await ws_manager.get_all_connections()
+            
+            # Log if any dead connections were found and removed
+            # (The cleanup happens inside get_all_connections)
+            logger.debug(f"WebSocket connection cleanup check: {len(connections)} active connections")
+            
+        except Exception as e:
+            logger.error(f"Error in cleanup_dead_websocket_connections: {e}", exc_info=True)
+            # Continue running even if there's an error
+            await asyncio.sleep(60)
 
 async def cleanup_stuck_downloads():
     """Background task to detect and clean up stuck downloads.

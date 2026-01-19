@@ -107,12 +107,20 @@ server {
         # auth_basic_user_file /etc/nginx/.htpasswd;
     }
 
+    # Backend API upstream with sticky sessions (ip_hash)
+    # Note: With uvicorn --workers, all workers share port 8000
+    # ip_hash ensures same client IP always hits the same nginx->uvicorn connection
+    upstream backend_workers {
+        ip_hash;  # Sticky sessions based on IP
+        server 127.0.0.1:8000;
+    }
+
     # Backend API
     location /api {
         # Increase max body size for file uploads (e.g., media files)
         client_max_body_size 50M;
         
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://backend_workers;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

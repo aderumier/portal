@@ -8,7 +8,8 @@ User=pixn
 Group=pixn
 WorkingDirectory=/opt/batocera-games-catalog/backend
 Environment="PATH=/opt/batocera-games-catalog/backend/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/opt/batocera-games-catalog/backend/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+Environment="BACKEND_WORKERS=4"
+ExecStart=/opt/batocera-games-catalog/backend/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers $BACKEND_WORKERS
 Restart=always
 RestartSec=10
 StandardOutput=journal

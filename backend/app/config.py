@@ -51,6 +51,10 @@ class Settings:
     # Download service settings
     POLLING_INTERVAL: int = int(os.getenv('POLLING_INTERVAL', '10'))  # Seconds between queue checks
     
+    # Backend worker settings
+    BACKEND_WORKERS: int = int(os.getenv('BACKEND_WORKERS', '4'))  # Number of uvicorn workers
+    REDIS_WS_DB: int = int(os.getenv('REDIS_WS_DB', '4'))  # Redis database number for websocket tracking
+    
     # P2P settings
     P2P_ENABLED: bool = os.getenv('P2P_ENABLED', 'true').lower() == 'true'  # Enable P2P transfers (default: true)
     P2P_PORT: int = int(os.getenv('P2P_PORT', '8765'))  # Local port for P2P service (default: 8765)
