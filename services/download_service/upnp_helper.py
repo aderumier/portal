@@ -10,6 +10,8 @@ import random
 import html
 
 logger = logging.getLogger(__name__)
+# Ensure logger propagates to root logger so startup logs are captured
+logger.propagate = True
 
 # Try to import miniupnpc
 MINIUPNPC_AVAILABLE = False

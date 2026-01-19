@@ -881,6 +881,11 @@ except ImportError as e:
 # Import UPnP helper module (after logger is initialized)
 try:
     from upnp_helper import get_upnp_helper, UPnPHelper
+    # Ensure upnp_helper logger also uses StartupLogHandler to capture its logs
+    upnp_logger = logging.getLogger('upnp_helper')
+    if _startup_log_handler not in upnp_logger.handlers:
+        upnp_logger.addHandler(_startup_log_handler)
+    upnp_logger.propagate = True
     UPNP_HELPER_AVAILABLE = True
 except ImportError as e:
     UPNP_HELPER_AVAILABLE = False
@@ -4773,7 +4778,8 @@ async def setup_upnp_port_mapping(port: int):
             return None
         
         # Add port mapping with service name in description
-        description = f"RGS-{SERVICE_ID}"
+        hostname = socket.gethostname()
+        description = f"RGS-{hostname}"
         logger.info(f"UPnP: Adding port mapping for port {port} with description: {description}")
         mapping_success = await upnp_helper.add_port_mapping(
             internal_port=port,
