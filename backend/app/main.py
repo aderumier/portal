@@ -428,7 +428,7 @@ async def cleanup_p2p_index_periodically():
             await asyncio.sleep(86400)  # Run every 24 hours (86400 seconds)
             
             logger.info(f"[Worker {worker_id}] Starting periodic p2p_index cleanup...")
-            success = await P2PInventoryService.cleanup_p2p_index()
+            success = await P2PInventoryService.p2p_index_garbage_collector()
             if success:
                 logger.info(f"[Worker {worker_id}] Periodic p2p_index cleanup completed")
             else:

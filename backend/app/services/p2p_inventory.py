@@ -395,8 +395,8 @@ class P2PInventoryService:
             return []
     
     @staticmethod
-    async def cleanup_p2p_index() -> bool:
-        """Clean up the p2p_index by removing disconnected clients.
+    async def p2p_index_garbage_collector() -> bool:
+        """Garbage collect the p2p_index by removing disconnected clients.
         
         Process:
         1. Get all connected token_ids from WebSocket connections and P2P client info
