@@ -5,11 +5,12 @@ from starlette.requests import Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
-from app.database import get_db, DownloadQueue, User
+from app.database import get_db, DownloadQueue, User, ApiToken
 from app.services.download import DownloadService
 from app.services.websocket_manager import get_websocket_manager
 from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.roles import require_download_role, require_admin_role
+from app.api.middleware.guild import require_guild_member
 from app.api.routes.catalog import get_game_service
 from app.config import settings
 from typing import Optional
@@ -2979,8 +2980,8 @@ async def get_connected_clients(
                 # Note: get_client_connection_info() already returns custom_public_port as external_port if set
                 p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
                 upnp_enabled = p2p_info.get("upnp_enabled", False) if p2p_info else False
-                # Use custom port if set, otherwise use external_port from Redis (UPnP), otherwise internal_port
-                upnp_port = token.custom_public_port if token.custom_public_port is not None else (p2p_info.get("external_port") or p2p_info.get("internal_port") if p2p_info else None)
+                # Use custom port if set, otherwise use external_port from Redis (UPnP), otherwise internal_port, otherwise default 8765
+                upnp_port = token.custom_public_port if token.custom_public_port is not None else (p2p_info.get("external_port") or p2p_info.get("internal_port") if p2p_info else None) or settings.P2P_PORT
                 
                 # Get bandwidth from Redis (connection info) first, fallback to database
                 upload_bandwidth = conn.get("upload_bandwidth")
@@ -3011,6 +3012,159 @@ async def get_connected_clients(
                 })
     
     return {"connections": enriched_connections, "count": len(enriched_connections)}
+
+
+@router.get("/clients/{token_id}/logs")
+async def get_client_logs(
+    token_id: int,
+    current_user: dict = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+):
+    """Get client logs for a specific token (admin only)."""
+    try:
+        # Verify token exists
+        token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Token not found"
+            )
+        
+        # Determine project root (go up from backend/app/api/routes to project root)
+        project_root = Path(__file__).parent.parent.parent.parent
+        log_file_path = project_root / 'data' / 'clients_logs' / f"{token_id}.log"
+        
+        # Check if log file exists
+        if not log_file_path.exists():
+            return {
+                "success": True,
+                "logs": "",
+                "message": "No logs found for this client"
+            }
+        
+        # Read log file
+        try:
+            with open(log_file_path, 'r', encoding='utf-8') as f:
+                log_content = f.read()
+            
+            return {
+                "success": True,
+                "logs": log_content,
+                "token_id": token_id,
+                "token_name": token.name
+            }
+        except Exception as e:
+            logger.error(f"Error reading log file for token_id {token_id}: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error reading log file: {str(e)}"
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting client logs for token_id {token_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while getting client logs"
+        )
+
+
+@router.get("/clients/{token_id}/catalog")
+async def get_client_catalog(
+    token_id: int,
+    current_user: dict = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+):
+    """Get P2P catalog (inventory) for a specific token (admin only).
+    
+    Returns a tree structure of the client's ROM files organized by system and path.
+    """
+    try:
+        # Verify token exists
+        token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Token not found"
+            )
+        
+        # Get P2P inventory service
+        from app.services.p2p_inventory import P2PInventoryService, get_redis_p2p_client
+        redis_client = get_redis_p2p_client()
+        
+        if not redis_client:
+            return {
+                "success": True,
+                "catalog": {},
+                "message": "Redis not available"
+            }
+        
+        # Scan all p2p:index:* keys to find ROMs that include this token_id
+        inventory = {}  # {system: [path1, path2, ...]}
+        cursor = 0
+        
+        while True:
+            cursor, keys = await redis_client.scan(cursor, match="p2p:index:*", count=1000)
+            
+            for key in keys:
+                # Extract system/rom_path from key (format: p2p:index:{system}/{rom_path})
+                rom_key = key.replace("p2p:index:", "", 1)
+                
+                # Check if this token_id is in the set for this ROM
+                token_ids = await redis_client.smembers(key)
+                if str(token_id) in token_ids:
+                    # Parse system and rom_path
+                    if '/' in rom_key:
+                        system, rom_path = rom_key.split('/', 1)
+                        if system not in inventory:
+                            inventory[system] = []
+                        inventory[system].append(rom_path)
+            
+            if cursor == 0:
+                break
+        
+        # Build tree structure
+        catalog_tree = {}
+        for system, paths in inventory.items():
+            system_node = {}
+            
+            for path in paths:
+                # Split path into parts (directory structure)
+                parts = path.split('/')
+                current = system_node
+                
+                # Navigate/create tree nodes
+                for i, part in enumerate(parts):
+                    if part not in current:
+                        current[part] = {}
+                    
+                    # If this is the last part, mark it as a file
+                    if i == len(parts) - 1:
+                        current[part]['__is_file__'] = True
+                    else:
+                        current = current[part]
+            
+            catalog_tree[system] = system_node
+        
+        return {
+            "success": True,
+            "catalog": catalog_tree,
+            "token_id": token_id,
+            "token_name": token.name,
+            "total_systems": len(catalog_tree),
+            "total_files": sum(len(paths) for paths in inventory.values())
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting client catalog for token_id {token_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while getting client catalog"
+        )
+
 
 class BandwidthTestRequest(BaseModel):
     """Request model for bandwidth test submission."""
@@ -3188,6 +3342,80 @@ async def get_connected_devices(
         })
     
     return {"devices": devices}
+
+
+@router.post("/devices/{token_id}/retest-port")
+async def retest_device_port(
+    token_id: int,
+    current_user: dict = Depends(require_guild_member),
+    db: Session = Depends(get_db)
+):
+    """Retest P2P port accessibility for a specific device.
+    
+    Tests the port and updates the p2p_port_accessible status in Redis.
+    """
+    try:
+        user_id = current_user['id']
+        
+        # Verify token belongs to current user
+        token = db.query(ApiToken).filter(
+            and_(
+                ApiToken.id == token_id,
+                ApiToken.user_id == user_id
+            )
+        ).first()
+        
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Token not found or doesn't belong to user"
+            )
+        
+        # Get P2P connection info from Redis
+        from app.services.p2p_inventory import P2PInventoryService
+        p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
+        
+        if not p2p_info:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Device not connected or no connection info available"
+            )
+        
+        external_ip = p2p_info.get('external_ip')
+        external_port = p2p_info.get('external_port')
+        
+        if not external_ip or not external_port:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing IP or port information for testing"
+            )
+        
+        # Test port accessibility
+        logger.info(f"Retesting P2P port for token_id {token_id}: testing {external_ip}:{external_port}")
+        p2p_port_accessible = await test_tcp_port(external_ip, external_port, timeout=2.0)
+        logger.info(f"P2P port retest completed for token_id {token_id}: {external_ip}:{external_port} - {'accessible' if p2p_port_accessible else 'not accessible'}")
+        
+        # Update WebSocket connection info with port accessibility result
+        from app.services.websocket_manager import get_websocket_manager
+        ws_manager = get_websocket_manager()
+        await ws_manager.update_connection_info_port_check(token_id, p2p_port_accessible)
+        
+        return {
+            "success": True,
+            "token_id": token_id,
+            "external_ip": external_ip,
+            "external_port": external_port,
+            "p2p_port_accessible": p2p_port_accessible
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retesting port for token_id {token_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while retesting port"
+        )
 
 
 @router.post("/p2p/inventory")
@@ -3389,17 +3617,14 @@ async def register_p2p_client(
         async def check_port_and_update():
             """Background task to check port and update connection info."""
             try:
-                # Skip port test if custom public port is set
-                if custom_port is not None:
-                    logger.info(f"P2P port test skipped for token_id {token_id}: custom public port is set ({custom_port})")
-                    return
-                
                 if external_ip and port_to_test:
-                    logger.info(f"Starting P2P port test for token_id {token_id}: testing {external_ip}:{port_to_test} (UPnP: {body.upnp_enabled}, timeout: 2.0s)")
+                    # Test port for status reporting (always test, including custom ports)
+                    port_source = "custom" if custom_port is not None else ("UPnP" if body.upnp_enabled and body.external_port else "internal")
+                    logger.info(f"Starting P2P port test for token_id {token_id}: testing {external_ip}:{port_to_test} (source: {port_source}, timeout: 2.0s)")
                     p2p_port_accessible = await test_tcp_port(external_ip, port_to_test, timeout=2.0)
                     logger.info(f"P2P port test completed for token_id {token_id}: {external_ip}:{port_to_test} - {'accessible' if p2p_port_accessible else 'not accessible'}")
                     
-                    # Update WebSocket connection info with port accessibility result if client is connected
+                    # Update WebSocket connection info with port accessibility result
                     from app.services.websocket_manager import get_websocket_manager
                     ws_manager = get_websocket_manager()
                     logger.debug(f"Updating connection info in Redis for token_id {token_id} with port_accessible={p2p_port_accessible}")

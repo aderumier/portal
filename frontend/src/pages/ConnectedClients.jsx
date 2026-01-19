@@ -8,6 +8,11 @@ const ConnectedClients = () => {
   const [connections, setConnections] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [logModalOpen, setLogModalOpen] = useState(false)
+  const [logContent, setLogContent] = useState('')
+  const [logLoading, setLogLoading] = useState(false)
+  const [logTokenId, setLogTokenId] = useState(null)
+  const [logTokenName, setLogTokenName] = useState('')
 
   useEffect(() => {
     if (isAdmin) {
@@ -44,6 +49,30 @@ const ConnectedClients = () => {
   const formatBandwidth = (mbps) => {
     if (mbps === null || mbps === undefined) return 'N/A'
     return `${mbps.toFixed(2)} Mbits/s`
+  }
+
+  const handleViewLogs = async (tokenId, tokenName) => {
+    try {
+      setLogLoading(true)
+      setLogTokenId(tokenId)
+      setLogTokenName(tokenName || `Token ${tokenId}`)
+      setLogModalOpen(true)
+      
+      const response = await client.get(`/api/download/clients/${tokenId}/logs`)
+      setLogContent(response.data.logs || response.data.message || 'No logs available')
+    } catch (err) {
+      console.error('Error loading client logs:', err)
+      setLogContent(`Error loading logs: ${err.response?.data?.detail || err.message || 'Unknown error'}`)
+    } finally {
+      setLogLoading(false)
+    }
+  }
+
+  const handleCloseLogModal = () => {
+    setLogModalOpen(false)
+    setLogContent('')
+    setLogTokenId(null)
+    setLogTokenName('')
   }
 
   if (loading) {
@@ -85,12 +114,12 @@ const ConnectedClients = () => {
             <div className="grid-cell">Client Version</div>
             <div className="grid-cell">UPnP</div>
             <div className="grid-cell">Port</div>
-            <div className="grid-cell">Custom Public Port</div>
             <div className="grid-cell">OPEN</div>
             <div className="grid-cell">Upload Bandwidth</div>
             <div className="grid-cell">Download Bandwidth</div>
             <div className="grid-cell">Connected At</div>
             <div className="grid-cell">Token ID</div>
+            <div className="grid-cell">Action</div>
           </div>
           {connections.map((conn, index) => (
             <div key={conn.token_id || index} className="clients-grid-row">
@@ -109,19 +138,18 @@ const ConnectedClients = () => {
                 )}
               </div>
               <div className="grid-cell">
-                {conn.upnp_port ? (
-                  <>
-                    {conn.upnp_port}
-                    {conn.custom_public_port && (
-                      <span style={{ color: '#5865f2', marginLeft: '4px' }} title="Custom public port">(Custom)</span>
-                    )}
-                  </>
-                ) : (
-                  'N/A'
-                )}
-              </div>
-              <div className="grid-cell">
-                {conn.custom_public_port ? conn.custom_public_port : 'N/A'}
+                {(() => {
+                  // Priority: custom_public_port > upnp_port > default 8765
+                  const port = conn.custom_public_port || conn.upnp_port || 8765
+                  return (
+                    <>
+                      {port}
+                      {conn.custom_public_port && (
+                        <span style={{ color: '#5865f2', marginLeft: '4px' }} title="Custom public port">(Custom)</span>
+                      )}
+                    </>
+                  )
+                })()}
               </div>
               <div className="grid-cell">
                 {conn.p2p_port_accessible === true ? (
@@ -136,8 +164,35 @@ const ConnectedClients = () => {
               <div className="grid-cell">{formatBandwidth(conn.download_bandwidth)}</div>
               <div className="grid-cell">{formatDate(conn.connected_at)}</div>
               <div className="grid-cell">{conn.token_id || 'N/A'}</div>
+              <div className="grid-cell">
+                <button
+                  className="view-logs-btn"
+                  onClick={() => handleViewLogs(conn.token_id, conn.token_name)}
+                  title="View client logs"
+                >
+                  📋
+                </button>
+              </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {logModalOpen && (
+        <div className="log-modal-overlay" onClick={handleCloseLogModal}>
+          <div className="log-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="log-modal-header">
+              <h2>Client Logs - {logTokenName}</h2>
+              <button className="log-modal-close" onClick={handleCloseLogModal}>×</button>
+            </div>
+            <div className="log-modal-content">
+              {logLoading ? (
+                <div className="log-loading">Loading logs...</div>
+              ) : (
+                <pre className="log-content">{logContent}</pre>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

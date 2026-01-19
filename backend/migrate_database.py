@@ -312,6 +312,7 @@ def migrate_database():
             ("p2p_total_download_mb", "REAL NOT NULL DEFAULT 0.0"),
             ("p2p_total_upload_mb", "REAL NOT NULL DEFAULT 0.0"),
             ("custom_public_port", "INTEGER"),
+            ("p2p_game_count", "INTEGER NOT NULL DEFAULT 0"),
         ]
         
         for col_name, col_def in token_columns_to_add:

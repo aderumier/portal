@@ -1,6 +1,6 @@
 .connected-clients {
   padding: 20px;
-  max-width: 100%;
+  width: 100%;
   margin: 0 auto;
 }
 
@@ -37,7 +37,7 @@
 
 .clients-grid-header {
   display: grid;
-  grid-template-columns: 1.5fr 1.8fr 2fr 1.5fr 1.2fr 1fr 1fr 1.2fr 1fr 1.5fr 1.5fr 2.5fr 1fr;
+  grid-template-columns: 1.5fr 1.8fr 2fr 1.5fr 1.2fr 1fr 1.2fr 1fr 1.5fr 1.5fr 2.5fr 1fr 1fr;
   gap: 1px;
   background-color: #e0e0e0;
   font-weight: 600;
@@ -48,7 +48,7 @@
 
 .clients-grid-row {
   display: grid;
-  grid-template-columns: 1.5fr 1.8fr 2fr 1.5fr 1.2fr 1fr 1fr 1.2fr 1fr 1.5fr 1.5fr 2.5fr 1fr;
+  grid-template-columns: 1.5fr 1.8fr 2fr 1.5fr 1.2fr 1fr 1.2fr 1fr 1.5fr 1.5fr 2.5fr 1fr 1fr;
   gap: 1px;
   background-color: #f9f9f9;
   border-bottom: 1px solid #e0e0e0;
@@ -73,5 +73,110 @@
   background-color: #ffebee;
   border-radius: 4px;
   margin: 20px 0;
+}
+
+.view-logs-btn {
+  padding: 0.3rem 0.5rem;
+  font-size: 1rem;
+  background-color: #2196f3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  min-height: 2rem;
+}
+
+.view-logs-btn:hover {
+  background-color: #1976d2;
+}
+
+.log-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.log-modal {
+  background: white;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 900px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.log-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #e0e0e0;
+  background-color: #f5f5f5;
+  border-radius: 8px 8px 0 0;
+}
+
+.log-modal-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  color: #333;
+}
+
+.log-modal-close {
+  background: none;
+  border: none;
+  font-size: 2rem;
+  cursor: pointer;
+  color: #666;
+  line-height: 1;
+  padding: 0;
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.log-modal-close:hover {
+  background-color: #e0e0e0;
+}
+
+.log-modal-content {
+  padding: 1.5rem;
+  overflow: auto;
+  flex: 1;
+  background-color: #1e1e1e;
+}
+
+.log-loading {
+  text-align: center;
+  padding: 2rem;
+  color: #999;
+}
+
+.log-content {
+  margin: 0;
+  padding: 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
 }
 

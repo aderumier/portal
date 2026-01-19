@@ -112,10 +112,7 @@ async def update_custom_port(
     current_user: dict = Depends(require_guild_member),
     db: Session = Depends(get_db)
 ):
-    """Update custom public port for a token. Tests port accessibility before saving."""
-    from app.api.middleware.auth import get_client_ip
-    from app.services.p2p_inventory import P2PInventoryService
-    
+    """Update custom public port for a token. Port testing is skipped for custom ports."""
     user_id = current_user['id']
     custom_port = request.custom_public_port
     
@@ -148,39 +145,10 @@ async def update_custom_port(
             detail="Token not found or doesn't belong to user"
         )
     
-    # Test port if a custom port is being set (not clearing)
+    # Update custom port (port testing is skipped for custom ports)
     if custom_port is not None:
-        # Get external IP from P2P connection info or use client IP
-        external_ip = None
-        p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
-        if p2p_info and p2p_info.get('external_ip'):
-            external_ip = p2p_info.get('external_ip')
-        else:
-            # Fallback to client IP from request
-            client_ip = get_client_ip(http_request)
-            if client_ip:
-                external_ip = client_ip
-        
-        if not external_ip:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot determine external IP address for port testing. Please ensure the device is connected."
-            )
-        
-        # Test port accessibility with 2s timeout
-        logger.info(f"Testing custom port {external_ip}:{custom_port} for token_id {token_id} before saving")
-        port_accessible = await _test_tcp_port(external_ip, custom_port, timeout=2.0)
-        
-        if not port_accessible:
-            logger.warning(f"Port test failed for {external_ip}:{custom_port} (token_id {token_id}) - blocking port change")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Port {custom_port} is not accessible from {external_ip}. Please ensure the port is open and forwarded correctly."
-            )
-        
-        logger.info(f"Port test succeeded for {external_ip}:{custom_port} (token_id {token_id}) - allowing port change")
+        logger.info(f"Setting custom public port {custom_port} for token_id {token_id} (port testing skipped)")
     
-    # Update custom port (only if test passed or clearing)
     token.custom_public_port = custom_port
     db.commit()
     
@@ -353,7 +321,8 @@ async def get_tokens_stats(
                 'token_name': token.name,
                 'username': username,
                 'p2p_total_download_mb': round(token.p2p_total_download_mb, 2) if token.p2p_total_download_mb else 0,
-                'p2p_total_upload_mb': round(token.p2p_total_upload_mb, 2) if token.p2p_total_upload_mb else 0
+                'p2p_total_upload_mb': round(token.p2p_total_upload_mb, 2) if token.p2p_total_upload_mb else 0,
+                'p2p_game_count': token.p2p_game_count or 0
             })
         
         return {"tokens": tokens_list}

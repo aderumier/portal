@@ -11,6 +11,7 @@ const Devices = () => {
   const [newDeviceName, setNewDeviceName] = useState('')
   const [generatingToken, setGeneratingToken] = useState(false)
   const [newTokenValue, setNewTokenValue] = useState(null)
+  const [retestingPorts, setRetestingPorts] = useState({}) // {token_id: true/false}
 
   useEffect(() => {
     loadDevices()
@@ -167,6 +168,36 @@ const Devices = () => {
     }
   }
 
+  const handleRetestPort = async (tokenId) => {
+    try {
+      setRetestingPorts(prev => ({ ...prev, [tokenId]: true }))
+      const response = await client.post(`/api/download/devices/${tokenId}/retest-port`)
+      
+      // Update the device in state with new port accessibility status
+      setDevices(prev => prev.map(device => {
+        if (device.token_id === tokenId && device.connection_info) {
+          return {
+            ...device,
+            connection_info: {
+              ...device.connection_info,
+              p2p_port_accessible: response.data.p2p_port_accessible
+            }
+          }
+        }
+        return device
+      }))
+    } catch (error) {
+      console.error('Error retesting port:', error)
+      alert(error.response?.data?.detail || 'Failed to retest port')
+    } finally {
+      setRetestingPorts(prev => {
+        const newState = { ...prev }
+        delete newState[tokenId]
+        return newState
+      })
+    }
+  }
+
   const copyToClipboard = (text) => {
     navigator.clipboard.writeText(text).then(() => {
       alert('Token copied to clipboard!')
@@ -217,8 +248,18 @@ const Devices = () => {
                       </span>
                     )}
                     {device.connection_info.p2p_port_accessible !== undefined && (
-                      <span className={`port-status ${device.connection_info.p2p_port_accessible ? 'port-accessible' : 'port-not-accessible'}`}>
-                        Port: {device.connection_info.p2p_port_accessible ? 'Available' : 'Not Available'}
+                      <span className="port-status-row">
+                        <span className={`port-status ${device.connection_info.p2p_port_accessible ? 'port-accessible' : 'port-not-accessible'}`}>
+                          Port: {device.connection_info.p2p_port_accessible ? 'Available' : 'Not Available'}
+                        </span>
+                        <button
+                          onClick={() => handleRetestPort(device.token_id)}
+                          className="retest-port-btn"
+                          disabled={retestingPorts[device.token_id]}
+                          title="Retest port accessibility"
+                        >
+                          {retestingPorts[device.token_id] ? '...' : 'Retest'}
+                        </button>
                       </span>
                     )}
                   </div>
