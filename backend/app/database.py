@@ -33,7 +33,11 @@ if "sqlite" in settings.DATABASE_URL:
 
 engine = create_engine(
     settings.DATABASE_URL,
-    connect_args=connect_args
+    connect_args=connect_args,
+    pool_size=1000,
+    max_overflow=1000,
+    pool_timeout=30,
+    pool_recycle=3600
 )
 
 # For SQLite, enable WAL (Write-Ahead Logging) mode for better concurrency

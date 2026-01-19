@@ -1,6 +1,5 @@
 """WebSocket connection manager for download service notifications."""
 import logging
-import json
 from typing import Dict, Optional, List, Tuple
 from fastapi import WebSocket, WebSocketDisconnect
 from datetime import datetime, timezone
@@ -13,90 +12,34 @@ class WebSocketManager:
     """Manages WebSocket connections for download service clients.
     
     Maintains one connection per token_id. New connections replace old ones.
-    Tracks connection info in Redis for admin monitoring.
+    Tracks connection info in active_connections dict for admin monitoring.
     """
     
     def __init__(self):
         """Initialize the WebSocket manager."""
-        self.active_connections: Dict[int, WebSocket] = {}
+        # Structure: {token_id: {'websocket': WebSocket, 'token_id': int, 'token_string': str, 
+        #                        'ip': str, 'source_port': Optional[int], 'client_version': Optional[str],
+        #                        'platform': Optional[str], 'connected_at': str, 
+        #                        'p2p_port_accessible': Optional[bool], 
+        #                        'upload_bandwidth': Optional[float], 'download_bandwidth': Optional[float]}}
+        self.active_connections: Dict[int, Dict] = {}
         self._lock = asyncio.Lock()
-        self._redis_client = None
-        self._redis_key_prefix = "ws_client:"
-    
-    async def _get_redis_client(self):
-        """Get Redis client for tracking connections."""
-        if self._redis_client is None:
-            try:
-                from app.services.discord import get_redis_cache_client
-                # Use cache client (decode_responses=True) for JSON storage
-                self._redis_client = get_redis_cache_client()
-            except Exception as e:
-                logger.debug(f"Redis not available for connection tracking: {e}")
-        return self._redis_client
-    
-    async def _store_connection_info(self, token_id: int, ip: str, client_version: Optional[str] = None, token_string: Optional[str] = None, platform: Optional[str] = None):
-        """Store connection info in Redis."""
-        redis_client = await self._get_redis_client()
-        if not redis_client:
-            return
-        
-        try:
-            connection_info = {
-                "token_id": token_id,
-                "token_string": token_string or "unknown",
-                "ip": ip,
-                "client_version": client_version or "unknown",
-                "platform": platform or "unknown",
-                "connected_at": datetime.now(timezone.utc).isoformat()
-            }
-            redis_key = f"{self._redis_key_prefix}{token_id}"
-            await redis_client.setex(redis_key, 86400, json.dumps(connection_info))  # 24 hour TTL
-            logger.debug(f"Stored connection info in Redis for token_id {token_id}")
-        except Exception as e:
-            logger.warning(f"Failed to store connection info in Redis: {e}")
     
     async def update_connection_info_port_check(self, token_id: int, p2p_port_accessible: bool):
-        """Update connection info in Redis with P2P port accessibility result.
+        """Update connection info with P2P port accessibility result.
         
         Args:
             token_id: The API token ID
             p2p_port_accessible: True if P2P port is accessible, False otherwise
         """
-        redis_client = await self._get_redis_client()
-        if not redis_client:
-            return
-        
-        try:
-            redis_key = f"{self._redis_key_prefix}{token_id}"
-            data = await redis_client.get(redis_key)
-            if data:
-                connection_info = json.loads(data)
-                connection_info["p2p_port_accessible"] = p2p_port_accessible
-                await redis_client.setex(redis_key, 86400, json.dumps(connection_info))  # 24 hour TTL
-                logger.debug(f"Updated port check result in Redis for token_id {token_id}: {p2p_port_accessible}")
+        async with self._lock:
+            if token_id in self.active_connections:
+                self.active_connections[token_id]['p2p_port_accessible'] = p2p_port_accessible
+                logger.debug(f"Updated port check result for token_id {token_id}: {p2p_port_accessible}")
             else:
-                logger.debug(f"Connection info not found in Redis for token_id {token_id}, cannot update port check")
-        except Exception as e:
-            logger.warning(f"Failed to update port check in Redis for token_id {token_id}: {e}")
+                logger.debug(f"Connection not found for token_id {token_id}, cannot update port check")
     
-    async def _remove_connection_info(self, token_id: int):
-        """Remove connection info from Redis."""
-        redis_client = await self._get_redis_client()
-        if not redis_client:
-            logger.debug(f"Redis client not available, skipping Redis cleanup for token_id {token_id}")
-            return
-        
-        try:
-            redis_key = f"{self._redis_key_prefix}{token_id}"
-            deleted = await redis_client.delete(redis_key)
-            if deleted:
-                logger.info(f"Removed connection info from Redis for token_id {token_id} (key: {redis_key})")
-            else:
-                logger.debug(f"Connection info not found in Redis for token_id {token_id} (may have been already removed)")
-        except Exception as e:
-            logger.warning(f"Failed to remove connection info from Redis for token_id {token_id}: {e}")
-    
-    async def add_connection(self, token_id: int, websocket: WebSocket, ip: Optional[str] = None, client_version: Optional[str] = None, token_string: Optional[str] = None, platform: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+    async def add_connection(self, token_id: int, websocket: WebSocket, ip: Optional[str] = None, source_port: Optional[int] = None, client_version: Optional[str] = None, token_string: Optional[str] = None, platform: Optional[str] = None) -> Tuple[bool, Optional[str]]:
         """Add a WebSocket connection for a token_id.
         
         Only one connection per token_id is allowed. If a connection already exists,
@@ -106,6 +49,7 @@ class WebSocketManager:
             token_id: The API token ID
             websocket: The WebSocket connection
             ip: Client IP address (optional)
+            source_port: Client source port (optional)
             client_version: Client version string (optional)
             token_string: The token string for tracking (optional)
             platform: Client platform (linux/windows) (optional)
@@ -121,13 +65,21 @@ class WebSocketManager:
                 logger.warning(f"Connection rejected for token_id {token_id}: another client is already connected from {existing_ip}")
                 return (False, f"Another client is already connected with this token (token_id: {token_id})")
             
-            # Add the new connection
-            self.active_connections[token_id] = websocket
+            # Store connection info directly in active_connections dict
+            self.active_connections[token_id] = {
+                'websocket': websocket,
+                'token_id': token_id,
+                'token_string': token_string or "unknown",
+                'ip': ip or "unknown",
+                'source_port': source_port,
+                'client_version': client_version or "unknown",
+                'platform': platform or "unknown",
+                'connected_at': datetime.now(timezone.utc).isoformat(),
+                'p2p_port_accessible': None,
+                'upload_bandwidth': None,
+                'download_bandwidth': None
+            }
             logger.info(f"WebSocket connection added for token_id {token_id}")
-            
-            # Store connection info in Redis (note: db parameter not available here, will be updated when bandwidth test completes)
-            if ip:
-                await self._store_connection_info(token_id, ip, client_version, token_string, platform)
         
         return (True, None)
     
@@ -147,14 +99,16 @@ class WebSocketManager:
         """
         async with self._lock:
             # Only remove if it's the same connection (avoid removing a new connection)
-            current_websocket = self.active_connections.get(token_id)
-            if current_websocket == websocket:
-                del self.active_connections[token_id]
-                logger.info(f"WebSocket connection removed for token_id {token_id}")
-                # Remove connection info from Redis
-                await self._remove_connection_info(token_id)
+            conn_info = self.active_connections.get(token_id)
+            if conn_info:
+                current_websocket = conn_info.get('websocket')
+                if current_websocket == websocket:
+                    del self.active_connections[token_id]
+                    logger.info(f"WebSocket connection removed for token_id {token_id}")
+                else:
+                    logger.debug(f"WebSocket connection for token_id {token_id} was already replaced (current != removed)")
             else:
-                logger.debug(f"WebSocket connection for token_id {token_id} was already replaced (current != removed)")
+                logger.debug(f"Connection for token_id {token_id} already removed from active_connections")
     
     async def send_notification(self, token_id: int, message: dict) -> bool:
         """Send a notification to a connected client.
@@ -167,11 +121,11 @@ class WebSocketManager:
             True if message was sent successfully, False if no connection exists or send failed
         """
         async with self._lock:
-            websocket = self.active_connections.get(token_id)
-            
-            if not websocket:
+            conn_info = self.active_connections.get(token_id)
+            if not conn_info:
                 logger.debug(f"No WebSocket connection found for token_id {token_id}")
                 return False
+            websocket = conn_info.get('websocket')
         
         # Send outside the lock to avoid blocking other operations
         try:
@@ -183,9 +137,9 @@ class WebSocketManager:
             logger.warning(f"Failed to send notification to token_id {token_id} (connection closed): {e}")
             # Remove the connection if it's dead
             async with self._lock:
-                if token_id in self.active_connections and self.active_connections[token_id] == websocket:
+                conn_info = self.active_connections.get(token_id)
+                if conn_info and conn_info.get('websocket') == websocket:
                     del self.active_connections[token_id]
-                    await self._remove_connection_info(token_id)
             return False
         except Exception as e:
             logger.error(f"Failed to send notification to token_id {token_id}: {e}", exc_info=True)
@@ -212,82 +166,31 @@ class WebSocketManager:
         return len(self.active_connections)
     
     async def get_all_connections(self) -> List[Dict]:
-        """Get all connected clients with their info from Redis.
+        """Get all connected clients with their info from active_connections.
         
         Returns:
-            List of connection info dicts with token_id, ip, client_version, connected_at
+            List of connection info dicts with token_id, ip, client_version, connected_at, etc.
+            (websocket object is excluded from the returned dicts)
         """
-        redis_client = await self._get_redis_client()
-        if not redis_client:
-            return []
-        
-        try:
-            # Get all keys with the prefix
-            pattern = f"{self._redis_key_prefix}*"
-            keys = await redis_client.keys(pattern)
-            
+        async with self._lock:
             connections = []
-            for key in keys:
-                try:
-                    data = await redis_client.get(key)
-                    if data:
-                        connection_info = json.loads(data)
-                        # Only include if still in active_connections (verify it's actually connected)
-                        token_id = connection_info.get("token_id")
-                        if token_id:
-                            try:
-                                token_id_int = int(token_id)
-                                # Verify connection is still active
-                                async with self._lock:
-                                    if token_id_int in self.active_connections:
-                                        connections.append(connection_info)
-                            except (ValueError, TypeError) as e:
-                                logger.debug(f"Invalid token_id in connection info: {token_id}, error: {e}")
-                except Exception as e:
-                    logger.debug(f"Error reading connection info for key {key}: {e}")
-            
-            return connections
-        except Exception as e:
-            logger.error(f"Error getting all connections from Redis: {e}")
-            return []
-    
-    async def refresh_ttl_for_active_connections(self):
-        """Refresh TTL for all active WebSocket connections in Redis.
+            for token_id, conn_info in self.active_connections.items():
+                # Create a copy without the websocket object for API responses
+                connection_dict = {
+                    'token_id': conn_info.get('token_id'),
+                    'token_string': conn_info.get('token_string'),
+                    'ip': conn_info.get('ip'),
+                    'source_port': conn_info.get('source_port'),
+                    'client_version': conn_info.get('client_version'),
+                    'platform': conn_info.get('platform'),
+                    'connected_at': conn_info.get('connected_at'),
+                    'p2p_port_accessible': conn_info.get('p2p_port_accessible'),
+                    'upload_bandwidth': conn_info.get('upload_bandwidth'),
+                    'download_bandwidth': conn_info.get('download_bandwidth')
+                }
+                connections.append(connection_dict)
         
-        This ensures that connection info doesn't expire while clients are still connected.
-        """
-        redis_client = await self._get_redis_client()
-        if not redis_client:
-            return
-        
-        try:
-            async with self._lock:
-                active_token_ids = list(self.active_connections.keys())
-            
-            if not active_token_ids:
-                logger.debug("No active connections to refresh TTL for")
-                return
-            
-            refreshed_count = 0
-            for token_id in active_token_ids:
-                try:
-                    redis_key = f"{self._redis_key_prefix}{token_id}"
-                    data = await redis_client.get(redis_key)
-                    if data:
-                        # Refresh TTL by setting the same value with new expiration
-                        await redis_client.setex(redis_key, 86400, data)  # 24 hour TTL
-                        refreshed_count += 1
-                        logger.debug(f"Refreshed TTL for token_id {token_id}")
-                    else:
-                        # Connection info not in Redis, but connection is active - recreate it
-                        logger.debug(f"Connection info missing in Redis for active token_id {token_id}, will be recreated on next update")
-                except Exception as e:
-                    logger.warning(f"Failed to refresh TTL for token_id {token_id}: {e}")
-            
-            if refreshed_count > 0:
-                logger.info(f"Refreshed TTL for {refreshed_count} active connection(s)")
-        except Exception as e:
-            logger.error(f"Error refreshing TTL for active connections: {e}", exc_info=True)
+        return connections
 
 
 # Global singleton instance

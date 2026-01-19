@@ -458,70 +458,89 @@ async def refresh_websocket_connection_ttl_periodically():
 async def cleanup_stuck_downloads():
     """Background task to detect and clean up stuck downloads.
     
-    - Downloads with status 'downloading' and no progress for 2 minutes -> move back to user_queue for retry
-    - Checks Redis for progress tracking (Redis is the source of truth for active downloads)
+    - Downloads in Redis with no progress for 2 minutes -> move back to user_queue for retry
+    - Redis is the source of truth for active downloads (any download in Redis is actively downloading)
     """
-    from app.database import get_db, DownloadQueue
-    from app.services.redis_downloads import RedisDownloadTracker
+    from app.database import SessionLocal, DownloadQueue
+    from app.services.redis_downloads import RedisDownloadTracker, get_redis_downloads_client
     from datetime import timedelta
-    from sqlalchemy import or_, and_
     
     while True:
         try:
             await asyncio.sleep(60)  # Run every minute
             
-            # Get database session
-            db = next(get_db())
-            try:
-                now = datetime.now(timezone.utc)
+            redis_client = get_redis_downloads_client()
+            if not redis_client:
+                logger.debug("Redis not available for cleanup_stuck_downloads, skipping")
+                await asyncio.sleep(60)
+                continue
+            
+            now = datetime.now(timezone.utc)
+            stuck_threshold = now - timedelta(seconds=120)  # 2 minutes
+            
+            # Get all active downloads from Redis (source of truth)
+            stuck_download_ids = []
+            
+            # Scan Redis for all download keys (pattern: "download:*")
+            cursor = 0
+            while True:
+                cursor, keys = await redis_client.scan(cursor, match="download:*", count=100)
                 
-                # 1. Check downloads with status 'downloading' - if no progress for 2 minutes, move back to user_queue for retry
-                stuck_threshold = now - timedelta(seconds=120)
-                
-                # Get all active downloads from database
-                active_downloads = db.query(DownloadQueue).filter(
-                    DownloadQueue.status == 'downloading',
-                    DownloadQueue.active_download == True
-                ).all()
-                
-                retried_count = 0
-                for download in active_downloads:
-                    # Check Redis for progress (Redis is the source of truth for active downloads)
-                    redis_status = await RedisDownloadTracker.get_download_status(download.id)
-                    
-                    is_stuck = False
-                    
-                    if redis_status:
-                        # Download is in Redis - check last_progress_at from Redis
+                for key in keys:
+                    try:
+                        # Extract download_id from key (format: "download:123")
+                        download_id = int(key.split(":")[1])
+                        
+                        # Get download status from Redis
+                        redis_status = await RedisDownloadTracker.get_download_status(download_id)
+                        if not redis_status:
+                            continue
+                        
+                        # Check if stuck
+                        is_stuck = False
                         last_progress_str = redis_status.get('last_progress_at')
+                        
                         if last_progress_str:
                             try:
-                                # Parse ISO format datetime string (from datetime.now(timezone.utc).isoformat())
                                 last_progress = datetime.fromisoformat(last_progress_str.replace('Z', '+00:00'))
                                 if last_progress < stuck_threshold:
                                     is_stuck = True
                             except Exception as e:
-                                logger.warning(f"Failed to parse last_progress_at from Redis for download {download.id}: {e}")
-                                # If we can't parse, assume stuck
+                                logger.warning(f"Failed to parse last_progress_at from Redis for download {download_id}: {e}")
                                 is_stuck = True
                         else:
-                            # No last_progress_at in Redis - assume stuck
+                            # No last_progress_at - assume stuck
                             is_stuck = True
-                    else:
-                        # Not in Redis but should be active - this means it's stuck
-                        # (download should be in Redis if it's actively downloading)
-                        is_stuck = True
+                        
+                        if is_stuck:
+                            stuck_download_ids.append(download_id)
+                            
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"Error processing download key {key}: {e}")
+                        continue
+                
+                if cursor == 0:
+                    break
+            
+            # Only query SQLite for stuck downloads (much smaller set)
+            if stuck_download_ids:
+                db = SessionLocal()
+                try:
+                    retried_count = 0
                     
-                    if is_stuck:
+                    # Query only the stuck downloads from database
+                    stuck_downloads = db.query(DownloadQueue).filter(
+                        DownloadQueue.id.in_(stuck_download_ids)
+                    ).all()
+                    
+                    for download in stuck_downloads:
                         logger.warning(f"Download {download.id} (game: {download.game_id}) has no progress for 2+ minutes, moving back to user_queue for retry")
                         
                         # Move back to user_queue so it can be retried
                         download.status = 'user_queue'
                         download.active_download = False
                         download.assigned_to_service = None
-                        # Reset started_at so it can be retried fresh
                         download.started_at = None
-                        # Keep last_progress_at to track when it was last attempted
                         
                         # Remove from Redis as well
                         await RedisDownloadTracker.remove_download(download.id)
@@ -534,34 +553,20 @@ async def cleanup_stuck_downloads():
                             download.bandwidth_used = 0
                         
                         retried_count += 1
-                
-                # 2. Check downloads that have been retried multiple times (keep last_progress_at from multiple retries)
-                # If a download has been in user_queue for a while and keeps getting stuck, we should eventually remove it
-                # Check for downloads that have been retried (moved back to user_queue) multiple times
-                # We'll check if last_progress_at is old (meaning it was last attempted a while ago)
-                # and the download is still in user_queue (meaning it keeps getting stuck)
-                
-                # Actually, since we're now moving stuck downloads back to user_queue immediately,
-                # we don't need the old stuck removal logic. Downloads will either:
-                # 1. Get retried and succeed
-                # 2. Get retried and get stuck again (will be retried again)
-                # 3. Eventually be manually cancelled by user
-                
-                # However, to prevent infinite retry loops, we could add a check for downloads
-                # that have been retried too many times. For now, we'll let them retry indefinitely
-                # as the user can always manually cancel if needed.
-                
-                if retried_count > 0:
-                    db.commit()
-                    logger.info(f"Moved {retried_count} stuck downloads back to user_queue for retry")
-                else:
-                    db.commit()
                     
-            except Exception as e:
-                logger.error(f"Error in cleanup_stuck_downloads: {e}", exc_info=True)
-                db.rollback()
-            finally:
-                db.close()
+                    if retried_count > 0:
+                        db.commit()
+                        logger.info(f"Moved {retried_count} stuck downloads back to user_queue for retry")
+                    else:
+                        db.commit()
+                        
+                except Exception as e:
+                    logger.error(f"Error in cleanup_stuck_downloads database operations: {e}", exc_info=True)
+                    db.rollback()
+                finally:
+                    db.close()
+            else:
+                logger.debug("No stuck downloads found")
                 
         except Exception as e:
             logger.error(f"Error in cleanup_stuck_downloads loop: {e}", exc_info=True)
