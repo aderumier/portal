@@ -12,7 +12,8 @@ import platform
 import configparser
 import re
 from pathlib import Path
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
+from datetime import datetime, time as dt_time
 import asyncio
 import websockets
 from urllib.parse import urlparse, quote
@@ -163,10 +164,12 @@ for handler in logger.handlers[:]:
     logger.removeHandler(handler)
 
 # Add rotating file handler with UTF-8 encoding (fixes Unicode encoding issues on Windows)
-file_handler = RotatingFileHandler(
+# Rotate daily at midnight and keep 7 days of logs
+file_handler = TimedRotatingFileHandler(
     log_file_path,
-    maxBytes=500 * 1024 * 1024,  # 500 MB
-    backupCount=10,
+    when='midnight',
+    interval=1,
+    backupCount=7,
     encoding='utf-8'  # Use UTF-8 encoding to support Unicode characters
 )
 file_handler.setLevel(getattr(logging, log_level, logging.INFO))
@@ -175,6 +178,24 @@ file_handler.setFormatter(ASCIIFormatter(
     datefmt='%Y-%m-%d %H:%M:%S'
 ))
 logger.addHandler(file_handler)
+
+# Rotate log at service start if needed (if log file exists and is from a previous day)
+if os.path.exists(log_file_path):
+    try:
+        # Get the modification time of the current log file
+        log_mtime = os.path.getmtime(log_file_path)
+        log_mtime_dt = datetime.fromtimestamp(log_mtime)
+        
+        # Get today's midnight
+        today = datetime.now().date()
+        today_midnight = datetime.combine(today, dt_time.min)
+        
+        # If log file was last modified before today's midnight, rotate it
+        if log_mtime_dt < today_midnight:
+            file_handler.doRollover()
+    except Exception as e:
+        # If rotation check fails, log to stderr since logger might not be ready
+        print(f"Warning: Failed to check/rotate log file at startup: {e}", file=sys.stderr)
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
