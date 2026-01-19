@@ -75,48 +75,16 @@ class P2PInventoryService:
             return False
         
         try:
-            # Track which ROMs are new for this token (to count accurately)
-            new_roms_count = 0
-            
             # Add new inventory entries to index
             for system, paths in inventory.items():
                 for rom_path in paths:
                     index_key = P2PInventoryService._get_index_key(system, rom_path)
-                    # Check if token_id was already in this ROM's set
-                    was_present = await redis_client.sismember(index_key, str(token_id))
                     await redis_client.sadd(index_key, str(token_id))
                     # Set TTL on index key (48 hours)
                     await redis_client.expire(index_key, 48 * 3600)
-                    
-                    # Count new ROMs (ones where token_id wasn't already present)
-                    if not was_present:
-                        new_roms_count += 1
             
             total_paths = sum(len(paths) for paths in inventory.values())
-            logger.info(f"Updated P2P inventory for token_id {token_id}: {len(inventory)} systems, {total_paths} ROM paths ({new_roms_count} new ROMs)")
-            
-            # Update game count in database
-            if new_roms_count > 0:
-                try:
-                    from app.database import SessionLocal, ApiToken
-                    db = SessionLocal()
-                    try:
-                        token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
-                        if token:
-                            # Increment game count by number of new ROMs
-                            token.p2p_game_count = (token.p2p_game_count or 0) + new_roms_count
-                            db.commit()
-                            logger.info(f"Updated game count for token_id {token_id}: {token.p2p_game_count} games")
-                        else:
-                            logger.warning(f"Token {token_id} not found in database when updating game count")
-                    except Exception as e:
-                        db.rollback()
-                        logger.error(f"Error updating game count for token_id {token_id}: {e}", exc_info=True)
-                    finally:
-                        db.close()
-                except Exception as e:
-                    logger.error(f"Error accessing database for game count update: {e}", exc_info=True)
-            
+            logger.info(f"Updated P2P inventory for token_id {token_id}: {len(inventory)} systems, {total_paths} ROM paths")
             return True
         except Exception as e:
             logger.error(f"Error updating P2P inventory for token_id {token_id}: {e}")

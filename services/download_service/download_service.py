@@ -1135,52 +1135,6 @@ def upload_p2p_inventory():
     except Exception as e:
         logger.error(f"Error preparing P2P inventory: {e}", exc_info=True)
 
-def add_rom_to_p2p_inventory(system, rom_path):
-    """Add a single ROM path to P2P inventory.
-    
-    Args:
-        system: System identifier (e.g., "atari2600")
-        rom_path: ROM file path relative to system directory
-    """
-    try:
-        # Build minimal inventory with just this ROM path
-        inventory = {system: [rom_path]}
-        
-        # Convert inventory to JSON
-        json_data = json.dumps(inventory)
-        json_bytes = json_data.encode('utf-8')
-        
-        # Gzip compress
-        import gzip
-        gzip_data = gzip.compress(json_bytes)
-        
-        # Upload to server
-        url = f"{API_URL}/api/download/p2p/inventory"
-        headers = {
-            'Authorization': f'Bearer {API_TOKEN}',
-            'Content-Type': 'application/json',
-            'Content-Encoding': 'gzip'
-        }
-        
-        response = http_session.post(
-            url,
-            data=gzip_data,
-            headers=headers,
-            timeout=30
-        )
-        response.raise_for_status()
-        
-        result = response.json()
-        if result.get('success'):
-            logger.debug(f"Successfully added ROM to P2P inventory: {system}/{rom_path}")
-        else:
-            logger.warning(f"Failed to add ROM to P2P inventory: {result.get('message', 'Unknown error')}")
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error adding ROM to P2P inventory: {e}")
-    except Exception as e:
-        logger.error(f"Unexpected error adding ROM to P2P inventory: {e}", exc_info=True)
-
 def send_startup_logs(token_id):
     """Send startup logs to the backend for storage with gzip compression.
     
