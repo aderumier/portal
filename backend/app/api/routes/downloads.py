@@ -3687,66 +3687,6 @@ async def register_p2p_client(
         )
 
 
-@router.get("/p2p/my-connection-info")
-async def get_my_connection_info(
-    request: Request,
-    current_user: dict = Depends(require_auth_user),
-    db: Session = Depends(get_db)
-):
-    """Get current client's connection info from Redis.
-    
-    Returns the connection info (external_ip, external_port, etc.) for the current client.
-    """
-    try:
-        # Get token_id from request state (set by API token middleware)
-        token_id = getattr(request.state, 'token_id', None)
-        
-        if token_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token ID not found. API token authentication required."
-            )
-        
-        # Get connection info from Redis
-        from app.services.p2p_inventory import P2PInventoryService
-        connection_info = await P2PInventoryService.get_client_connection_info(token_id)
-        
-        if not connection_info:
-            return {
-                "success": False,
-                "connection_info": None,
-                "message": "No connection info found for current client"
-            }
-        
-        # Also fetch p2p_port_accessible from WebSocket connection info (Redis DB 4)
-        from app.services.websocket_manager import get_redis_ws_client
-        redis_ws_client = get_redis_ws_client()
-        if redis_ws_client:
-            try:
-                ws_key = f"ws:connections:{token_id}"
-                p2p_port_accessible_str = await redis_ws_client.hget(ws_key, 'p2p_port_accessible')
-                if p2p_port_accessible_str:
-                    connection_info['p2p_port_accessible'] = p2p_port_accessible_str == 'true'
-                else:
-                    connection_info['p2p_port_accessible'] = None  # Unknown status
-            except Exception as e:
-                logger.debug(f"Error getting p2p_port_accessible from WebSocket connection info for token_id {token_id}: {e}")
-                connection_info['p2p_port_accessible'] = None  # Unknown status on error
-        
-        return {
-            "success": True,
-            "connection_info": connection_info
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting connection info: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get connection info"
-        )
-
 
 def calculate_partial_checksum(file_path: Path, chunk_size: int = 2097152) -> dict:
     """Calculate partial SHA-256 checksum of a file (beginning + end chunks + file size).

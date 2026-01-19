@@ -3059,34 +3059,6 @@ def get_server_checksum(system, rom_path):
         logger.error(f"Unexpected error requesting checksum from server: {e}", exc_info=True)
         return None
 
-def get_current_client_connection_info():
-    """Get current client's connection info from backend (stored in Redis).
-    
-    Returns:
-        Dictionary with connection info (external_ip, external_port, etc.), or None on error
-    """
-    try:
-        url = f"{API_URL}/api/download/p2p/my-connection-info"
-        headers = {
-            'Authorization': f'Bearer {API_TOKEN}',
-        }
-        
-        response = http_session.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        
-        result = response.json()
-        if result.get('success') and result.get('connection_info'):
-            return result['connection_info']
-        else:
-            logger.debug("No connection info found for current client")
-            return None
-    except requests.exceptions.RequestException as e:
-        logger.debug(f"Error getting current client connection info: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error getting current client connection info: {e}", exc_info=True)
-        return None
-
 def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_path, resume_from=0, expected_size=None, download_id=None):
     """Handle reverse P2P upload: push file to another client.
     
@@ -3687,14 +3659,8 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                 
                 # Check if Client A's own port is accessible before attempting reverse connection
                 # Reverse connection requires Client A to receive incoming connections
-                # Use client port accessibility from parameter (provided by backend in peer list), 
-                # or fall back to API call if not provided
-                if client_p2p_port_accessible is not None:
-                    client_port_accessible = client_p2p_port_accessible
-                else:
-                    # Fallback: fetch from API if not provided (for backwards compatibility)
-                    client_connection_info = get_current_client_connection_info()
-                    client_port_accessible = client_connection_info.get('p2p_port_accessible') if client_connection_info else None
+                # Use client port accessibility from parameter (provided by backend in peer list)
+                client_port_accessible = client_p2p_port_accessible
                 
                 # Try reverse connection if:
                 # 1. Peer's port is closed (p2p_port_accessible=False) - normal connection failed
