@@ -60,7 +60,9 @@ class RedisDownloadTracker:
         bytes_per_second: int = 0,
         file_size: Optional[int] = None,
         queue_type: Optional[str] = None,
-        assigned_to_service: Optional[str] = None
+        assigned_to_service: Optional[str] = None,
+        system: Optional[str] = None,
+        rom_path: Optional[str] = None
     ) -> bool:
         """Store active download info in Redis."""
         redis_client = get_redis_downloads_client()
@@ -83,6 +85,10 @@ class RedisDownloadTracker:
                 data['queue_type'] = queue_type
             if assigned_to_service:
                 data['assigned_to_service'] = assigned_to_service
+            if system:
+                data['system'] = system
+            if rom_path:
+                data['rom_path'] = rom_path
             
             # Store with 24 hour expiration (downloads shouldn't take that long)
             await redis_client.setex(

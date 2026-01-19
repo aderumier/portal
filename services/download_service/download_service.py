@@ -827,6 +827,40 @@ async def process_websocket_archive_stream(
 
 API_URL = config.get('API_URL') or os.getenv('API_URL', 'https://rgs-retro.ddns.net')
 
+def verify_p2p_download_id(download_id, system, rom_path):
+    """Verify download_id exists in Redis via backend API.
+    
+    Returns True if download_id is valid and matches system/rom_path, False otherwise.
+    """
+    try:
+        verify_url = f"{API_URL}/api/download/verify-p2p-download"
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            'download_id': download_id,
+            'system': system,
+            'rom_path': rom_path
+        }
+        
+        # Use short timeout for verification (2 seconds)
+        response = http_session.post(verify_url, json=data, headers=headers, timeout=2)
+        if response.status_code == 200:
+            result = response.json()
+            return result.get('valid', False)
+        else:
+            logger.debug(f"Download verification returned status {response.status_code}")
+            return False
+    except requests.exceptions.Timeout:
+        logger.warning(f"Download verification timeout for download_id {download_id}")
+        # On timeout, allow the request (fail open for availability)
+        return True
+    except Exception as e:
+        logger.warning(f"Error verifying download_id {download_id}: {e}")
+        # On error, allow the request (fail open for availability)
+        return True
+
 # Set ROMS_PATH based on platform
 if platform.system() == 'Windows':
     DEFAULT_ROMS_PATH = '../../../roms'
@@ -3073,6 +3107,11 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         download_id: Download ID for tracking (optional)
     """
     try:
+        # Verify download_id if available (P2P security check)
+        if download_id:
+            if not verify_p2p_download_id(download_id, system, rom_path):
+                logger.warning(f"Reverse P2P upload rejected: download_id {download_id} verification failed for {system}/{rom_path}")
+                return
         # Build source file path
         if not ROMS_PATH or not os.path.exists(ROMS_PATH):
             logger.error(f"ROMS_PATH does not exist: {ROMS_PATH}, cannot serve file via reverse connection")
@@ -3200,13 +3239,16 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
         request_id = str(uuid.uuid4())
         success_ref = [False]
         
-        # Register reverse connection request
+        # Register reverse connection request (include download_id for verification)
         register_reverse_connection_request(
             request_id=request_id,
             dest_path=dest_path,
             expected_size=expected_size,
             resume_from=resume_from,
-            success_ref=success_ref
+            success_ref=success_ref,
+            download_id=download_id,
+            system=system,
+            rom_path=rom_path
         )
         
         logger.info(f"Registered reverse connection request {request_id} on port {actual_port} for {system}/{rom_path}")
@@ -3363,6 +3405,10 @@ def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, 
         headers = {}
         if current_resume_from > 0:
             headers['Range'] = f'bytes={current_resume_from}-'
+        
+        # Add download_id header for P2P verification (if available)
+        if download_id is not None:
+            headers['X-Download-ID'] = str(download_id)
         
         # Use tuple format for timeout: (connect_timeout, read_timeout)
         timeout_tuple = (connect_timeout, read_timeout)

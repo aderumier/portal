@@ -1321,6 +1321,10 @@ async def request_download(
             from app.services.redis_downloads import RedisDownloadTracker
             download_id = download_info['download_id']
             # Fire and forget - don't wait for completion
+            # Store system and rom_path in Redis for P2P verification
+            system = download_info.get('system')
+            rom_path = download_info.get('rom_path')
+            
             asyncio.create_task(RedisDownloadTracker.set_active_download(
                 download_id,
                 status='downloading',
@@ -1328,7 +1332,9 @@ async def request_download(
                 bytes_per_second=0,
                 file_size=download_info.get('file_size'),
                 queue_type=download_info.get('queue_type'),
-                assigned_to_service=service_id
+                assigned_to_service=service_id,
+                system=system,
+                rom_path=rom_path
             ))
         except Exception as e:
             logger.debug(f"Failed to store download in Redis: {e}")
@@ -3907,4 +3913,61 @@ async def request_reverse_p2p_connection(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while requesting reverse connection"
         )
+
+class VerifyP2PDownloadRequest(BaseModel):
+    download_id: int
+    system: str
+    rom_path: str
+
+@router.post("/verify-p2p-download")
+async def verify_p2p_download(
+    body: VerifyP2PDownloadRequest,
+    request: Request,
+    current_user: dict = Depends(require_auth_user)
+):
+    """Verify that a download_id exists in Redis and matches the requested system/rom_path.
+    
+    Used by P2P servers to verify that download requests are legitimate.
+    """
+    try:
+        from app.services.redis_downloads import RedisDownloadTracker
+        
+        # Get download status from Redis
+        redis_status = await RedisDownloadTracker.get_download_status(body.download_id)
+        
+        if not redis_status:
+            # Download not found in Redis
+            return {
+                "valid": False,
+                "reason": "Download not found in active downloads"
+            }
+        
+        # Verify system and rom_path match
+        redis_system = redis_status.get('system')
+        redis_rom_path = redis_status.get('rom_path')
+        
+        if redis_system and redis_system != body.system:
+            return {
+                "valid": False,
+                "reason": f"System mismatch: expected {redis_system}, got {body.system}"
+            }
+        
+        if redis_rom_path and redis_rom_path != body.rom_path:
+            return {
+                "valid": False,
+                "reason": f"ROM path mismatch: expected {redis_rom_path}, got {body.rom_path}"
+            }
+        
+        # Download is valid
+        return {
+            "valid": True
+        }
+        
+    except Exception as e:
+        logger.error(f"Error verifying P2P download: {e}", exc_info=True)
+        # On error, return invalid to be safe
+        return {
+            "valid": False,
+            "reason": f"Verification error: {str(e)}"
+        }
 

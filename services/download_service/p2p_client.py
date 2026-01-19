@@ -22,10 +22,54 @@ _p2p_server_lock = threading.Lock()
 _reverse_connection_requests = {}
 _reverse_connection_lock = threading.Lock()
 
-def create_p2p_handler(roms_path):
-    """Factory function to create P2P request handler with roms_path."""
+def create_p2p_handler(roms_path, api_url=None, api_token=None):
+    """Factory function to create P2P request handler with roms_path and optional API credentials."""
     class P2PRequestHandler(BaseHTTPRequestHandler):
         """HTTP request handler for P2P file serving."""
+        
+        def _verify_download_id(self, download_id, system, rom_path):
+            """Verify download_id exists in Redis via backend API.
+            
+            Returns True if download_id is valid and matches system/rom_path, False otherwise.
+            """
+            if not api_url or not api_token:
+                # If API credentials not available, skip verification (backwards compatibility)
+                logger.debug(f"API credentials not available for download_id verification")
+                return True
+            
+            try:
+                import requests
+                verify_url = f"{api_url}/api/download/verify-p2p-download"
+                headers = {
+                    'Authorization': f'Bearer {api_token}',
+                    'Content-Type': 'application/json'
+                }
+                data = {
+                    'download_id': download_id,
+                    'system': system,
+                    'rom_path': rom_path
+                }
+                
+                # Use short timeout for verification (2 seconds)
+                response = requests.post(verify_url, json=data, headers=headers, timeout=2)
+                if response.status_code == 200:
+                    result = response.json()
+                    return result.get('valid', False)
+                else:
+                    logger.debug(f"Download verification returned status {response.status_code}")
+                    return False
+            except ImportError:
+                # requests not available - allow request (backwards compatibility)
+                logger.debug(f"requests library not available for download verification")
+                return True
+            except requests.exceptions.Timeout:
+                logger.warning(f"Download verification timeout for download_id {download_id}")
+                # On timeout, allow the request (fail open for availability)
+                return True
+            except Exception as e:
+                logger.warning(f"Error verifying download_id {download_id}: {e}")
+                # On error, allow the request (fail open for availability)
+                return True
         
         def do_GET(self):
             """Handle GET requests for file serving and checksums."""
@@ -90,6 +134,16 @@ def create_p2p_handler(roms_path):
                 expected_size = request_info.get('expected_size')
                 resume_from = request_info.get('resume_from', 0)
                 success_ref = request_info.get('success_ref')
+                download_id = request_info.get('download_id')
+                system = request_info.get('system')
+                rom_path = request_info.get('rom_path')
+                
+                # Verify download_id if available (P2P security check)
+                if download_id and system and rom_path:
+                    if not self._verify_download_id(download_id, system, rom_path):
+                        logger.warning(f"Reverse P2P request rejected: download_id {download_id} verification failed for {system}/{rom_path}")
+                        self.send_error(403, "Download verification failed")
+                        return
                 
                 # Get content length
                 content_length = int(self.headers.get('Content-Length', 0))
@@ -280,6 +334,23 @@ def create_p2p_handler(roms_path):
                 system = unquote(path_parts[0])
                 rom_path = unquote('/'.join(path_parts[1:]))
                 
+                # Verify download_id if provided (P2P security check)
+                download_id_header = self.headers.get('X-Download-ID')
+                if download_id_header:
+                    try:
+                        download_id = int(download_id_header)
+                        if not self._verify_download_id(download_id, system, rom_path):
+                            logger.warning(f"P2P request rejected: download_id {download_id} verification failed for {system}/{rom_path}")
+                            self.send_error(403, "Download verification failed")
+                            return
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid X-Download-ID header: {download_id_header}, error: {e}")
+                        self.send_error(400, "Invalid download ID")
+                        return
+                else:
+                    # If no download_id provided, log warning but allow (backwards compatibility)
+                    logger.debug(f"P2P request without X-Download-ID header for {system}/{rom_path}")
+                
                 # Build file path
                 file_path = os.path.join(roms_path, system, rom_path.lstrip('./'))
                 
@@ -369,8 +440,19 @@ class P2PServer:
             return
         
         try:
-            # Create handler class with roms_path bound
-            HandlerClass = create_p2p_handler(self.roms_path)
+            # Create handler class with roms_path and API credentials bound
+            # Import here to avoid circular imports
+            try:
+                from download_service import API_URL, API_TOKEN
+                api_url = API_URL
+                api_token = API_TOKEN
+            except ImportError:
+                # If import fails, use None (verification will be skipped)
+                api_url = None
+                api_token = None
+                logger.debug("Could not import API_URL/API_TOKEN for P2P verification")
+            
+            HandlerClass = create_p2p_handler(self.roms_path, api_url=api_url, api_token=api_token)
             self.server = HTTPServer(('', self.port), HandlerClass)
             self._running = True
             
@@ -671,7 +753,7 @@ def get_local_ip():
         # Fallback to localhost
         return "127.0.0.1"
 
-def register_reverse_connection_request(request_id, dest_path, expected_size=None, resume_from=0, success_ref=None):
+def register_reverse_connection_request(request_id, dest_path, expected_size=None, resume_from=0, success_ref=None, download_id=None, system=None, rom_path=None):
     """Register a reverse connection request.
     
     Args:
@@ -680,13 +762,19 @@ def register_reverse_connection_request(request_id, dest_path, expected_size=Non
         expected_size: Expected file size (optional)
         resume_from: Byte position to resume from
         success_ref: List to store success flag [False]
+        download_id: Download ID for verification (optional)
+        system: System identifier for verification (optional)
+        rom_path: ROM path for verification (optional)
     """
     with _reverse_connection_lock:
         _reverse_connection_requests[request_id] = {
             'dest_path': dest_path,
             'expected_size': expected_size,
             'resume_from': resume_from,
-            'success_ref': success_ref or [False]
+            'success_ref': success_ref or [False],
+            'download_id': download_id,
+            'system': system,
+            'rom_path': rom_path
         }
 
 def unregister_reverse_connection_request(request_id):
