@@ -44,7 +44,7 @@ async def get_current_user(
                     }
                     request.state.token_id = token_info['token_id']  # Store token_id for filtering
                     request.state.auth_method = 'api_token'
-                    logger.info(
+                    logger.debug(
                         f"API token authentication successful for user: {token_info['user_id']}, "
                         f"token_id: {token_info['token_id']}, IP: {client_ip}"
                     )

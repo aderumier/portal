@@ -95,26 +95,32 @@ class P2PInventoryService:
             logger.info(f"Updated P2P inventory for token_id {token_id}: {len(inventory)} systems, {total_paths} ROM paths ({new_roms_count} new ROMs)")
             
             # Update game count in database
-            if new_roms_count > 0:
+            try:
+                from app.database import SessionLocal, ApiToken
+                db = SessionLocal()
                 try:
-                    from app.database import SessionLocal, ApiToken
-                    db = SessionLocal()
-                    try:
-                        token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
-                        if token:
-                            # Increment game count by number of new ROMs
-                            token.p2p_game_count = (token.p2p_game_count or 0) + new_roms_count
+                    token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
+                    if token:
+                        if total_paths > 1:
+                            # Full inventory update: set count to total paths
+                            token.p2p_game_count = total_paths
                             db.commit()
-                            logger.info(f"Updated game count for token_id {token_id}: {token.p2p_game_count} games")
-                        else:
-                            logger.warning(f"Token {token_id} not found in database when updating game count")
-                    except Exception as e:
-                        db.rollback()
-                        logger.error(f"Error updating game count for token_id {token_id}: {e}", exc_info=True)
-                    finally:
-                        db.close()
+                            logger.info(f"Updated game count for token_id {token_id} (full inventory): {token.p2p_game_count} games")
+                        elif total_paths == 1 and new_roms_count == 1:
+                            # Incremental update: newly added game, increment by 1
+                            token.p2p_game_count = (token.p2p_game_count or 0) + 1
+                            db.commit()
+                            logger.info(f"Updated game count for token_id {token_id} (incremental): {token.p2p_game_count} games (+1)")
+                        # If total_paths == 1 and new_roms_count == 0, game already existed, don't change count
+                    else:
+                        logger.warning(f"Token {token_id} not found in database when updating game count")
                 except Exception as e:
-                    logger.error(f"Error accessing database for game count update: {e}", exc_info=True)
+                    db.rollback()
+                    logger.error(f"Error updating game count for token_id {token_id}: {e}", exc_info=True)
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"Error accessing database for game count update: {e}", exc_info=True)
             
             return True
         except Exception as e:

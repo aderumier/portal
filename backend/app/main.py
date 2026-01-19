@@ -99,9 +99,9 @@ async def preload_game_data():
     # Start background task for promoting user_queue items to pending
     asyncio.create_task(promote_user_queue_items())
     
-    # Start background task for rebuilding p2p_index hourly
+    # Start background task for cleaning up p2p_index every 24 hours
     if settings.P2P_ENABLED:
-        asyncio.create_task(rebuild_p2p_index_periodically())
+        asyncio.create_task(cleanup_p2p_index_periodically())
     
     # Start background task for refreshing Redis TTL for active WebSocket connections
     asyncio.create_task(refresh_websocket_connection_ttl_periodically())
@@ -112,15 +112,6 @@ async def preload_game_data():
     # Start background task for checking and reloading catalog if updated by another worker
     asyncio.create_task(check_and_reload_catalog_periodically())
     
-    # Start background task for initial p2p_index rebuild at startup (worker 0 only)
-    if settings.P2P_ENABLED:
-        import os
-        worker_id = os.getenv('WORKER_ID', os.getpid())
-        # Only run on worker 0 to avoid multiple workers rebuilding simultaneously
-        if str(worker_id) == '0':
-            asyncio.create_task(rebuild_p2p_index_at_startup())
-        else:
-            logger.debug(f"[Worker {worker_id}] Skipping p2p_index rebuild at startup (only worker 0 rebuilds)")
     
     # Initialize GeoIP instance on startup
     try:
@@ -413,36 +404,11 @@ async def promote_user_queue_items():
             logger.error(f"Critical error in promote_user_queue_items background task: {e}", exc_info=True)
             await asyncio.sleep(5)  # Wait before retrying
 
-async def rebuild_p2p_index_at_startup():
-    """Background task to rebuild p2p_index at startup (worker 0 only).
+async def cleanup_p2p_index_periodically():
+    """Background task to periodically clean up the p2p_index (worker 0 only).
     
-    Runs once in the background so it doesn't block application startup.
-    Only runs on worker 0 to avoid multiple workers rebuilding simultaneously.
-    """
-    import os
-    from app.services.p2p_inventory import P2PInventoryService
-    
-    worker_id = os.getenv('WORKER_ID', os.getpid())
-    
-    try:
-        # Wait a bit to let server fully start before rebuilding
-        await asyncio.sleep(5)  # Wait 5 seconds after startup
-        
-        logger.info(f"[Worker {worker_id}] Rebuilding p2p_index at startup...")
-        success = await P2PInventoryService.rebuild_index()
-        if success:
-            logger.info(f"[Worker {worker_id}] p2p_index rebuild completed at startup")
-        else:
-            logger.warning(f"[Worker {worker_id}] p2p_index rebuild failed at startup")
-    except Exception as e:
-        logger.error(f"[Worker {worker_id}] Error rebuilding p2p_index at startup: {e}", exc_info=True)
-
-async def rebuild_p2p_index_periodically():
-    """Background task to periodically rebuild the p2p_index (worker 0 only).
-    
-    Runs every hour (3600 seconds) and atomically rebuilds the index.
-    The index will rebuild naturally as clients upload inventories and downloads complete.
-    Only runs on worker 0 to avoid multiple workers rebuilding simultaneously.
+    Runs every 24 hours (86400 seconds) and removes disconnected clients from the index.
+    Only runs on worker 0 to avoid multiple workers cleaning up simultaneously.
     """
     import os
     from app.services.p2p_inventory import P2PInventoryService
@@ -451,7 +417,7 @@ async def rebuild_p2p_index_periodically():
     
     # Only run on worker 0
     if str(worker_id) != '0':
-        logger.debug(f"[Worker {worker_id}] Skipping periodic p2p_index rebuild (only worker 0 rebuilds)")
+        logger.debug(f"[Worker {worker_id}] Skipping periodic p2p_index cleanup (only worker 0 cleans up)")
         return
     
     # Wait a bit before first run to let server fully start
@@ -459,20 +425,20 @@ async def rebuild_p2p_index_periodically():
     
     while True:
         try:
-            await asyncio.sleep(3600)  # Run every hour (3600 seconds)
+            await asyncio.sleep(86400)  # Run every 24 hours (86400 seconds)
             
-            logger.info(f"[Worker {worker_id}] Starting periodic p2p_index rebuild...")
-            success = await P2PInventoryService.rebuild_index()
+            logger.info(f"[Worker {worker_id}] Starting periodic p2p_index cleanup...")
+            success = await P2PInventoryService.cleanup_p2p_index()
             if success:
-                logger.info(f"[Worker {worker_id}] Periodic p2p_index rebuild completed")
+                logger.info(f"[Worker {worker_id}] Periodic p2p_index cleanup completed")
             else:
-                logger.warning(f"[Worker {worker_id}] Periodic p2p_index rebuild failed")
+                logger.warning(f"[Worker {worker_id}] Periodic p2p_index cleanup failed")
                 
         except asyncio.CancelledError:
-            logger.info(f"[Worker {worker_id}] p2p_index rebuild task cancelled")
+            logger.info(f"[Worker {worker_id}] p2p_index cleanup task cancelled")
             break
         except Exception as e:
-            logger.error(f"[Worker {worker_id}] Error in rebuild_p2p_index_periodically background task: {e}", exc_info=True)
+            logger.error(f"[Worker {worker_id}] Error in cleanup_p2p_index_periodically background task: {e}", exc_info=True)
             await asyncio.sleep(60)  # Wait 1 minute before retrying on error
 
 async def refresh_websocket_connection_ttl_periodically():
