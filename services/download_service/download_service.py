@@ -3512,7 +3512,7 @@ def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, 
         logger.error(f"Unexpected error during P2P download: {e}", exc_info=True)
         return False
 
-def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, expected_size, expected_checksum, paused_ref, download_id, bytes_transferred_ref):
+def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, expected_size, expected_checksum, paused_ref, download_id, bytes_transferred_ref, client_p2p_port_accessible=None):
     """Try to download a file via P2P from a list of peers.
     
     Attempts to download from peers in the provided list (already sorted by upload bandwidth).
@@ -3529,6 +3529,7 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
         paused_ref: Optional list to check if download should be paused
         download_id: Download ID for progress reporting (optional)
         bytes_transferred_ref: Optional list to track bytes transferred
+        client_p2p_port_accessible: Client's own port accessibility status (True/False/None), if known from peer list
     
     Returns:
         token_id (int) of the successful peer if download succeeded via P2P, False otherwise (should fall back to server)
@@ -3686,8 +3687,14 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                 
                 # Check if Client A's own port is accessible before attempting reverse connection
                 # Reverse connection requires Client A to receive incoming connections
-                client_connection_info = get_current_client_connection_info()
-                client_port_accessible = client_connection_info.get('p2p_port_accessible') if client_connection_info else None
+                # Use client port accessibility from parameter (provided by backend in peer list), 
+                # or fall back to API call if not provided
+                if client_p2p_port_accessible is not None:
+                    client_port_accessible = client_p2p_port_accessible
+                else:
+                    # Fallback: fetch from API if not provided (for backwards compatibility)
+                    client_connection_info = get_current_client_connection_info()
+                    client_port_accessible = client_connection_info.get('p2p_port_accessible') if client_connection_info else None
                 
                 # Try reverse connection if:
                 # 1. Peer's port is closed (p2p_port_accessible=False) - normal connection failed
@@ -3996,6 +4003,10 @@ def download_game(download_info):
                     p2p_download_success = False
                 else:
                     logger.info(f"Retrieved checksum from server: file_size={expected_checksum.get('file_size')}")
+                    
+                    # Get client's port accessibility from download_info (provided by backend)
+                    client_p2p_port_accessible = download_info.get('client_p2p_port_accessible')
+                    
                     p2p_result = try_p2p_download_from_list(
                         p2p_peers=p2p_peers,
                         system=system,
@@ -4006,7 +4017,8 @@ def download_game(download_info):
                         expected_checksum=expected_checksum,
                         paused_ref=paused,
                         download_id=download_id,
-                        bytes_transferred_ref=bytes_transferred_this_session
+                        bytes_transferred_ref=bytes_transferred_this_session,
+                        client_p2p_port_accessible=client_p2p_port_accessible
                     )
                     # p2p_result is token_id (int) if successful, False otherwise
                     p2p_download_success = bool(p2p_result)

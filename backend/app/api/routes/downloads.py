@@ -1359,8 +1359,23 @@ async def request_download(
                     rom_file_size_bytes=download_info.get('file_size')
                 )
                 download_info['p2p_peers'] = p2p_peers
+                
+                # Also include requesting client's own port accessibility status for reverse connection decisions
+                from app.services.websocket_manager import get_redis_ws_client
+                redis_ws_client = get_redis_ws_client()
+                client_p2p_port_accessible = None
+                if redis_ws_client:
+                    try:
+                        ws_key = f"ws:connections:{token_id}"
+                        client_port_accessible_str = await redis_ws_client.hget(ws_key, 'p2p_port_accessible')
+                        if client_port_accessible_str:
+                            client_p2p_port_accessible = client_port_accessible_str == 'true'
+                    except Exception as e:
+                        logger.debug(f"Error getting client's port accessibility for token_id {token_id}: {e}")
+                download_info['client_p2p_port_accessible'] = client_p2p_port_accessible
+                
                 peer_list_str = ', '.join([f"{p['external_ip']}:{p['external_port']}" for p in p2p_peers])
-                logger.info(f"Sending P2P peer list to client for download_id={download_id}, token_id={token_id}: {len(p2p_peers)} peers - [{peer_list_str}]")
+                logger.info(f"Sending P2P peer list to client for download_id={download_id}, token_id={token_id}: {len(p2p_peers)} peers - [{peer_list_str}], client_port_accessible={client_p2p_port_accessible}")
             else:
                 logger.debug(f"P2P peer lookup skipped for download_id={download_id}: missing system or rom_path (system={system}, rom_path={rom_path})")
                 download_info['p2p_peers'] = []
@@ -3702,6 +3717,21 @@ async def get_my_connection_info(
                 "connection_info": None,
                 "message": "No connection info found for current client"
             }
+        
+        # Also fetch p2p_port_accessible from WebSocket connection info (Redis DB 4)
+        from app.services.websocket_manager import get_redis_ws_client
+        redis_ws_client = get_redis_ws_client()
+        if redis_ws_client:
+            try:
+                ws_key = f"ws:connections:{token_id}"
+                p2p_port_accessible_str = await redis_ws_client.hget(ws_key, 'p2p_port_accessible')
+                if p2p_port_accessible_str:
+                    connection_info['p2p_port_accessible'] = p2p_port_accessible_str == 'true'
+                else:
+                    connection_info['p2p_port_accessible'] = None  # Unknown status
+            except Exception as e:
+                logger.debug(f"Error getting p2p_port_accessible from WebSocket connection info for token_id {token_id}: {e}")
+                connection_info['p2p_port_accessible'] = None  # Unknown status on error
         
         return {
             "success": True,
