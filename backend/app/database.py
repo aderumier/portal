@@ -130,6 +130,7 @@ class ApiToken(Base):
     last_bandwidth_test_time = Column(DateTime, nullable=True)  # Timestamp of last bandwidth test
     p2p_total_download_mb = Column(Float, default=0.0, nullable=False)  # Total P2P download traffic in MB
     p2p_total_upload_mb = Column(Float, default=0.0, nullable=False)  # Total P2P upload traffic in MB
+    custom_public_port = Column(Integer, nullable=True)  # Custom public port for P2P (overrides UPnP port)
     
     __table_args__ = (
         {'sqlite_autoincrement': True},

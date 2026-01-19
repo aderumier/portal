@@ -311,6 +311,7 @@ def migrate_database():
             ("last_bandwidth_test_time", "TEXT"),
             ("p2p_total_download_mb", "REAL NOT NULL DEFAULT 0.0"),
             ("p2p_total_upload_mb", "REAL NOT NULL DEFAULT 0.0"),
+            ("custom_public_port", "INTEGER"),
         ]
         
         for col_name, col_def in token_columns_to_add:

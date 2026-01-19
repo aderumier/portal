@@ -176,6 +176,7 @@ class P2PInventoryService:
         
         Returns:
             Connection info dictionary (external_ip, external_port, internal_port, upnp_enabled, etc.) or None if not found
+            Note: If custom_public_port is set in database, it will override external_port from Redis
         """
         redis_client = get_redis_p2p_client()
         if not redis_client:
@@ -185,7 +186,37 @@ class P2PInventoryService:
             client_key = f"p2p:client:{token_id}"
             connection_info_str = await redis_client.get(client_key)
             if connection_info_str:
-                return json.loads(connection_info_str)
+                connection_info = json.loads(connection_info_str)
+                
+                # Check database for custom_public_port and override external_port if set
+                try:
+                    from app.database import SessionLocal, ApiToken
+                    db = SessionLocal()
+                    try:
+                        token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
+                        if token and token.custom_public_port is not None:
+                            # Override external_port with custom port
+                            connection_info['external_port'] = token.custom_public_port
+                            logger.debug(f"Using custom public port {token.custom_public_port} for token_id {token_id} (overriding Redis external_port)")
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.debug(f"Error checking custom_public_port for token_id {token_id}: {e}")
+                    # Continue with Redis value if database check fails
+                
+                # Fallback: if no external_port (no UPnP, no custom), use internal_port (defaults to 8765)
+                if connection_info.get('external_port') is None:
+                    internal_port = connection_info.get('internal_port')
+                    if internal_port:
+                        connection_info['external_port'] = internal_port
+                        logger.debug(f"Using internal_port {internal_port} as external_port fallback for token_id {token_id}")
+                    else:
+                        # Ultimate fallback to default P2P port
+                        from app.config import settings
+                        connection_info['external_port'] = settings.P2P_PORT
+                        logger.debug(f"Using default P2P_PORT {settings.P2P_PORT} as external_port fallback for token_id {token_id}")
+                
+                return connection_info
             return None
         except Exception as e:
             logger.error(f"Error getting P2P client connection info for token_id {token_id}: {e}")

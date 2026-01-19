@@ -4751,12 +4751,13 @@ async def setup_upnp_port_mapping(port: int):
             logger.warning("UPnP: Could not get external IP address")
             return None
         
-        # Add port mapping
-        logger.info(f"UPnP: Adding port mapping for port {port}...")
+        # Add port mapping with service name in description
+        description = f"RGS-{SERVICE_ID}"
+        logger.info(f"UPnP: Adding port mapping for port {port} with description: {description}")
         mapping_success = await upnp_helper.add_port_mapping(
             internal_port=port,
             external_port=port,
-            description="P2P File Sharing"
+            description=description
         )
         
         if mapping_success:

@@ -4,7 +4,7 @@ import os
 import json
 from typing import Dict, Optional, List, Tuple
 from fastapi import WebSocket, WebSocketDisconnect
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import asyncio
 from app.config import settings
 
@@ -180,8 +180,22 @@ class WebSocketManager:
                 key = self._get_redis_key(token_id)
                 existing = await redis_client.exists(key)
                 if existing:
-                    logger.warning(f"Connection rejected for token_id {token_id}: another client is already connected")
-                    return (False, f"Another client is already connected with this token (token_id: {token_id})")
+                    # Check if the existing entry is valid (has required fields)
+                    conn_data = await redis_client.hgetall(key)
+                    has_process_id = bool(conn_data.get('process_id'))
+                    has_connected_at = bool(conn_data.get('connected_at'))
+                    has_last_updated = bool(conn_data.get('last_updated'))
+                    
+                    # If entry is missing all required fields, it's invalid/partial - clean it up
+                    if not (has_process_id or has_connected_at or has_last_updated):
+                        logger.warning(f"Found invalid/partial connection entry for token_id {token_id} - cleaning up and allowing new connection")
+                        await redis_client.delete(key)
+                        # Also remove from process set if it exists
+                        process_set_key = self._get_process_set_key()
+                        await redis_client.srem(process_set_key, str(token_id))
+                    else:
+                        logger.warning(f"Connection rejected for token_id {token_id}: another client is already connected")
+                        return (False, f"Another client is already connected with this token (token_id: {token_id})")
             except Exception as e:
                 logger.error(f"Error checking existing connection in Redis: {e}")
                 return (False, "Error checking connection status")
@@ -197,6 +211,7 @@ class WebSocketManager:
                     'client_version': client_version or "unknown",
                     'platform': platform or "unknown",
                     'connected_at': connected_at,
+                    'last_updated': connected_at,  # Track last heartbeat for multi-worker cleanup
                     'process_id': str(self._process_id),
                     'p2p_port_accessible': '',
                     'upload_bandwidth': '',
@@ -320,6 +335,53 @@ class WebSocketManager:
         """
         return len(self._websocket_objects)
     
+    async def refresh_ttl_for_active_connections(self) -> int:
+        """Refresh TTL and last_updated for all connections owned by this worker.
+        
+        This should be called periodically (e.g., every 60 seconds) to keep
+        connections alive in Redis and allow other workers to detect stale
+        connections from crashed workers.
+        
+        Returns:
+            Number of connections refreshed
+        """
+        if not await self._ensure_redis_available():
+            return 0
+        
+        redis_client = get_redis_ws_client()
+        if not redis_client:
+            return 0
+        
+        refreshed_count = 0
+        now = datetime.now(timezone.utc).isoformat()
+        
+        for token_id, websocket in list(self._websocket_objects.items()):
+            try:
+                # Only refresh if websocket is still connected
+                is_connected = True
+                if hasattr(websocket, 'client_state'):
+                    from fastapi.websockets import WebSocketState
+                    if websocket.client_state != WebSocketState.CONNECTED:
+                        is_connected = False
+                
+                if is_connected:
+                    key = self._get_redis_key(token_id)
+                    # Update last_updated timestamp and refresh TTL
+                    await redis_client.hset(key, 'last_updated', now)
+                    await redis_client.expire(key, 600)  # 10 minute TTL
+                    refreshed_count += 1
+                else:
+                    # Websocket is disconnected, remove it
+                    logger.info(f"Found disconnected websocket during refresh for token_id {token_id}")
+                    await self.remove_connection(token_id, websocket)
+            except Exception as e:
+                logger.debug(f"Error refreshing TTL for token_id {token_id}: {e}")
+        
+        if refreshed_count > 0:
+            logger.debug(f"Refreshed TTL for {refreshed_count} active connections (worker {self._process_id})")
+        
+        return refreshed_count
+    
     async def get_all_connections(self) -> List[Dict]:
         """Get all connected clients with their info from Redis.
         
@@ -356,22 +418,66 @@ class WebSocketManager:
                             dead_connections.append(token_id)
                             continue
                         
-                        # Check if websocket is still alive in local memory
-                        websocket = self._websocket_objects.get(token_id)
-                        if websocket:
-                            # Check websocket state
-                            try:
-                                if hasattr(websocket, 'client_state'):
-                                    from fastapi.websockets import WebSocketState
-                                    if websocket.client_state != WebSocketState.CONNECTED:
-                                        dead_connections.append(token_id)
-                                        continue
-                            except Exception as e:
-                                logger.debug(f"Error checking websocket state for token_id {token_id}: {e}")
-                                # If we can't check, assume it's dead if not in our memory
-                                if token_id not in self._websocket_objects:
-                                    dead_connections.append(token_id)
-                                    continue
+                        # Check if entry is valid (has required fields)
+                        has_process_id = bool(conn_data.get('process_id'))
+                        has_connected_at = bool(conn_data.get('connected_at'))
+                        has_last_updated = bool(conn_data.get('last_updated'))
+                        
+                        # If missing all required fields, it's an invalid/partial entry - mark as dead
+                        if not (has_process_id or has_connected_at or has_last_updated):
+                            logger.info(f"Connection {token_id} is invalid/partial (missing required fields) - marking dead")
+                            dead_connections.append(token_id)
+                            continue
+                        
+                        # Multi-worker cleanup: check process_id and last_updated
+                        conn_process_id = conn_data.get('process_id', '')
+                        last_updated_str = conn_data.get('last_updated', '')
+                        is_dead = False
+                        
+                        if conn_process_id == str(self._process_id):
+                            # Connection owned by THIS worker - check local memory
+                            websocket = self._websocket_objects.get(token_id)
+                            if not websocket:
+                                # Not in our memory but claims to be ours - stale entry
+                                logger.info(f"Connection {token_id} claims worker {self._process_id} but not in local memory - marking dead")
+                                is_dead = True
+                            else:
+                                # Check websocket state
+                                try:
+                                    if hasattr(websocket, 'client_state'):
+                                        from fastapi.websockets import WebSocketState
+                                        if websocket.client_state != WebSocketState.CONNECTED:
+                                            is_dead = True
+                                except Exception as e:
+                                    logger.debug(f"Error checking websocket state for token_id {token_id}: {e}")
+                        else:
+                            # Connection owned by ANOTHER worker - check last_updated timestamp
+                            if last_updated_str:
+                                try:
+                                    last_updated = datetime.fromisoformat(last_updated_str)
+                                    # Use 5 minutes as stale threshold (refresh happens every 60s)
+                                    stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
+                                    if last_updated < stale_threshold:
+                                        logger.info(f"Connection {token_id} from worker {conn_process_id} is stale (last_updated: {last_updated_str}) - marking dead")
+                                        is_dead = True
+                                except (ValueError, TypeError) as e:
+                                    logger.debug(f"Error parsing last_updated for token_id {token_id}: {e}")
+                            else:
+                                # No last_updated field - legacy connection, check connected_at
+                                connected_at_str = conn_data.get('connected_at', '')
+                                if connected_at_str:
+                                    try:
+                                        connected_at = datetime.fromisoformat(connected_at_str)
+                                        stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=10)
+                                        if connected_at < stale_threshold:
+                                            logger.info(f"Legacy connection {token_id} from worker {conn_process_id} is stale - marking dead")
+                                            is_dead = True
+                                    except (ValueError, TypeError):
+                                        pass
+                        
+                        if is_dead:
+                            dead_connections.append(token_id)
+                            continue
                         
                         # Convert Redis Hash data to dict
                         connection_dict = {

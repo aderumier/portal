@@ -1064,22 +1064,33 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
             if redis_client:
                 try:
                     key = f"ws:connections:{token_id}"
-                    upload_bw = await redis_client.hget(key, 'upload_bandwidth')
-                    download_bw = await redis_client.hget(key, 'download_bandwidth')
-                    
-                    needs_update = False
-                    if (not upload_bw or upload_bw == '') and api_token.upload_bandwidth is not None:
-                        await redis_client.hset(key, 'upload_bandwidth', str(api_token.upload_bandwidth))
-                        needs_update = True
-                        logger.info(f"Restoring upload_bandwidth from SQL to Redis for token_id {token_id}: {api_token.upload_bandwidth} Mbits/s")
-                    
-                    if (not download_bw or download_bw == '') and api_token.download_bandwidth is not None:
-                        await redis_client.hset(key, 'download_bandwidth', str(api_token.download_bandwidth))
-                        needs_update = True
-                        logger.info(f"Restoring download_bandwidth from SQL to Redis for token_id {token_id}: {api_token.download_bandwidth} Mbits/s")
-                    
-                    if needs_update:
-                        logger.debug(f"Restored bandwidth values in Redis for token_id {token_id}")
+                    # Check if connection entry exists and is valid before setting bandwidth
+                    conn_data = await redis_client.hgetall(key)
+                    if conn_data:
+                        has_process_id = bool(conn_data.get('process_id'))
+                        has_connected_at = bool(conn_data.get('connected_at'))
+                        has_last_updated = bool(conn_data.get('last_updated'))
+                        
+                        # Only update bandwidth if connection entry is valid
+                        if has_process_id or has_connected_at or has_last_updated:
+                            upload_bw = conn_data.get('upload_bandwidth')
+                            download_bw = conn_data.get('download_bandwidth')
+                            
+                            needs_update = False
+                            if (not upload_bw or upload_bw == '') and api_token.upload_bandwidth is not None:
+                                await redis_client.hset(key, 'upload_bandwidth', str(api_token.upload_bandwidth))
+                                needs_update = True
+                                logger.info(f"Restoring upload_bandwidth from SQL to Redis for token_id {token_id}: {api_token.upload_bandwidth} Mbits/s")
+                            
+                            if (not download_bw or download_bw == '') and api_token.download_bandwidth is not None:
+                                await redis_client.hset(key, 'download_bandwidth', str(api_token.download_bandwidth))
+                                needs_update = True
+                                logger.info(f"Restoring download_bandwidth from SQL to Redis for token_id {token_id}: {api_token.download_bandwidth} Mbits/s")
+                            
+                            if needs_update:
+                                logger.debug(f"Restored bandwidth values in Redis for token_id {token_id}")
+                        else:
+                            logger.debug(f"Skipping bandwidth restoration for token_id {token_id}: connection entry is invalid/partial")
                 except Exception as e:
                     logger.warning(f"Failed to restore bandwidth values in Redis for token_id {token_id}: {e}")
             
@@ -2961,9 +2972,11 @@ async def get_connected_clients(
                 user = db.query(User).filter(User.user_id == token.user_id).first()
                 
                 # Get P2P connection info (UPnP status, ports, etc.)
+                # Note: get_client_connection_info() already returns custom_public_port as external_port if set
                 p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
                 upnp_enabled = p2p_info.get("upnp_enabled", False) if p2p_info else False
-                upnp_port = p2p_info.get("external_port") or p2p_info.get("internal_port") if p2p_info else None
+                # Use custom port if set, otherwise use external_port from Redis (UPnP), otherwise internal_port
+                upnp_port = token.custom_public_port if token.custom_public_port is not None else (p2p_info.get("external_port") or p2p_info.get("internal_port") if p2p_info else None)
                 
                 # Get bandwidth from Redis (connection info) first, fallback to database
                 upload_bandwidth = conn.get("upload_bandwidth")
@@ -3059,9 +3072,22 @@ async def submit_bandwidth_test(
         if redis_client:
             try:
                 key = f"ws:connections:{token_id}"
-                await redis_client.hset(key, 'upload_bandwidth', str(upload_bandwidth))
-                await redis_client.hset(key, 'download_bandwidth', str(download_bandwidth))
-                logger.debug(f"Updated bandwidth in Redis for token_id {token_id}: upload={upload_bandwidth:.2f} Mbits/s, download={download_bandwidth:.2f} Mbits/s")
+                # Check if connection entry exists and is valid before setting bandwidth
+                conn_data = await redis_client.hgetall(key)
+                if conn_data:
+                    has_process_id = bool(conn_data.get('process_id'))
+                    has_connected_at = bool(conn_data.get('connected_at'))
+                    has_last_updated = bool(conn_data.get('last_updated'))
+                    
+                    # Only update bandwidth if connection entry is valid
+                    if has_process_id or has_connected_at or has_last_updated:
+                        await redis_client.hset(key, 'upload_bandwidth', str(upload_bandwidth))
+                        await redis_client.hset(key, 'download_bandwidth', str(download_bandwidth))
+                        logger.debug(f"Updated bandwidth in Redis for token_id {token_id}: upload={upload_bandwidth:.2f} Mbits/s, download={download_bandwidth:.2f} Mbits/s")
+                    else:
+                        logger.debug(f"Skipping bandwidth update for token_id {token_id}: connection entry is invalid/partial")
+                else:
+                    logger.debug(f"Skipping bandwidth update for token_id {token_id}: connection entry does not exist")
             except Exception as e:
                 logger.warning(f"Failed to update bandwidth in Redis for token_id {token_id}: {e}")
         
@@ -3148,8 +3174,10 @@ async def get_connected_devices(
         devices.append({
             "token_id": token.id,
             "token_name": token.name,
+            "token": token.token,  # Include full token value for display in device card
             "is_connected": is_connected,
             "connection_info": connection_info,
+            "custom_public_port": token.custom_public_port,  # Include custom port for frontend
             "created_at": token.created_at.isoformat() if token.created_at else None,
             "last_used_at": token.last_used_at.isoformat() if token.last_used_at else None
         })
@@ -3310,11 +3338,25 @@ async def register_p2p_client(
         else:
             external_ip = body.external_ip
         
+        # Check for custom_public_port in database (overrides UPnP port)
+        from app.database import ApiToken
+        token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
+        custom_port = token.custom_public_port if token else None
+        
+        # Determine external port: custom port > UPnP port > internal port (defaults to 8765)
+        if custom_port is not None:
+            external_port_to_use = custom_port
+        elif body.external_port is not None:
+            external_port_to_use = body.external_port
+        else:
+            # Fallback to internal_port if no UPnP port reported
+            external_port_to_use = body.internal_port or settings.P2P_PORT
+        
         # Build connection info
         from datetime import datetime, timezone
         connection_info = {
             "external_ip": external_ip,
-            "external_port": body.external_port,
+            "external_port": external_port_to_use,
             "internal_port": body.internal_port,
             "upnp_enabled": body.upnp_enabled,
             "registered_at": datetime.now(timezone.utc).isoformat()
@@ -3331,8 +3373,13 @@ async def register_p2p_client(
             )
         
         # Test P2P port accessibility in background (non-blocking)
-        # Use UPnP port if enabled, otherwise use internal port (default 8765)
-        port_to_test = body.external_port if body.upnp_enabled and body.external_port else (body.internal_port or 8765)
+        # Priority: custom port > UPnP port > internal port
+        if custom_port is not None:
+            port_to_test = custom_port
+        elif body.upnp_enabled and body.external_port:
+            port_to_test = body.external_port
+        else:
+            port_to_test = body.internal_port or 8765
         
         async def check_port_and_update():
             """Background task to check port and update connection info."""
@@ -3359,8 +3406,9 @@ async def register_p2p_client(
         
         # Log UPnP status (port check is running in background)
         upnp_status = "enabled" if body.upnp_enabled else "disabled"
-        port_info = f"external:{body.external_port}" if body.external_port else f"internal:{body.internal_port}"
-        logger.info(f"Registered P2P client for token_id '{token_id}': {external_ip}:{body.external_port or body.internal_port}, UPnP: {upnp_status}, Port: {port_info} (port check running in background)")
+        port_source = "custom" if custom_port is not None else ("UPnP" if body.upnp_enabled and body.external_port else "internal")
+        port_info = f"{port_source}:{external_port_to_use or body.internal_port}"
+        logger.info(f"Registered P2P client for token_id '{token_id}': {external_ip}:{external_port_to_use or body.internal_port}, UPnP: {upnp_status}, Port: {port_info} (port check running in background)")
         
         return {
             "success": True,

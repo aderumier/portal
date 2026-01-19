@@ -102,13 +102,14 @@ class ApiTokenService:
                 'token_preview': token_preview,
                 'created_at': token.created_at.isoformat() if token.created_at else None,
                 'last_used_at': token.last_used_at.isoformat() if token.last_used_at else None,
-                'revoked': token.revoked
+                'revoked': token.revoked,
+                'custom_public_port': token.custom_public_port
             })
         
         return result
     
     async def revoke_token(self, user_id: str, token_id: int) -> bool:
-        """Revoke a token."""
+        """Delete a token from the database."""
         api_token = self.db.query(ApiToken).filter(
             and_(
                 ApiToken.id == token_id,
@@ -120,10 +121,10 @@ class ApiTokenService:
             logger.warning(f"Token not found or doesn't belong to user: {token_id}, {user_id}")
             return False
         
-        api_token.revoked = True
+        self.db.delete(api_token)
         self.db.commit()
         
-        logger.info(f"Revoked API token: {token_id} for user: {user_id}")
+        logger.info(f"Deleted API token: {token_id} for user: {user_id}")
         return True
     
     def extract_token_from_header(self, auth_header: str) -> Optional[str]:

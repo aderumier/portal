@@ -1,7 +1,9 @@
 """User management routes."""
 from fastapi import APIRouter, Depends, HTTPException, status
+from starlette.requests import Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import and_
 from app.database import get_db, User, ApiToken
 from app.services.token import ApiTokenService
 from app.api.middleware.api_token import require_auth_user
@@ -9,8 +11,44 @@ from app.api.middleware.guild import require_guild_member
 from app.api.middleware.roles import require_admin_role
 import logging
 from typing import List, Dict, Optional
+import asyncio
 
 logger = logging.getLogger(__name__)
+
+async def _test_tcp_port(host: str, port: int, timeout: float = 2.0) -> bool:
+    """Test TCP port accessibility by attempting a connection.
+    
+    Args:
+        host: Hostname or IP address
+        port: Port number
+        timeout: Connection timeout in seconds (default: 2.0)
+    
+    Returns:
+        True if port is accessible, False otherwise
+    """
+    logger.debug(f"Testing TCP port {host}:{port} with timeout {timeout}s")
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port),
+            timeout=timeout
+        )
+        # Connection successful - close immediately
+        writer.close()
+        await writer.wait_closed()
+        logger.info(f"TCP port test succeeded for {host}:{port} - port is accessible")
+        return True
+    except asyncio.TimeoutError:
+        logger.warning(f"TCP port test failed for {host}:{port}: Connection timeout after {timeout}s")
+        return False
+    except ConnectionRefusedError:
+        logger.warning(f"TCP port test failed for {host}:{port}: Connection refused (port not open or firewall blocking)")
+        return False
+    except OSError as e:
+        logger.warning(f"TCP port test failed for {host}:{port}: Network error - {type(e).__name__}: {str(e)}")
+        return False
+    except Exception as e:
+        logger.warning(f"TCP port test failed for {host}:{port}: Unexpected error - {type(e).__name__}: {str(e)}")
+        return False
 
 router = APIRouter()
 
@@ -19,6 +57,9 @@ class GenerateTokenRequest(BaseModel):
 
 class UpdateBandwidthLimitRequest(BaseModel):
     bandwidth_limit: Optional[int] = None
+
+class UpdateCustomPortRequest(BaseModel):
+    custom_public_port: Optional[int] = None
 
 def get_token_service(db: Session = Depends(get_db)) -> ApiTokenService:
     """Get API token service instance."""
@@ -51,7 +92,7 @@ async def revoke_token(
     current_user: dict = Depends(require_guild_member),
     token_service: ApiTokenService = Depends(get_token_service)
 ):
-    """Revoke an API token."""
+    """Delete an API token from the database."""
     user_id = current_user['id']
     success = await token_service.revoke_token(user_id, token_id)
     
@@ -62,6 +103,93 @@ async def revoke_token(
         )
     
     return {"success": True}
+
+@router.put("/tokens/{token_id}/custom-port")
+async def update_custom_port(
+    token_id: int,
+    request: UpdateCustomPortRequest,
+    http_request: Request,
+    current_user: dict = Depends(require_guild_member),
+    db: Session = Depends(get_db)
+):
+    """Update custom public port for a token. Tests port accessibility before saving."""
+    from app.api.middleware.auth import get_client_ip
+    from app.services.p2p_inventory import P2PInventoryService
+    
+    user_id = current_user['id']
+    custom_port = request.custom_public_port
+    
+    # Validate port range if provided
+    if custom_port is not None:
+        try:
+            custom_port = int(custom_port)
+            if custom_port < 1 or custom_port > 65535:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Port must be between 1 and 65535"
+                )
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid port value"
+            )
+    
+    # Verify token belongs to current user
+    token = db.query(ApiToken).filter(
+        and_(
+            ApiToken.id == token_id,
+            ApiToken.user_id == user_id
+        )
+    ).first()
+    
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Token not found or doesn't belong to user"
+        )
+    
+    # Test port if a custom port is being set (not clearing)
+    if custom_port is not None:
+        # Get external IP from P2P connection info or use client IP
+        external_ip = None
+        p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
+        if p2p_info and p2p_info.get('external_ip'):
+            external_ip = p2p_info.get('external_ip')
+        else:
+            # Fallback to client IP from request
+            client_ip = get_client_ip(http_request)
+            if client_ip:
+                external_ip = client_ip
+        
+        if not external_ip:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot determine external IP address for port testing. Please ensure the device is connected."
+            )
+        
+        # Test port accessibility with 2s timeout
+        logger.info(f"Testing custom port {external_ip}:{custom_port} for token_id {token_id} before saving")
+        port_accessible = await _test_tcp_port(external_ip, custom_port, timeout=2.0)
+        
+        if not port_accessible:
+            logger.warning(f"Port test failed for {external_ip}:{custom_port} (token_id {token_id}) - blocking port change")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Port {custom_port} is not accessible from {external_ip}. Please ensure the port is open and forwarded correctly."
+            )
+        
+        logger.info(f"Port test succeeded for {external_ip}:{custom_port} (token_id {token_id}) - allowing port change")
+    
+    # Update custom port (only if test passed or clearing)
+    token.custom_public_port = custom_port
+    db.commit()
+    
+    logger.info(f"Updated custom public port for token_id {token_id} (user {user_id}): {custom_port}")
+    
+    return {
+        "success": True,
+        "custom_public_port": custom_port
+    }
 
 @router.get("/bandwidth-limit")
 async def get_bandwidth_limit(

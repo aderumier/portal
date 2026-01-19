@@ -112,18 +112,15 @@ async def preload_game_data():
     # Start background task for checking and reloading catalog if updated by another worker
     asyncio.create_task(check_and_reload_catalog_periodically())
     
-    # Run initial p2p_index rebuild at startup
+    # Start background task for initial p2p_index rebuild at startup (worker 0 only)
     if settings.P2P_ENABLED:
-        try:
-            from app.services.p2p_inventory import P2PInventoryService
-            logger.info("Rebuilding p2p_index at startup...")
-            success = await P2PInventoryService.rebuild_index()
-            if success:
-                logger.info("p2p_index rebuild completed at startup")
-            else:
-                logger.warning("p2p_index rebuild failed at startup")
-        except Exception as e:
-            logger.error(f"Error rebuilding p2p_index at startup: {e}", exc_info=True)
+        import os
+        worker_id = os.getenv('WORKER_ID', os.getpid())
+        # Only run on worker 0 to avoid multiple workers rebuilding simultaneously
+        if str(worker_id) == '0':
+            asyncio.create_task(rebuild_p2p_index_at_startup())
+        else:
+            logger.debug(f"[Worker {worker_id}] Skipping p2p_index rebuild at startup (only worker 0 rebuilds)")
     
     # Initialize GeoIP instance on startup
     try:
@@ -416,13 +413,46 @@ async def promote_user_queue_items():
             logger.error(f"Critical error in promote_user_queue_items background task: {e}", exc_info=True)
             await asyncio.sleep(5)  # Wait before retrying
 
+async def rebuild_p2p_index_at_startup():
+    """Background task to rebuild p2p_index at startup (worker 0 only).
+    
+    Runs once in the background so it doesn't block application startup.
+    Only runs on worker 0 to avoid multiple workers rebuilding simultaneously.
+    """
+    import os
+    from app.services.p2p_inventory import P2PInventoryService
+    
+    worker_id = os.getenv('WORKER_ID', os.getpid())
+    
+    try:
+        # Wait a bit to let server fully start before rebuilding
+        await asyncio.sleep(5)  # Wait 5 seconds after startup
+        
+        logger.info(f"[Worker {worker_id}] Rebuilding p2p_index at startup...")
+        success = await P2PInventoryService.rebuild_index()
+        if success:
+            logger.info(f"[Worker {worker_id}] p2p_index rebuild completed at startup")
+        else:
+            logger.warning(f"[Worker {worker_id}] p2p_index rebuild failed at startup")
+    except Exception as e:
+        logger.error(f"[Worker {worker_id}] Error rebuilding p2p_index at startup: {e}", exc_info=True)
+
 async def rebuild_p2p_index_periodically():
-    """Background task to periodically rebuild the p2p_index.
+    """Background task to periodically rebuild the p2p_index (worker 0 only).
     
     Runs every hour (3600 seconds) and atomically rebuilds the index.
     The index will rebuild naturally as clients upload inventories and downloads complete.
+    Only runs on worker 0 to avoid multiple workers rebuilding simultaneously.
     """
+    import os
     from app.services.p2p_inventory import P2PInventoryService
+    
+    worker_id = os.getenv('WORKER_ID', os.getpid())
+    
+    # Only run on worker 0
+    if str(worker_id) != '0':
+        logger.debug(f"[Worker {worker_id}] Skipping periodic p2p_index rebuild (only worker 0 rebuilds)")
+        return
     
     # Wait a bit before first run to let server fully start
     await asyncio.sleep(60)  # Wait 1 minute after startup
@@ -431,40 +461,40 @@ async def rebuild_p2p_index_periodically():
         try:
             await asyncio.sleep(3600)  # Run every hour (3600 seconds)
             
-            logger.info("Starting periodic p2p_index rebuild...")
+            logger.info(f"[Worker {worker_id}] Starting periodic p2p_index rebuild...")
             success = await P2PInventoryService.rebuild_index()
             if success:
-                logger.info("Periodic p2p_index rebuild completed")
+                logger.info(f"[Worker {worker_id}] Periodic p2p_index rebuild completed")
             else:
-                logger.warning("Periodic p2p_index rebuild failed")
+                logger.warning(f"[Worker {worker_id}] Periodic p2p_index rebuild failed")
                 
         except asyncio.CancelledError:
-            logger.info("p2p_index rebuild task cancelled")
+            logger.info(f"[Worker {worker_id}] p2p_index rebuild task cancelled")
             break
         except Exception as e:
-            logger.error(f"Error in rebuild_p2p_index_periodically background task: {e}", exc_info=True)
+            logger.error(f"[Worker {worker_id}] Error in rebuild_p2p_index_periodically background task: {e}", exc_info=True)
             await asyncio.sleep(60)  # Wait 1 minute before retrying on error
 
 async def refresh_websocket_connection_ttl_periodically():
     """Background task to periodically refresh Redis TTL for active WebSocket connections.
     
-    Runs every hour (3600 seconds) to ensure connection info doesn't expire
-    while clients are still connected. This prevents loss of p2p_port_accessible
-    status and other connection metadata.
+    Runs every 60 seconds to keep connections alive and allow multi-worker cleanup.
+    Each worker refreshes the last_updated timestamp for its own connections.
+    Other workers can detect stale connections (>5 min old) from crashed workers.
     """
     from app.services.websocket_manager import get_websocket_manager
     
     # Wait a bit before first run to let server fully start
-    await asyncio.sleep(60)  # Wait 1 minute after startup
+    await asyncio.sleep(30)  # Wait 30 seconds after startup
     
     while True:
         try:
-            await asyncio.sleep(3600)  # Run every hour (3600 seconds)
-            
-            logger.debug("Starting periodic WebSocket connection TTL refresh...")
             ws_manager = get_websocket_manager()
-            await ws_manager.refresh_ttl_for_active_connections()
-            logger.debug("Periodic WebSocket connection TTL refresh completed")
+            refreshed = await ws_manager.refresh_ttl_for_active_connections()
+            if refreshed > 0:
+                logger.debug(f"Refreshed TTL for {refreshed} WebSocket connections")
+            
+            await asyncio.sleep(60)  # Run every 60 seconds for multi-worker cleanup
                 
         except asyncio.CancelledError:
             logger.info("WebSocket connection TTL refresh task cancelled")
