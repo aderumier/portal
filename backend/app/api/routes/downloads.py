@@ -1114,6 +1114,9 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
         available_downloads = download_service.check_available_downloads(token_id=token_id)
         logger.debug(f"Checked available downloads for token_id {token_id}: {available_downloads}")
         
+        # Check if custom public port is configured (skip UPnP if so)
+        skip_upnp = api_token.custom_public_port is not None if api_token else False
+        
         # Send welcome message with download status
         try:
             await websocket.send_json({
@@ -1123,7 +1126,8 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
                 "has_downloads": available_downloads.get('has_any', False),
                 "has_user_queue": available_downloads.get('has_user_queue', False),
                 "has_resumable": available_downloads.get('has_resumable', False),
-                "bandwidth_test_needed": bandwidth_test_needed
+                "bandwidth_test_needed": bandwidth_test_needed,
+                "skip_upnp": skip_upnp
             })
             logger.debug(f"Sent 'connected' message to token_id {token_id}")
         except Exception as e:
@@ -2998,7 +3002,8 @@ async def get_connected_clients(
                     "platform": conn.get("platform", "unknown"),
                     "connected_at": conn.get("connected_at"),
                     "upnp_enabled": upnp_enabled,
-                    "upnp_port": upnp_port,
+                    "upnp_port": upnp_port,  # Already uses custom_public_port if set (line 2979)
+                    "custom_public_port": token.custom_public_port,  # Include for frontend to show indicator
                     "p2p_port_accessible": conn.get("p2p_port_accessible"),
                     "upload_bandwidth": upload_bandwidth,
                     "download_bandwidth": download_bandwidth,
@@ -3384,6 +3389,11 @@ async def register_p2p_client(
         async def check_port_and_update():
             """Background task to check port and update connection info."""
             try:
+                # Skip port test if custom public port is set
+                if custom_port is not None:
+                    logger.info(f"P2P port test skipped for token_id {token_id}: custom public port is set ({custom_port})")
+                    return
+                
                 if external_ip and port_to_test:
                     logger.info(f"Starting P2P port test for token_id {token_id}: testing {external_ip}:{port_to_test} (UPnP: {body.upnp_enabled}, timeout: 2.0s)")
                     p2p_port_accessible = await test_tcp_port(external_ip, port_to_test, timeout=2.0)

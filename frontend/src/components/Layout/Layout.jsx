@@ -72,6 +72,7 @@ const Layout = () => {
                     <div className="downloads-menu-dropdown">
                       <Link to="/downloads" className="downloads-menu-item">Queue</Link>
                       <Link to="/downloads/history" className="downloads-menu-item">History</Link>
+                      <Link to="/downloads/devices" className="downloads-menu-item">Devices</Link>
                     </div>
                   </div>
                 )}

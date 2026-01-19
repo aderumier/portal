@@ -85,6 +85,7 @@ const ConnectedClients = () => {
             <div className="grid-cell">Client Version</div>
             <div className="grid-cell">UPnP</div>
             <div className="grid-cell">Port</div>
+            <div className="grid-cell">Custom Public Port</div>
             <div className="grid-cell">OPEN</div>
             <div className="grid-cell">Upload Bandwidth</div>
             <div className="grid-cell">Download Bandwidth</div>
@@ -99,13 +100,29 @@ const ConnectedClients = () => {
               <div className="grid-cell">{conn.platform || 'Unknown'}</div>
               <div className="grid-cell">{conn.client_version || 'Unknown'}</div>
               <div className="grid-cell">
-                {conn.upnp_enabled ? (
+                {conn.custom_public_port ? (
+                  <span title="UPnP disabled (custom public port configured)">disabled</span>
+                ) : conn.upnp_enabled ? (
                   <span title="UPnP enabled">ON</span>
                 ) : (
                   <span title="UPnP disabled">OFF</span>
                 )}
               </div>
-              <div className="grid-cell">{conn.upnp_port || 'N/A'}</div>
+              <div className="grid-cell">
+                {conn.upnp_port ? (
+                  <>
+                    {conn.upnp_port}
+                    {conn.custom_public_port && (
+                      <span style={{ color: '#5865f2', marginLeft: '4px' }} title="Custom public port">(Custom)</span>
+                    )}
+                  </>
+                ) : (
+                  'N/A'
+                )}
+              </div>
+              <div className="grid-cell">
+                {conn.custom_public_port ? conn.custom_public_port : 'N/A'}
+              </div>
               <div className="grid-cell">
                 {conn.p2p_port_accessible === true ? (
                   <span style={{ color: '#4caf50' }}>YES</span>

@@ -4349,10 +4349,48 @@ async def websocket_client():
                                         if token_id:
                                             logger.info(f"Connected with token_id: {token_id}")
                                         
+                                        # Declare global variable at the start of this handler
+                                        global _p2p_connection_info
+                                        
+                                        # Check if UPnP should be skipped (custom public port configured)
+                                        skip_upnp = data.get("skip_upnp", False)
+                                        
+                                        # Set up UPnP port mapping if not skipped (only on first connection)
+                                        if P2P_CLIENT_AVAILABLE and is_first_connection:
+                                            if skip_upnp:
+                                                logger.info("Skipping UPnP setup: custom public port is configured for this token")
+                                                # Initialize P2P connection info without UPnP
+                                                _p2p_connection_info = {
+                                                    "external_ip": None,
+                                                    "external_port": None,
+                                                    "internal_port": P2P_PORT,
+                                                    "upnp_enabled": False
+                                                }
+                                            else:
+                                                # Set up UPnP port mapping
+                                                try:
+                                                    logger.info("Setting up UPnP port mapping for P2P server...")
+                                                    await setup_upnp_port_mapping(P2P_PORT)
+                                                    # setup_upnp_port_mapping updates _p2p_connection_info globally
+                                                    if _p2p_connection_info.get("upnp_enabled"):
+                                                        logger.info("UPnP port mapping setup completed successfully")
+                                                    else:
+                                                        logger.info("UPnP port mapping setup skipped or failed (service will continue without UPnP)")
+                                                except Exception as e:
+                                                    logger.error(f"Error setting up UPnP port mapping: {e}", exc_info=True)
+                                                    logger.info("Continuing without UPnP port mapping...")
+                                                    # Initialize P2P connection info without UPnP if not already set
+                                                    if not _p2p_connection_info.get("upnp_enabled"):
+                                                        _p2p_connection_info = {
+                                                            "external_ip": None,
+                                                            "external_port": None,
+                                                            "internal_port": P2P_PORT,
+                                                            "upnp_enabled": False
+                                                        }
+                                        
                                         # Register P2P client connection info on each WebSocket connection
                                         if P2P_CLIENT_AVAILABLE:
                                             try:
-                                                global _p2p_connection_info
                                                 # Use stored UPnP info, or default to internal port only
                                                 if _p2p_connection_info.get("internal_port"):
                                                     await register_p2p_client(
@@ -4836,31 +4874,13 @@ def main():
             p2p_server_started = True
             logger.info(f"P2P server started successfully on port {P2P_PORT}")
             
-            # Set up UPnP port mapping
-            try:
-                logger.info("Setting up UPnP port mapping for P2P server...")
-                upnp_helper = asyncio.run(setup_upnp_port_mapping(P2P_PORT))
-                if upnp_helper:
-                    logger.info("UPnP port mapping setup completed successfully")
-                else:
-                    logger.info("UPnP port mapping setup skipped or failed (service will continue without UPnP)")
-                    # Initialize P2P connection info without UPnP
-                    _p2p_connection_info = {
-                        "external_ip": None,
-                        "external_port": None,
-                        "internal_port": P2P_PORT,
-                        "upnp_enabled": False
-                    }
-            except Exception as e:
-                logger.error(f"Error setting up UPnP port mapping: {e}", exc_info=True)
-                logger.info("Continuing without UPnP port mapping...")
-                # Initialize P2P connection info without UPnP
-                _p2p_connection_info = {
-                    "external_ip": None,
-                    "external_port": None,
-                    "internal_port": P2P_PORT,
-                    "upnp_enabled": False
-                }
+            # Initialize P2P connection info (UPnP setup will happen after WebSocket connection)
+            _p2p_connection_info = {
+                "external_ip": None,
+                "external_port": None,
+                "internal_port": P2P_PORT,
+                "upnp_enabled": False
+            }
         except Exception as e:
             logger.error(f"Failed to start P2P server: {e}", exc_info=True)
             logger.warning("Continuing without P2P server...")
