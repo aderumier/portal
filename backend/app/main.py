@@ -40,42 +40,54 @@ app = FastAPI(
 # Preload all gamelist.xml files and search index on startup
 @app.on_event("startup")
 async def preload_game_data():
-    """Preload all gamelist.xml files and search index on startup."""
+    """Preload all gamelist.xml files and search index on startup.
+    
+    Only loads from .pkl cache files. Does not generate catalog/index if cache doesn't exist.
+    Generation only happens when /refresh endpoint is called.
+    """
     try:
         from app.api.routes.catalog import get_game_service
         game_service = get_game_service()
         
+        import os
+        worker_id = os.getenv('WORKER_ID', os.getpid())
+        
         # Try loading catalog from cache (this also sets _gamelists_loaded flag)
-        logger.info("=== STARTUP: Attempting to load catalog from cache... ===")
+        logger.info(f"[Worker {worker_id}] === STARTUP: Attempting to load catalog from .pkl cache... ===")
         catalog_loaded_from_cache = game_service._load_catalog_from_cache()
         if not catalog_loaded_from_cache:
-            logger.info("=== CACHE MISS: Preloading all gamelist.xml files into memory... ===")
-            game_service.preload_all_gamelists()
-            logger.info("All gamelist.xml files loaded into memory")
+            logger.warning(f"[Worker {worker_id}] === CACHE MISS: Catalog .pkl file not found ===")
+            logger.warning(f"[Worker {worker_id}] Catalog will not be available until /refresh endpoint is called to generate it")
+            logger.warning(f"[Worker {worker_id}] This prevents multiple workers from building the catalog simultaneously")
         else:
-            logger.info("=== CACHE HIT: Catalog loaded from cache ===")
-            logger.info("Assuming playcount/gametime stats are precomputed in cached catalog (stats only computed during catalog refresh)")
+            logger.info(f"[Worker {worker_id}] === CACHE HIT: Catalog loaded from .pkl cache ===")
+            logger.info(f"[Worker {worker_id}] Assuming playcount/gametime stats are precomputed in cached catalog (stats only computed during catalog refresh)")
         
-        # Try loading search index from cache (build_search_index will handle this)
-        logger.info("Attempting to load search index from cache...")
+        # Try loading search index from cache
+        logger.info(f"[Worker {worker_id}] Attempting to load search index from .pkl cache...")
         cached_wip = game_service._load_index_from_cache('wip')
         if cached_wip:
             game_service.search_index_wip = cached_wip
             game_service._index_built_wip = True
             game_service.cache['search_index_wip'] = cached_wip
-            logger.info("Search index (WIP) loaded from cache")
+            logger.info(f"[Worker {worker_id}] Search index (WIP) loaded from .pkl cache: {len(cached_wip)} letters indexed")
         else:
-            game_service.build_search_index('wip')
+            logger.warning(f"[Worker {worker_id}] Search index (WIP) .pkl file not found - will not be available until /refresh is called")
+            game_service.search_index_wip = {}
+            game_service._index_built_wip = False
         
         cached_releases = game_service._load_index_from_cache('releases')
         if cached_releases:
             game_service.search_index_releases = cached_releases
             game_service._index_built_releases = True
             game_service.cache['search_index_releases'] = cached_releases
-            logger.info("Search index (Releases) loaded from cache")
+            logger.info(f"[Worker {worker_id}] Search index (Releases) loaded from .pkl cache: {len(cached_releases)} letters indexed")
         else:
-            game_service.build_search_index('releases')
-        logger.info("Search index preloaded on startup (WIP and Releases)")
+            logger.warning(f"[Worker {worker_id}] Search index (Releases) .pkl file not found - will not be available until /refresh is called")
+            game_service.search_index_releases = {}
+            game_service._index_built_releases = False
+        
+        logger.info("Startup complete - catalog and search index loaded from cache (if available)")
     except Exception as e:
         logger.warning(f"Failed to preload game data: {e}")
         import traceback
@@ -96,6 +108,9 @@ async def preload_game_data():
     
     # Start background task for cleaning up dead WebSocket connections
     asyncio.create_task(cleanup_dead_websocket_connections())
+    
+    # Start background task for checking and reloading catalog if updated by another worker
+    asyncio.create_task(check_and_reload_catalog_periodically())
     
     # Run initial p2p_index rebuild at startup
     if settings.P2P_ENABLED:
@@ -480,6 +495,37 @@ async def cleanup_dead_websocket_connections():
             
         except Exception as e:
             logger.error(f"Error in cleanup_dead_websocket_connections: {e}", exc_info=True)
+            # Continue running even if there's an error
+            await asyncio.sleep(60)
+
+
+async def check_and_reload_catalog_periodically():
+    """Background task to periodically check if catalog or search index files have been updated.
+    
+    Runs every minute to check if .pkl files have been modified by another worker.
+    If files are newer, automatically reloads them to keep all workers in sync.
+    This allows one worker to refresh the catalog and all other workers to pick up the changes.
+    """
+    from app.api.routes.catalog import get_game_service
+    
+    while True:
+        try:
+            await asyncio.sleep(60)  # Run every minute
+            
+            import os
+            worker_id = os.getenv('WORKER_ID', os.getpid())
+            
+            game_service = get_game_service()
+            # Check if catalog or search index files have been updated and reload if needed
+            reloaded = game_service._check_and_reload_catalog_if_updated()
+            
+            if reloaded:
+                logger.info(f"[Worker {worker_id}] Catalog and/or search index reloaded from updated .pkl files")
+            else:
+                logger.debug(f"[Worker {worker_id}] Catalog and search index .pkl files checked - no updates detected")
+            
+        except Exception as e:
+            logger.error(f"Error in check_and_reload_catalog_periodically: {e}", exc_info=True)
             # Continue running even if there's an error
             await asyncio.sleep(60)
 
