@@ -211,9 +211,9 @@ class P2PInventoryService:
             return []
         
         try:
-            # Get Redis cache client for WebSocket connection info (database 1)
-            from app.services.discord import get_redis_cache_client
-            redis_cache_client = get_redis_cache_client()
+            # Get Redis WebSocket client for connection info (database 4)
+            from app.services.websocket_manager import get_redis_ws_client
+            redis_ws_client = get_redis_ws_client()
             
             # Get requesting client's external IP to exclude
             requesting_client_info = await P2PInventoryService.get_client_connection_info(exclude_token_id)
@@ -255,14 +255,21 @@ class P2PInventoryService:
                     # Get WebSocket connection info (upload_bandwidth, p2p_port_accessible)
                     upload_bandwidth = None
                     p2p_port_accessible = False
-                    if redis_cache_client:
+                    if redis_ws_client:
                         try:
-                            ws_key = f"ws_client:{token_id}"
-                            ws_info_str = await redis_cache_client.get(ws_key)
-                            if ws_info_str:
-                                ws_info = json.loads(ws_info_str)
-                                upload_bandwidth = ws_info.get('upload_bandwidth')
-                                p2p_port_accessible = ws_info.get('p2p_port_accessible', False)
+                            ws_key = f"ws:connections:{token_id}"
+                            # Connection info is stored as a hash, not JSON
+                            upload_bandwidth_str = await redis_ws_client.hget(ws_key, 'upload_bandwidth')
+                            p2p_port_accessible_str = await redis_ws_client.hget(ws_key, 'p2p_port_accessible')
+                            
+                            if upload_bandwidth_str:
+                                try:
+                                    upload_bandwidth = float(upload_bandwidth_str)
+                                except (ValueError, TypeError):
+                                    pass
+                            
+                            if p2p_port_accessible_str:
+                                p2p_port_accessible = p2p_port_accessible_str == 'true'
                         except Exception as e:
                             logger.debug(f"Error getting WebSocket info for token_id {token_id}: {e}")
                     
