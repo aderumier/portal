@@ -75,16 +75,47 @@ class P2PInventoryService:
             return False
         
         try:
+            # Track which ROMs are new for this token (to count accurately)
+            new_roms_count = 0
+            
             # Add new inventory entries to index
             for system, paths in inventory.items():
                 for rom_path in paths:
                     index_key = P2PInventoryService._get_index_key(system, rom_path)
-                    await redis_client.sadd(index_key, str(token_id))
-                    # Set TTL on index key (48 hours)
-                    await redis_client.expire(index_key, 48 * 3600)
+                    # Use SADD return value to atomically check if token_id was added (not already present)
+                    # SADD returns 1 if element was added, 0 if it was already in the set
+                    # This is atomic and prevents race conditions when multiple clients update simultaneously
+                    added_count = await redis_client.sadd(index_key, str(token_id))
+                    
+                    # Count new ROMs (ones where token_id wasn't already present)
+                    if added_count == 1:
+                        new_roms_count += 1
             
             total_paths = sum(len(paths) for paths in inventory.values())
-            logger.info(f"Updated P2P inventory for token_id {token_id}: {len(inventory)} systems, {total_paths} ROM paths")
+            logger.info(f"Updated P2P inventory for token_id {token_id}: {len(inventory)} systems, {total_paths} ROM paths ({new_roms_count} new ROMs)")
+            
+            # Update game count in database
+            if new_roms_count > 0:
+                try:
+                    from app.database import SessionLocal, ApiToken
+                    db = SessionLocal()
+                    try:
+                        token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
+                        if token:
+                            # Increment game count by number of new ROMs
+                            token.p2p_game_count = (token.p2p_game_count or 0) + new_roms_count
+                            db.commit()
+                            logger.info(f"Updated game count for token_id {token_id}: {token.p2p_game_count} games")
+                        else:
+                            logger.warning(f"Token {token_id} not found in database when updating game count")
+                    except Exception as e:
+                        db.rollback()
+                        logger.error(f"Error updating game count for token_id {token_id}: {e}", exc_info=True)
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.error(f"Error accessing database for game count update: {e}", exc_info=True)
+            
             return True
         except Exception as e:
             logger.error(f"Error updating P2P inventory for token_id {token_id}: {e}")
@@ -358,17 +389,14 @@ class P2PInventoryService:
             return []
     
     @staticmethod
-    async def rebuild_index() -> bool:
-        """Rebuild the entire p2p_index by computing all keys from current state.
+    async def cleanup_p2p_index() -> bool:
+        """Clean up the p2p_index by removing disconnected clients.
         
         Process:
-        1. Scan all existing p2p:index:* keys
-        2. Collect all ROM paths and their token_ids
-        3. Count games per token_id while building index
-        4. Update game counts in database
-        5. Rewrite all keys in place (update existing, keep valid ones)
-        6. Delete keys that no longer have any token_ids
-        7. Clean up any old versioned keys (p2p:index_v1:*, p2p:index_v2:*) for backward compatibility
+        1. Get all connected token_ids from WebSocket connections and P2P client info
+        2. Scan all existing p2p:index:* keys
+        3. For each ROM key, remove token_ids that are not in the connected list
+        4. Delete ROM entries that no longer have any associated token_ids
         
         Returns:
             True if successful, False otherwise
@@ -378,146 +406,105 @@ class P2PInventoryService:
             return False
         
         try:
-            logger.info("Starting p2p_index rebuild")
+            logger.info("Starting p2p_index cleanup")
             
-            # Step 1: Collect all index data
-            # Scan for: p2p:index:* (current format)
-            consolidated_index = {}  # {rom_key: set of token_ids}
-            token_game_counts = {}  # {token_id: count} - Count games while building index
-            all_keys_found = set()
+            # Step 1: Get all connected token_ids from WebSocket connections (Redis DB 4)
+            connected_token_ids = set()
+            try:
+                from app.services.websocket_manager import get_redis_ws_client
+                redis_ws_client = get_redis_ws_client()
+                if redis_ws_client:
+                    cursor = 0
+                    while True:
+                        cursor, keys = await redis_ws_client.scan(cursor, match="ws:connections:*", count=1000)
+                        for key in keys:
+                            try:
+                                # Extract token_id from key format: ws:connections:{token_id}
+                                token_id_str = key.split(':')[-1]
+                                if token_id_str.isdigit():
+                                    connected_token_ids.add(int(token_id_str))
+                            except (ValueError, IndexError):
+                                continue
+                        if cursor == 0:
+                            break
+            except Exception as e:
+                logger.warning(f"Error getting WebSocket connections: {e}")
+            
+            # Step 2: Get all connected token_ids from P2P client info (Redis DB 3)
+            try:
+                cursor = 0
+                while True:
+                    cursor, keys = await redis_client.scan(cursor, match="p2p:client:*", count=1000)
+                    for key in keys:
+                        try:
+                            # Extract token_id from key format: p2p:client:{token_id}
+                            token_id_str = key.split(':')[-1]
+                            if token_id_str.isdigit():
+                                connected_token_ids.add(int(token_id_str))
+                        except (ValueError, IndexError):
+                            continue
+                    if cursor == 0:
+                        break
+            except Exception as e:
+                logger.warning(f"Error getting P2P client info: {e}")
+            
+            logger.info(f"Found {len(connected_token_ids)} connected clients")
+            
+            # Step 3: Scan all index keys and clean up disconnected clients
+            keys_updated = 0
+            keys_deleted = 0
+            token_ids_removed = 0
+            pipeline = redis_client.pipeline()
+            pipeline_count = 0
             
             cursor = 0
             while True:
                 cursor, keys = await redis_client.scan(cursor, match="p2p:index:*", count=1000)
                 for key in keys:
-                    all_keys_found.add(key)
-                    # Extract rom_key from key format: p2p:index:{system}/{rom_path}
-                    rom_key = key.replace("p2p:index:", "", 1)
-                    
-                    # Get all token_ids for this ROM
-                    token_ids = await redis_client.smembers(key)
-                    token_id_set = {tid for tid in token_ids if tid.isdigit()}
-                    
-                    # Merge with existing data (same ROM might appear multiple times)
-                    if rom_key in consolidated_index:
-                        # Only count NEW token_ids that weren't already in the set
-                        existing_token_ids = consolidated_index[rom_key]
-                        new_token_ids = token_id_set - existing_token_ids
-                        consolidated_index[rom_key].update(token_id_set)
+                    try:
+                        # Get all token_ids for this ROM
+                        token_ids = await redis_client.smembers(key)
+                        token_id_set = {int(tid) for tid in token_ids if tid.isdigit()}
                         
-                        # Count games for new token_ids only
-                        for token_id in new_token_ids:
-                            if token_id not in token_game_counts:
-                                token_game_counts[token_id] = 0
-                            token_game_counts[token_id] += 1
-                    else:
-                        # First time seeing this ROM - count all token_ids
-                        consolidated_index[rom_key] = token_id_set
-                        for token_id in token_id_set:
-                            if token_id not in token_game_counts:
-                                token_game_counts[token_id] = 0
-                            token_game_counts[token_id] += 1
-                
-                if cursor == 0:
-                    break
-            
-            logger.info(f"Scanned {len(all_keys_found)} index keys, found {len(consolidated_index)} unique ROM paths")
-            
-            # Update game counts in database
-            try:
-                from app.database import SessionLocal, ApiToken
-                db = SessionLocal()
-                try:
-                    # Update all tokens with their game counts
-                    for token_id_str, count in token_game_counts.items():
-                        try:
-                            token_id = int(token_id_str)
-                            token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
-                            if token:
-                                token.p2p_game_count = count
-                        except (ValueError, TypeError):
-                            continue
-                    
-                    # Set count to 0 for tokens not in the index
-                    all_tokens = db.query(ApiToken).all()
-                    token_ids_in_index = {int(tid) for tid in token_game_counts.keys() if tid.isdigit()}
-                    for token in all_tokens:
-                        if token.id not in token_ids_in_index:
-                            token.p2p_game_count = 0
-                    
-                    db.commit()
-                    logger.info(f"Updated game counts for {len(token_game_counts)} tokens in database")
-                except Exception as e:
-                    db.rollback()
-                    logger.error(f"Error updating game counts in database: {e}", exc_info=True)
-                finally:
-                    db.close()
-            except Exception as e:
-                logger.error(f"Error accessing database for game counts: {e}", exc_info=True)
-            
-            # Step 2: Rewrite all keys in place (compute new keys, rewrite existing, delete missing)
-            keys_updated = 0
-            keys_deleted = 0
-            pipeline = redis_client.pipeline()
-            pipeline_count = 0
-            
-            # Process all consolidated ROM paths
-            for rom_key, token_ids in consolidated_index.items():
-                index_key = f"p2p:index:{rom_key}"
-                
-                if token_ids:
-                    # Rewrite key with current token_ids
-                    pipeline.delete(index_key)  # Clear existing
-                    pipeline.sadd(index_key, *[str(tid) for tid in token_ids])
-                    pipeline.expire(index_key, 48 * 3600)
-                    keys_updated += 1
-                    pipeline_count += 3
-                else:
-                    # Delete empty keys
-                    pipeline.delete(index_key)
-                    keys_deleted += 1
-                    pipeline_count += 1
+                        # Remove disconnected token_ids
+                        connected_token_ids_in_rom = token_id_set & connected_token_ids
+                        disconnected_token_ids_in_rom = token_id_set - connected_token_ids
+                        
+                        if disconnected_token_ids_in_rom:
+                            token_ids_removed += len(disconnected_token_ids_in_rom)
+                            
+                            if connected_token_ids_in_rom:
+                                # Update key with only connected token_ids
+                                pipeline.delete(key)
+                                pipeline.sadd(key, *[str(tid) for tid in connected_token_ids_in_rom])
+                                keys_updated += 1
+                                pipeline_count += 2
+                            else:
+                                # No connected clients remain - delete the key
+                                pipeline.delete(key)
+                                keys_deleted += 1
+                                pipeline_count += 1
+                    except Exception as e:
+                        logger.warning(f"Error processing index key {key}: {e}")
+                        continue
                 
                 # Execute pipeline in batches to avoid memory issues
-                if pipeline_count >= 3000:  # ~1000 ROMs per batch
+                if pipeline_count >= 3000:  # ~1500 ROMs per batch
                     await pipeline.execute()
                     pipeline = redis_client.pipeline()
                     pipeline_count = 0
+                
+                if cursor == 0:
+                    break
             
             # Execute remaining pipeline operations
             if pipeline_count > 0:
                 await pipeline.execute()
             
-            logger.info(f"Updated {keys_updated} index keys, deleted {keys_deleted} empty keys")
-            
-            # Step 3: Delete all old versioned keys (cleanup)
-            versioned_keys_to_delete = []
-            for pattern in ["p2p:index_v1:*", "p2p:index_v2:*"]:
-                cursor = 0
-                while True:
-                    cursor, keys = await redis_client.scan(cursor, match=pattern, count=1000)
-                    versioned_keys_to_delete.extend(keys)
-                    if cursor == 0:
-                        break
-            
-            if versioned_keys_to_delete:
-                # Delete in batches
-                batch_size = 1000
-                for i in range(0, len(versioned_keys_to_delete), batch_size):
-                    batch = versioned_keys_to_delete[i:i + batch_size]
-                    await redis_client.delete(*batch)
-                logger.info(f"Deleted {len(versioned_keys_to_delete)} old versioned index keys")
-            
-            # Step 4: Delete version pointer if it exists
-            try:
-                await redis_client.delete("p2p:index_version")
-            except Exception:
-                pass
-            
-            logger.info(f"p2p_index rebuild completed: {keys_updated} keys updated, {keys_deleted} keys deleted")
+            logger.info(f"p2p_index cleanup completed: {keys_updated} keys updated, {keys_deleted} keys deleted, {token_ids_removed} token_ids removed")
             return True
             
         except Exception as e:
-            logger.error(f"Error rebuilding p2p_index: {e}", exc_info=True)
+            logger.error(f"Error cleaning up p2p_index: {e}", exc_info=True)
             return False
 
