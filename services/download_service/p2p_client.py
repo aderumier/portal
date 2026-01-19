@@ -3,6 +3,7 @@ import os
 import logging
 import threading
 import hashlib
+import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, unquote
 from pathlib import Path
@@ -15,6 +16,11 @@ logger = logging.getLogger(__name__)
 _p2p_server = None
 _p2p_server_lock = threading.Lock()
 
+
+# Global dictionary to store pending reverse connection requests
+# Key: request_id (string), Value: dict with dest_path, expected_size, resume_from, success_ref
+_reverse_connection_requests = {}
+_reverse_connection_lock = threading.Lock()
 
 def create_p2p_handler(roms_path):
     """Factory function to create P2P request handler with roms_path."""
@@ -49,6 +55,103 @@ def create_p2p_handler(roms_path):
                     self.send_error(500, "Internal server error")
                 except Exception:
                     pass  # Connection may be closed
+        
+        def do_PUT(self):
+            """Handle PUT requests for reverse P2P connections."""
+            self._handle_reverse_connection()
+        
+        def do_POST(self):
+            """Handle POST requests for reverse P2P connections."""
+            self._handle_reverse_connection()
+        
+        def _handle_reverse_connection(self):
+            """Handle reverse P2P connection upload."""
+            try:
+                # Parse request path: /reverse/{request_id}
+                parsed_path = urlparse(self.path)
+                path_parts = parsed_path.path.strip('/').split('/')
+                
+                if len(path_parts) < 2 or path_parts[0] != 'reverse':
+                    self.send_error(404, "Not found")
+                    return
+                
+                request_id = path_parts[1]
+                
+                # Look up reverse connection request
+                with _reverse_connection_lock:
+                    request_info = _reverse_connection_requests.get(request_id)
+                
+                if not request_info:
+                    logger.warning(f"Reverse connection request not found: {request_id}")
+                    self.send_error(404, "Request not found")
+                    return
+                
+                dest_path = request_info['dest_path']
+                expected_size = request_info.get('expected_size')
+                resume_from = request_info.get('resume_from', 0)
+                success_ref = request_info.get('success_ref')
+                
+                # Get content length
+                content_length = int(self.headers.get('Content-Length', 0))
+                
+                if content_length == 0:
+                    logger.warning("Reverse connection: Received request with Content-Length=0")
+                    self.send_response(400, "Content-Length required")
+                    self.end_headers()
+                    return
+                
+                # Handle resume: check existing file size if resume_from > 0
+                mode = 'r+b' if resume_from > 0 and os.path.exists(dest_path) else 'wb'
+                bytes_written = 0
+                
+                with open(dest_path, mode) as f:
+                    if resume_from > 0:
+                        # Truncate to resume position and seek there
+                        f.truncate(resume_from)
+                        f.seek(resume_from)
+                        bytes_written = resume_from
+                    
+                    # Read and write file data
+                    remaining = content_length
+                    while remaining > 0:
+                        chunk_size = min(8192, remaining)  # 8KB chunks
+                        chunk = self.rfile.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        bytes_written += len(chunk)
+                        remaining -= len(chunk)
+                
+                # Verify file size if expected_size provided
+                if expected_size and bytes_written != expected_size:
+                    logger.error(f"Reverse connection: File size mismatch: received {bytes_written}, expected {expected_size}")
+                    self.send_response(400, "File size mismatch")
+                    self.end_headers()
+                    return
+                
+                # Mark as successful
+                if success_ref is not None:
+                    success_ref[0] = True
+                
+                # Remove request from dictionary
+                with _reverse_connection_lock:
+                    _reverse_connection_requests.pop(request_id, None)
+                
+                # Success response
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                response = json.dumps({"success": True, "bytes_received": bytes_written})
+                self.wfile.write(response.encode('utf-8'))
+                
+                logger.info(f"Reverse connection: Received {bytes_written} bytes and saved to {dest_path}")
+                
+            except Exception as e:
+                logger.error(f"Error handling reverse connection request: {e}", exc_info=True)
+                try:
+                    self.send_error(500, "Internal server error")
+                except Exception:
+                    pass
         
         def log_message(self, format, *args):
             """Override to use our logger instead of stderr."""
@@ -332,3 +435,265 @@ def stop_p2p_server():
         if _p2p_server:
             _p2p_server.stop()
             _p2p_server = None
+
+
+# Global reverse connection listener instance
+_reverse_listener = None
+_reverse_listener_lock = threading.Lock()
+
+
+def create_reverse_handler(dest_path, expected_size=None, resume_from=0, success_ref=None):
+    """Factory function to create reverse connection handler with dest_path.
+    
+    Args:
+        dest_path: Destination file path
+        expected_size: Expected file size (optional)
+        resume_from: Byte position to resume from
+        success_ref: List to store success flag [False] - will be set to True on success
+    """
+    class ReverseConnectionHandler(BaseHTTPRequestHandler):
+        """HTTP request handler for receiving files via reverse P2P connection."""
+        
+        def do_PUT(self):
+            """Handle PUT requests for receiving file data (reverse connection)."""
+            self.do_POST()  # Use same logic as POST
+        
+        def do_POST(self):
+            """Handle POST requests for receiving file data (reverse connection)."""
+            try:
+                # Get content length
+                content_length = int(self.headers.get('Content-Length', 0))
+                
+                if content_length == 0:
+                    logger.warning("Reverse connection: Received request with Content-Length=0")
+                    self.send_response(400, "Content-Length required")
+                    self.end_headers()
+                    return
+                
+                # Handle resume: check existing file size if resume_from > 0
+                mode = 'r+b' if resume_from > 0 and os.path.exists(dest_path) else 'wb'
+                bytes_written = 0
+                
+                with open(dest_path, mode) as f:
+                    if resume_from > 0:
+                        # Truncate to resume position and seek there
+                        f.truncate(resume_from)
+                        f.seek(resume_from)
+                        bytes_written = resume_from
+                    
+                    # Read and write file data
+                    remaining = content_length
+                    while remaining > 0:
+                        chunk_size = min(8192, remaining)  # 8KB chunks
+                        chunk = self.rfile.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        bytes_written += len(chunk)
+                        remaining -= len(chunk)
+                
+                # Verify file size if expected_size provided
+                if expected_size and bytes_written != expected_size:
+                    logger.error(f"Reverse connection: File size mismatch: received {bytes_written}, expected {expected_size}")
+                    self.send_response(400, "File size mismatch")
+                    self.end_headers()
+                    return
+                
+                # Mark as successful
+                if success_ref is not None:
+                    success_ref[0] = True
+                
+                # Success response
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                response = json.dumps({"success": True, "bytes_received": bytes_written})
+                self.wfile.write(response.encode('utf-8'))
+                
+                logger.info(f"Reverse connection: Received {bytes_written} bytes and saved to {dest_path}")
+                
+            except Exception as e:
+                logger.error(f"Error handling reverse connection request: {e}", exc_info=True)
+                try:
+                    self.send_error(500, "Internal server error")
+                except Exception:
+                    pass
+        
+        def log_message(self, format, *args):
+            """Override to use our logger instead of stderr."""
+            logger.debug(f"Reverse P2P HTTP {self.address_string()} - {format % args}")
+    
+    return ReverseConnectionHandler
+
+
+class ReverseConnectionListener:
+    """Temporary HTTP listener for receiving files via reverse P2P connection."""
+    
+    def __init__(self, dest_path, expected_size=None, resume_from=0, port=0):
+        """Initialize reverse connection listener.
+        
+        Args:
+            dest_path: Destination file path where received data will be saved
+            expected_size: Expected file size in bytes (optional)
+            resume_from: Byte position to resume from (default: 0)
+            port: Port to listen on (0 = auto-assign)
+        """
+        self.dest_path = dest_path
+        self.expected_size = expected_size
+        self.resume_from = resume_from
+        self.port = port
+        self.server = None
+        self.server_thread = None
+        self._running = False
+        self.actual_port = None
+        self.bytes_received = 0
+        self.success = False
+        self.success_ref = [False]  # Shared reference for handler to update
+    
+    def start_listening(self):
+        """Start the reverse connection listener (non-blocking).
+        
+        Returns:
+            actual_port: The port the server is listening on, or None on error
+        """
+        if self._running:
+            logger.warning("Reverse connection listener is already running")
+            return self.actual_port
+        
+        try:
+            # Create handler class with dest_path bound and success reference
+            HandlerClass = create_reverse_handler(self.dest_path, self.expected_size, self.resume_from, self.success_ref)
+            self.server = HTTPServer(('', self.port), HandlerClass)
+            self.actual_port = self.server.server_address[1]
+            self._running = True
+            self.success = False
+            self.success_ref[0] = False
+            
+            logger.info(f"Reverse connection listener started on port {self.actual_port} for {self.dest_path}")
+            
+            # Start server in a separate thread
+            self.server_thread = threading.Thread(target=self._run_server, daemon=True)
+            self.server_thread.start()
+            
+            return self.actual_port
+            
+        except Exception as e:
+            logger.error(f"Failed to start reverse connection listener: {e}", exc_info=True)
+            self._running = False
+            self.stop()
+            return None
+    
+    def wait_for_connection(self, timeout=300):
+        """Wait for reverse connection to complete.
+        
+        Args:
+            timeout: Maximum time to wait for connection (seconds)
+            
+        Returns:
+            True if file was received successfully, False otherwise
+        """
+        if not self._running:
+            return False
+        
+        import time
+        start_time = time.time()
+        while self._running and not self.success_ref[0]:
+            if time.time() - start_time > timeout:
+                logger.warning(f"Reverse connection listener timeout after {timeout}s")
+                break
+            time.sleep(0.1)
+        
+        # Update success from reference
+        self.success = self.success_ref[0]
+        
+        # Clean up
+        self.stop()
+        
+        return self.success
+    
+    def _run_server(self):
+        """Run the HTTP server (called in thread)."""
+        try:
+            # Set a timeout for the server socket (1 second for polling)
+            self.server.socket.settimeout(1.0)
+            
+            # Keep handling requests until success or timeout
+            while self._running and not self.success_ref[0]:
+                try:
+                    # Handle one request (the file transfer)
+                    self.server.handle_request()
+                except socket.timeout:
+                    # Timeout is expected - continue waiting (check will happen in start())
+                    continue
+                except OSError as e:
+                    # Server closed - break
+                    if self._running:
+                        logger.debug(f"Reverse connection listener socket error: {e}")
+                    break
+                except Exception as e:
+                    logger.error(f"Reverse connection listener error handling request: {e}", exc_info=True)
+                    break
+            
+            # Check if file was written
+            if os.path.exists(self.dest_path):
+                self.bytes_received = os.path.getsize(self.dest_path)
+        except Exception as e:
+            logger.error(f"Reverse connection listener error: {e}", exc_info=True)
+        finally:
+            self._running = False
+    
+    def stop(self):
+        """Stop the reverse connection listener."""
+        if not self._running:
+            return
+        
+        try:
+            if self.server:
+                self.server.shutdown()
+                self.server.server_close()
+            self._running = False
+            logger.info(f"Reverse connection listener stopped (port {self.actual_port})")
+        except Exception as e:
+            logger.error(f"Error stopping reverse connection listener: {e}", exc_info=True)
+
+
+def get_local_ip():
+    """Get local IP address for reverse connections."""
+    try:
+        import socket
+        # Connect to a remote address (doesn't actually send data)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        # Fallback to localhost
+        return "127.0.0.1"
+
+def register_reverse_connection_request(request_id, dest_path, expected_size=None, resume_from=0, success_ref=None):
+    """Register a reverse connection request.
+    
+    Args:
+        request_id: Unique request identifier
+        dest_path: Destination file path
+        expected_size: Expected file size (optional)
+        resume_from: Byte position to resume from
+        success_ref: List to store success flag [False]
+    """
+    with _reverse_connection_lock:
+        _reverse_connection_requests[request_id] = {
+            'dest_path': dest_path,
+            'expected_size': expected_size,
+            'resume_from': resume_from,
+            'success_ref': success_ref or [False]
+        }
+
+def unregister_reverse_connection_request(request_id):
+    """Unregister a reverse connection request.
+    
+    Args:
+        request_id: Unique request identifier
+    """
+    with _reverse_connection_lock:
+        _reverse_connection_requests.pop(request_id, None)

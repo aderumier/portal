@@ -88,6 +88,17 @@ class MarkCompletedRequest(BaseModel):
     log_content: Optional[str] = None  # Download task log content
     p2p_source_token_id: Optional[int] = None  # Source peer's token_id for P2P downloads
 
+class ReverseP2PConnectionRequest(BaseModel):
+    source_token_id: int  # Token ID of the peer that should send the file (Client B)
+    target_ip: str  # IP address where Client A is listening
+    target_port: int  # Port where Client A is listening
+    target_path: str  # URL path for reverse connection (e.g., "/reverse/{request_id}")
+    system: str  # System identifier
+    rom_path: str  # ROM file path (relative to system directory)
+    resume_from: Optional[int] = 0  # Byte position to resume from (default: 0)
+    expected_size: Optional[int] = None  # Expected file size in bytes
+    download_id: Optional[int] = None  # Download ID for tracking
+
 class MarkErrorRequest(BaseModel):
     download_id: int
     error_message: str
@@ -3845,5 +3856,85 @@ async def get_p2p_md5(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while computing checksum"
+        )
+
+@router.post("/p2p/reverse-connection")
+async def request_reverse_p2p_connection(
+    body: ReverseP2PConnectionRequest,
+    request: Request,
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Request a reverse P2P connection when normal connection fails.
+    
+    When Client A cannot connect to Client B (port closed), Client A can request
+    Client B to initiate a reverse connection and push the file to Client A.
+    """
+    try:
+        # Check if P2P is enabled
+        if not settings.P2P_ENABLED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="P2P downloads are disabled"
+            )
+        
+        # Get token_id from request state (set by API token middleware)
+        target_token_id = getattr(request.state, 'token_id', None)
+        
+        if target_token_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token ID not found. API token authentication required."
+            )
+        
+        # Get source peer's connection info to verify they exist
+        from app.services.p2p_inventory import P2PInventoryService
+        source_peer_info = await P2PInventoryService.get_client_connection_info(body.source_token_id)
+        
+        if not source_peer_info:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Source peer (token_id: {body.source_token_id}) not found or not connected"
+            )
+        
+        # Send WebSocket notification to source peer to initiate reverse connection
+        from app.services.websocket_manager import get_websocket_manager
+        ws_manager = get_websocket_manager()
+        
+        reverse_msg = {
+            "type": "reverse_p2p_download",
+            "target_token_id": target_token_id,
+            "target_ip": body.target_ip,
+            "target_port": body.target_port,
+            "target_path": body.target_path,
+            "system": body.system,
+            "rom_path": body.rom_path,
+            "resume_from": body.resume_from or 0,
+            "expected_size": body.expected_size,
+            "download_id": body.download_id
+        }
+        
+        notification_sent = await ws_manager.send_notification(body.source_token_id, reverse_msg)
+        
+        if not notification_sent:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Source peer is not connected via WebSocket. Reverse connection request failed."
+            )
+        
+        logger.info(f"Reverse P2P connection requested: source_token_id={body.source_token_id} -> target_token_id={target_token_id} at {body.target_ip}:{body.target_port} for {body.system}/{body.rom_path} (resume_from={body.resume_from})")
+        
+        return {
+            "success": True,
+            "message": "Reverse connection request sent to source peer"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error requesting reverse P2P connection: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while requesting reverse connection"
         )
 

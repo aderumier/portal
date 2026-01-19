@@ -25,7 +25,7 @@ import random
 import struct
 
 # Client version
-CLIENT_VERSION = "0.6"
+CLIENT_VERSION = "0.7"
 
 # Configure stdout/stderr for Windows to handle non-ASCII characters gracefully
 # This prevents encoding errors when third-party libraries (like internetspeedtest) print emojis
@@ -3087,7 +3087,277 @@ def get_current_client_connection_info():
         logger.error(f"Unexpected error getting current client connection info: {e}", exc_info=True)
         return None
 
-def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, paused_ref=None, download_id=None, bytes_transferred_ref=None, chunk_size=1024*1024, timeout=300):
+def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_path, resume_from=0, expected_size=None, download_id=None):
+    """Handle reverse P2P upload: push file to another client.
+    
+    Args:
+        target_ip: IP address of target client (Client A)
+        target_port: Port where target client is listening
+        target_path: URL path for reverse connection (e.g., "/reverse/{request_id}")
+        system: System identifier
+        rom_path: ROM file path (relative to system directory)
+        resume_from: Byte position to resume from (default: 0)
+        expected_size: Expected file size in bytes (optional)
+        download_id: Download ID for tracking (optional)
+    """
+    try:
+        # Build source file path
+        if not ROMS_PATH or not os.path.exists(ROMS_PATH):
+            logger.error(f"ROMS_PATH does not exist: {ROMS_PATH}, cannot serve file via reverse connection")
+            return
+        
+        file_path = os.path.join(ROMS_PATH, system, rom_path.lstrip('./'))
+        
+        # Security check: ensure path is within ROMS_PATH
+        try:
+            roms_path_abs = os.path.abspath(ROMS_PATH)
+            file_path_abs = os.path.abspath(file_path)
+            if not str(file_path_abs).startswith(str(roms_path_abs)):
+                logger.error(f"Access denied: file path outside ROMS_PATH")
+                return
+        except Exception:
+            logger.error(f"Access denied: invalid path")
+            return
+        
+        if not os.path.exists(file_path) or not os.path.isfile(file_path):
+            logger.error(f"File not found for reverse connection: {file_path}")
+            return
+        
+        # Get file size
+        file_size = os.path.getsize(file_path)
+        
+        # Calculate bytes to send (from resume_from to end)
+        if resume_from > 0:
+            bytes_to_send = file_size - resume_from
+        else:
+            bytes_to_send = file_size
+        
+        if bytes_to_send <= 0:
+            logger.warning(f"Nothing to send: resume_from={resume_from}, file_size={file_size}")
+            return
+        
+        # Build target URL (use target_path provided)
+        target_url = f"http://{target_ip}:{target_port}{target_path}"
+        
+        logger.info(f"Starting reverse P2P upload: {system}/{rom_path} -> {target_url} (sending {bytes_to_send} bytes from byte {resume_from})")
+        
+        # Create a generator to read file in chunks
+        def file_chunk_generator():
+            with open(file_path, 'rb') as f:
+                if resume_from > 0:
+                    f.seek(resume_from)
+                
+                remaining = bytes_to_send
+                chunk_size = 8192  # 8KB chunks
+                while remaining > 0:
+                    chunk = f.read(min(chunk_size, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+        
+        # Send file via PUT request
+        headers = {
+            'Content-Type': 'application/octet-stream',
+            'Content-Length': str(bytes_to_send)
+        }
+        
+        # Use tuple format for timeout: (connect_timeout, read_timeout)
+        # Shorter connect timeout (10s) to fail fast if connection can't be established
+        # Longer read timeout (300s) for data transfer
+        connect_timeout = 10
+        read_timeout = 300
+        timeout_tuple = (connect_timeout, read_timeout)
+        
+        logger.info(f"Reverse P2P upload: connect_timeout={connect_timeout}s, read_timeout={read_timeout}s")
+        
+        response = requests.put(
+            target_url,
+            data=file_chunk_generator(),
+            headers=headers,
+            timeout=timeout_tuple
+        )
+        response.raise_for_status()
+        
+        logger.info(f"Reverse P2P upload completed: {system}/{rom_path} -> {target_url} ({bytes_to_send} bytes sent)")
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Reverse P2P upload failed: {system}/{rom_path} -> {target_ip}:{target_port}: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error during reverse P2P upload: {e}", exc_info=True)
+
+def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, download_id=None, bytes_transferred_ref=None):
+    """Try to download a file via reverse P2P connection.
+    
+    Starts a temporary listener and requests the source peer to push the file.
+    
+    Args:
+        source_token_id: Token ID of the peer that should send the file (Client B)
+        system: System identifier
+        rom_path: ROM file path (relative to system directory)
+        dest_path: Destination file path
+        resume_from: Byte position to resume from (default: 0)
+        expected_size: Expected file size in bytes (optional)
+        expected_checksum: Expected checksum data (optional, for verification)
+        download_id: Download ID for tracking (optional)
+        bytes_transferred_ref: Optional list to track bytes transferred
+    
+    Returns:
+        True if download succeeded and checksum verification passed, False otherwise
+    """
+    try:
+        from p2p_client import get_p2p_server, get_local_ip, register_reverse_connection_request, unregister_reverse_connection_request
+        import uuid
+        import time
+        
+        # Get existing P2P server and its port
+        p2p_server = get_p2p_server(ROMS_PATH, P2P_PORT)
+        actual_port = p2p_server.get_port()
+        
+        # Get local IP address
+        local_ip = get_local_ip()
+        
+        # Determine resume position (check existing file)
+        if os.path.exists(dest_path):
+            existing_size = os.path.getsize(dest_path)
+            if expected_size and existing_size < expected_size:
+                resume_from = existing_size
+                logger.info(f"Reverse P2P: Resuming from byte {resume_from} (existing file: {existing_size} bytes)")
+        
+        # Generate unique request ID for this reverse connection
+        request_id = str(uuid.uuid4())
+        success_ref = [False]
+        
+        # Register reverse connection request
+        register_reverse_connection_request(
+            request_id=request_id,
+            dest_path=dest_path,
+            expected_size=expected_size,
+            resume_from=resume_from,
+            success_ref=success_ref
+        )
+        
+        logger.info(f"Registered reverse connection request {request_id} on port {actual_port} for {system}/{rom_path}")
+        
+        try:
+            # Request reverse connection from backend
+            url = f"{API_URL}/api/download/p2p/reverse-connection"
+            headers = {
+                'Authorization': f'Bearer {API_TOKEN}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Include request_id in the URL path that Client B should use
+            reverse_url_path = f"/reverse/{request_id}"
+            
+            data = {
+                "source_token_id": source_token_id,
+                "target_ip": local_ip,
+                "target_port": actual_port,
+                "target_path": reverse_url_path,  # Path for reverse connection
+                "system": system,
+                "rom_path": rom_path,
+                "resume_from": resume_from,
+                "expected_size": expected_size,
+                "download_id": download_id
+            }
+            
+            response = requests.post(url, json=data, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            result = response.json()
+            if not result.get('success'):
+                logger.error(f"Reverse connection request failed: {result.get('message', 'Unknown error')}")
+                unregister_reverse_connection_request(request_id)
+                return False
+            
+            logger.info(f"Reverse connection request sent to backend for source_token_id={source_token_id}, waiting for upload...")
+            
+            # Wait for connection to complete (up to 5 minutes)
+            start_time = time.time()
+            timeout = 300
+            while not success_ref[0]:
+                if time.time() - start_time > timeout:
+                    logger.warning(f"Reverse connection timeout after {timeout}s")
+                    break
+                time.sleep(0.1)
+            
+            # Unregister request
+            unregister_reverse_connection_request(request_id)
+            
+            success = success_ref[0]
+            if not success:
+                logger.error("Reverse connection did not complete successfully")
+                return False
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error requesting reverse connection: {e}")
+            unregister_reverse_connection_request(request_id)
+            return False
+        except Exception as e:
+            logger.error(f"Error during reverse connection: {e}", exc_info=True)
+            unregister_reverse_connection_request(request_id)
+            return False
+        
+        # Verify file size if expected_size provided
+        if expected_size:
+            if not os.path.exists(dest_path):
+                logger.error(f"Reverse P2P download: File does not exist after transfer: {dest_path}")
+                return False
+            final_size = os.path.getsize(dest_path)
+            if final_size != expected_size:
+                logger.error(f"Reverse P2P download size mismatch: downloaded {final_size} bytes, expected {expected_size} bytes")
+                return False
+        
+        # Verify checksum if expected_checksum provided
+        if expected_checksum:
+            logger.info(f"Verifying checksum for reverse P2P downloaded file: {dest_path}")
+            actual_checksum = calculate_partial_checksum(dest_path)
+            if not actual_checksum:
+                logger.error(f"Failed to calculate checksum for reverse P2P downloaded file: {dest_path}")
+                return False
+            
+            # Compare file sizes
+            if actual_checksum['file_size'] != expected_checksum['file_size']:
+                logger.error(f"Reverse P2P download size mismatch: expected {expected_checksum['file_size']}, got {actual_checksum['file_size']}")
+                return False
+            
+            # For small files, compare full_hash
+            if 'full_hash' in expected_checksum:
+                if 'full_hash' not in actual_checksum:
+                    logger.error(f"Reverse P2P download checksum format mismatch: expected full_hash, got partial checksum")
+                    return False
+                if actual_checksum['full_hash'].lower() != expected_checksum['full_hash'].lower():
+                    logger.error(f"Reverse P2P download checksum mismatch: expected {expected_checksum['full_hash']}, got {actual_checksum['full_hash']}")
+                    return False
+            else:
+                # For large files, compare beginning_hash and end_hash
+                if 'beginning_hash' not in actual_checksum or 'end_hash' not in actual_checksum:
+                    logger.error(f"Reverse P2P download checksum format mismatch: expected partial checksum, got full_hash")
+                    return False
+                if actual_checksum['beginning_hash'].lower() != expected_checksum['beginning_hash'].lower():
+                    logger.error(f"Reverse P2P download beginning hash mismatch: expected {expected_checksum['beginning_hash']}, got {actual_checksum['beginning_hash']}")
+                    return False
+                if actual_checksum['end_hash'].lower() != expected_checksum['end_hash'].lower():
+                    logger.error(f"Reverse P2P download end hash mismatch: expected {expected_checksum['end_hash']}, got {actual_checksum['end_hash']}")
+                    return False
+            
+            logger.info(f"Reverse P2P checksum verification passed")
+        
+        # Update bytes_transferred_ref if provided
+        if bytes_transferred_ref and os.path.exists(dest_path):
+            final_size = os.path.getsize(dest_path)
+            bytes_received = final_size - resume_from
+            bytes_transferred_ref[0] += bytes_received
+        
+        logger.info(f"Successfully downloaded file via reverse P2P connection: {dest_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Unexpected error during reverse P2P download: {e}", exc_info=True)
+        return False
+
+def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, paused_ref=None, download_id=None, bytes_transferred_ref=None, chunk_size=1024*1024, connect_timeout=10, read_timeout=300):
     """Download a file from a peer via HTTP.
     
     Args:
@@ -3103,7 +3373,8 @@ def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, 
         download_id: Download ID for progress reporting (optional)
         bytes_transferred_ref: Optional list to track bytes transferred
         chunk_size: Size of chunks to read (default: 1MB)
-        timeout: Request timeout in seconds (default: 300)
+        connect_timeout: Connection timeout in seconds (default: 10)
+        read_timeout: Read timeout in seconds (default: 300)
         
     Returns:
         True if download succeeded and checksum verification passed (if expected_checksum provided), False otherwise
@@ -3121,9 +3392,12 @@ def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, 
         if current_resume_from > 0:
             headers['Range'] = f'bytes={current_resume_from}-'
         
-        logger.info(f"Downloading from peer: {peer_file_url} (resume from {current_resume_from} bytes)")
+        # Use tuple format for timeout: (connect_timeout, read_timeout)
+        timeout_tuple = (connect_timeout, read_timeout)
         
-        response = requests.get(peer_file_url, headers=headers, stream=True, timeout=timeout)
+        logger.info(f"Downloading from peer: {peer_file_url} (resume from {current_resume_from} bytes, connect_timeout={connect_timeout}s, read_timeout={read_timeout}s)")
+        
+        response = requests.get(peer_file_url, headers=headers, stream=True, timeout=timeout_tuple)
         response.raise_for_status()
         
         # Check if server supports range requests
@@ -3132,7 +3406,7 @@ def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, 
             current_resume_from = 0
             total_bytes_downloaded = 0
             response.close()
-            response = requests.get(peer_file_url, stream=True, timeout=timeout)
+            response = requests.get(peer_file_url, stream=True, timeout=timeout_tuple)
             response.raise_for_status()
         
         # Get file size from Content-Length or Content-Range header
@@ -3406,8 +3680,55 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                         pass
                 continue
             else:
-                # Other error (connection error, checksum mismatch, etc.) - try next peer
-                logger.warning(f"P2P download failed from {peer_url}, trying next peer")
+                # Connection failed - check if we should try reverse connection
+                source_token_id = peer.get('token_id')
+                peer_port_accessible = peer.get('p2p_port_accessible', True)  # Default to True for backwards compatibility
+                
+                # Check if Client A's own port is accessible before attempting reverse connection
+                # Reverse connection requires Client A to receive incoming connections
+                client_connection_info = get_current_client_connection_info()
+                client_port_accessible = client_connection_info.get('p2p_port_accessible') if client_connection_info else None
+                
+                # Try reverse connection if:
+                # 1. Peer's port is closed (p2p_port_accessible=False) - normal connection failed
+                # 2. Client A's port is accessible - can receive reverse connection
+                should_try_reverse = (not peer_port_accessible) and (client_port_accessible is True)
+                
+                if should_try_reverse:
+                    # Peer's port is closed and Client A's port is accessible - try reverse connection
+                    logger.warning(f"P2P download failed from {peer_url} (peer port not accessible), attempting reverse connection (Client A port is accessible)")
+                    
+                    if source_token_id:
+                        # Try reverse connection: Client B pushes file to Client A
+                        reverse_result = try_reverse_p2p_download(
+                            source_token_id=source_token_id,
+                            system=system,
+                            rom_path=rom_path,
+                            dest_path=dest_path,
+                            resume_from=resume_from,
+                            expected_size=expected_size,
+                            expected_checksum=expected_checksum,
+                            download_id=download_id,
+                            bytes_transferred_ref=bytes_transferred_ref
+                        )
+                        
+                        if reverse_result:
+                            logger.info(f"Successfully downloaded via reverse P2P connection from peer {source_token_id}")
+                            return source_token_id
+                        else:
+                            logger.warning(f"Reverse P2P connection also failed for peer {source_token_id}, trying next peer")
+                    else:
+                        logger.warning(f"Peer missing token_id, cannot try reverse connection, trying next peer")
+                elif not peer_port_accessible and client_port_accessible is False:
+                    # Peer's port is closed and Client A's port is also closed - cannot do reverse connection
+                    logger.warning(f"P2P download failed from {peer_url} (peer port not accessible), cannot try reverse connection (Client A port is also not accessible), trying next peer")
+                elif not peer_port_accessible and client_port_accessible is None:
+                    # Peer's port is closed but Client A's port status unknown - skip reverse connection to be safe
+                    logger.warning(f"P2P download failed from {peer_url} (peer port not accessible), cannot try reverse connection (Client A port accessibility unknown), trying next peer")
+                else:
+                    # Peer's port should be accessible but connection still failed - might be network issue
+                    logger.warning(f"P2P download failed from {peer_url} (connection error, peer port reported as accessible), trying next peer")
+                
                 # Delete partial file if download failed
                 if os.path.exists(dest_path):
                     try:
@@ -4442,6 +4763,29 @@ async def websocket_client():
                                         download_id = data.get("download_id")
                                         error = data.get("error", "Unknown error")
                                         logger.error(f"Archive download error via WebSocket: download_id={download_id}, error={error}")
+                                    
+                                    elif message_type == "reverse_p2p_download":
+                                        # Reverse P2P download request - push file to another client
+                                        target_token_id = data.get("target_token_id")
+                                        target_ip = data.get("target_ip")
+                                        target_port = data.get("target_port")
+                                        target_path = data.get("target_path", "/reverse/")  # URL path for reverse connection
+                                        system = data.get("system")
+                                        rom_path = data.get("rom_path")
+                                        resume_from = data.get("resume_from", 0)
+                                        expected_size = data.get("expected_size")
+                                        download_id = data.get("download_id")
+                                        
+                                        logger.info(f"Received reverse P2P download request: push {system}/{rom_path} to {target_ip}:{target_port}{target_path} (resume_from={resume_from})")
+                                        
+                                        # Handle reverse connection in a separate thread to avoid blocking WebSocket
+                                        import threading
+                                        reverse_thread = threading.Thread(
+                                            target=handle_reverse_p2p_upload,
+                                            args=(target_ip, target_port, target_path, system, rom_path, resume_from, expected_size, download_id),
+                                            daemon=True
+                                        )
+                                        reverse_thread.start()
                                     
                                     else:
                                         logger.debug(f"Received unknown message type: {message_type}")

@@ -287,6 +287,17 @@ class P2PInventoryService:
             requesting_client_info = await P2PInventoryService.get_client_connection_info(exclude_token_id)
             requesting_external_ip = requesting_client_info.get('external_ip') if requesting_client_info else None
             
+            # Get requesting client's port accessibility status
+            requesting_port_accessible = False
+            if redis_ws_client:
+                try:
+                    requesting_ws_key = f"ws:connections:{exclude_token_id}"
+                    requesting_port_accessible_str = await redis_ws_client.hget(requesting_ws_key, 'p2p_port_accessible')
+                    if requesting_port_accessible_str:
+                        requesting_port_accessible = requesting_port_accessible_str == 'true'
+                except Exception as e:
+                    logger.debug(f"Error getting requesting client's port accessibility for token_id {exclude_token_id}: {e}")
+            
             # Find all clients that have this ROM
             candidate_token_ids = await P2PInventoryService.find_clients_with_rom(system, rom_path)
             logger.info(f"P2P peer selection for {system}/{rom_path}: Found {len(candidate_token_ids)} candidate clients with ROM")
@@ -341,10 +352,11 @@ class P2PInventoryService:
                         except Exception as e:
                             logger.debug(f"Error getting WebSocket info for token_id {token_id}: {e}")
                     
-                    # Filter: must have p2p_port_accessible=True
-                    if not p2p_port_accessible:
+                    # Filter: exclude if both peer AND requesting client have closed ports
+                    # (cannot do normal P2P if peer's port is closed, cannot do reverse P2P if requesting client's port is closed)
+                    if not p2p_port_accessible and not requesting_port_accessible:
                         filtered_count += 1
-                        logger.debug(f"P2P peer selection: Filtered out token_id={token_id} (port not accessible)")
+                        logger.debug(f"P2P peer selection: Filtered out token_id={token_id} (both peer and requesting client have closed ports)")
                         continue
                     
                     # Filter: Skip if file is large (>10MB) and peer has slow upload (<20 Mbits/s)
@@ -358,7 +370,8 @@ class P2PInventoryService:
                         'external_ip': external_ip,
                         'external_port': external_port,
                         'token_id': token_id,
-                        'upload_bandwidth': upload_bandwidth if upload_bandwidth is not None else 0.0
+                        'upload_bandwidth': upload_bandwidth if upload_bandwidth is not None else 0.0,
+                        'p2p_port_accessible': p2p_port_accessible  # Include port accessibility status
                     })
                     
                 except Exception as e:
@@ -374,13 +387,14 @@ class P2PInventoryService:
                 bandwidths = [p['upload_bandwidth'] for p in eligible_peers]
                 logger.info(f"P2P peer selection: Upload bandwidths - min={min(bandwidths):.2f}, max={max(bandwidths):.2f}, avg={sum(bandwidths)/len(bandwidths):.2f} Mbits/s")
             
-            # Remove upload_bandwidth from results (not needed by client)
+            # Include p2p_port_accessible in results (needed for client decision-making)
             peers_to_send = []
             for peer in eligible_peers:
                 peer_data = {
                     'external_ip': peer['external_ip'],
                     'external_port': peer['external_port'],
-                    'token_id': peer['token_id']
+                    'token_id': peer['token_id'],
+                    'p2p_port_accessible': peer.get('p2p_port_accessible', False)  # Include port accessibility status
                 }
                 peers_to_send.append(peer_data)
             
