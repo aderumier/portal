@@ -3297,6 +3297,7 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
         request_id = str(uuid.uuid4())
         success_ref = [False]
         failed_ref = [False]  # Set by WebSocket handler when upload fails
+        last_activity_ref = [time.time()]  # Track last chunk received for per-chunk timeout
         
         # Register reverse connection request (include download_id for verification)
         register_reverse_connection_request(
@@ -3309,7 +3310,8 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
             download_id=download_id,
             system=system,
             rom_path=rom_path,
-            bytes_transferred_ref=bytes_transferred_ref
+            bytes_transferred_ref=bytes_transferred_ref,
+            last_activity_ref=last_activity_ref
         )
         
         logger.info(f"Registered reverse connection request {request_id} on port {actual_port} for {system}/{rom_path}")
@@ -3422,13 +3424,16 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
             
             logger.info(f"Reverse connection request sent to backend for source_token_id={source_token_id}, waiting for upload...")
             
-            # Wait for connection to complete (up to 5 minutes)
+            # Wait for connection to complete with per-chunk timeout
             # Also check failed_ref which is set via WebSocket when upload fails
             transfer_start_time = time.time()  # Set when we start waiting for the transfer
-            timeout = 300
+            per_chunk_timeout = 60  # Timeout if no chunk received within 60 seconds
             while not success_ref[0] and not failed_ref[0]:
-                if time.time() - transfer_start_time > timeout:
-                    logger.warning(f"Reverse connection timeout after {timeout}s")
+                # Check per-chunk timeout: if no data received recently, timeout
+                time_since_last_activity = time.time() - last_activity_ref[0]
+                if time_since_last_activity > per_chunk_timeout:
+                    total_elapsed = time.time() - transfer_start_time
+                    logger.warning(f"Reverse connection timeout: no data received for {time_since_last_activity:.1f}s (per-chunk timeout: {per_chunk_timeout}s, total elapsed: {total_elapsed:.1f}s)")
                     break
                 time.sleep(0.1)
             

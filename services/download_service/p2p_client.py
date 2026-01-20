@@ -138,6 +138,7 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                 system = request_info.get('system')
                 rom_path = request_info.get('rom_path')
                 bytes_transferred_ref = request_info.get('bytes_transferred_ref')
+                last_activity_ref = request_info.get('last_activity_ref')
                 
                 # Verify download_id if available (P2P security check)
                 if download_id and system and rom_path:
@@ -227,6 +228,11 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                         # Update bytes_transferred_ref for progress reporting
                         if bytes_transferred_ref is not None:
                             bytes_transferred_ref[0] += len(chunk_data)
+                        
+                        # Update last_activity_ref for per-chunk timeout tracking
+                        if last_activity_ref is not None:
+                            import time as time_module
+                            last_activity_ref[0] = time_module.time()
                         
                         # Send HTTP 100 Continue after each chunk
                         # This resets the timeout on Client B's side and provides per-chunk acknowledgment
@@ -816,7 +822,7 @@ def get_local_ip():
         # Fallback to localhost
         return "127.0.0.1"
 
-def register_reverse_connection_request(request_id, dest_path, expected_size=None, resume_from=0, success_ref=None, failed_ref=None, download_id=None, system=None, rom_path=None, bytes_transferred_ref=None):
+def register_reverse_connection_request(request_id, dest_path, expected_size=None, resume_from=0, success_ref=None, failed_ref=None, download_id=None, system=None, rom_path=None, bytes_transferred_ref=None, last_activity_ref=None):
     """Register a reverse connection request.
     
     Args:
@@ -830,6 +836,7 @@ def register_reverse_connection_request(request_id, dest_path, expected_size=Non
         system: System identifier for verification (optional)
         rom_path: ROM path for verification (optional)
         bytes_transferred_ref: Optional list to track bytes transferred for progress reporting
+        last_activity_ref: Optional list to track last activity time for per-chunk timeout
     """
     with _reverse_connection_lock:
         _reverse_connection_requests[request_id] = {
@@ -841,7 +848,8 @@ def register_reverse_connection_request(request_id, dest_path, expected_size=Non
             'download_id': download_id,
             'system': system,
             'rom_path': rom_path,
-            'bytes_transferred_ref': bytes_transferred_ref
+            'bytes_transferred_ref': bytes_transferred_ref,
+            'last_activity_ref': last_activity_ref
         }
 
 def mark_reverse_connection_failed(request_id, error_message=None):
