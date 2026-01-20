@@ -317,7 +317,7 @@
   font-size: 0.9rem;
 }
 
-.copy-token-btn {
+.download-token-btn {
   padding: 0.5rem 1rem;
   background: linear-gradient(135deg, var(--accent, #5865f2) 0%, var(--accent-hover, #4752c4) 100%);
   color: white;
@@ -329,7 +329,7 @@
   white-space: nowrap;
 }
 
-.copy-token-btn:hover {
+.download-token-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 8px rgba(88, 101, 242, 0.3);
 }

@@ -198,13 +198,16 @@ const Devices = () => {
     }
   }
 
-  const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text).then(() => {
-      alert('Token copied to clipboard!')
-    }).catch(err => {
-      console.error('Failed to copy:', err)
-      alert('Failed to copy token to clipboard')
-    })
+  const downloadToken = (token) => {
+    const blob = new Blob([token], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'API_TOKEN.txt'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -305,13 +308,12 @@ const Devices = () => {
                 <div className="device-token">
                   <label>Token:</label>
                   <div className="token-display-wrapper">
-                    <code>{device.token}</code>
                     <button 
-                      className="copy-token-btn"
-                      onClick={() => copyToClipboard(device.token)}
-                      title="Copy token to clipboard"
+                      className="download-token-btn"
+                      onClick={() => downloadToken(device.token)}
+                      title="Download token as API_TOKEN.txt"
                     >
-                      Copy
+                      Download Token
                     </button>
                   </div>
                 </div>
@@ -364,14 +366,13 @@ const Devices = () => {
             </form>
             {newTokenValue && (
               <div className="new-token-display">
-                <p><strong>Token generated! Copy it now - you won't be able to see it again:</strong></p>
+                <p><strong>Token generated! Download it now - you won't be able to see it again:</strong></p>
                 <div className="token-display">
-                  <code>{newTokenValue}</code>
                   <button
-                    onClick={() => copyToClipboard(newTokenValue)}
-                    className="copy-token-btn"
+                    onClick={() => downloadToken(newTokenValue)}
+                    className="download-token-btn"
                   >
-                    Copy
+                    Download Token
                   </button>
                 </div>
               </div>
