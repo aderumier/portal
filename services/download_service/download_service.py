@@ -3903,6 +3903,14 @@ def download_game(download_info):
             if len(parts) > 3:
                 clean_original_path = parts[3]
         
+        # Prepare server path for checksum request (preserve snapshot path for releases)
+        # Server stores release files in .zfs/snapshot/vX/ directory, so we need the full path
+        # P2P clients store files without snapshot path, so clean_original_path is used for P2P transfers
+        server_rom_path = game_id.lstrip('./')
+        # Remove system prefix if present, but preserve snapshot path
+        if server_rom_path.startswith(f"{system}/"):
+            server_rom_path = server_rom_path[len(system) + 1:]
+        
         target_system = batocera_system
         
         logger.info(f"Downloading via HTTP")
@@ -4087,9 +4095,11 @@ def download_game(download_info):
                 logger.info(f"Attempting P2P download for {system}/{clean_original_path} from {len(p2p_peers)} peer(s)")
                 
                 # Get checksum from server first
-                expected_checksum = get_server_checksum(system, clean_original_path)
+                # Use server_rom_path which includes snapshot path for releases (server stores files in snapshot)
+                # P2P transfers use clean_original_path (without snapshot) since clients don't have snapshot paths
+                expected_checksum = get_server_checksum(system, server_rom_path)
                 if not expected_checksum:
-                    logger.warning(f"Could not get checksum from server for {system}/{clean_original_path}, skipping P2P")
+                    logger.warning(f"Could not get checksum from server for {system}/{server_rom_path}, skipping P2P")
                     p2p_download_success = False
                 else:
                     logger.info(f"Retrieved checksum from server: file_size={expected_checksum.get('file_size')}")
