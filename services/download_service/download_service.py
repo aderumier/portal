@@ -3093,7 +3093,7 @@ def get_server_checksum(system, rom_path):
         logger.error(f"Unexpected error requesting checksum from server: {e}", exc_info=True)
         return None
 
-def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_path, resume_from=0, expected_size=None, download_id=None):
+def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_path, resume_from=0, expected_size=None, download_id=None, request_id=None, target_token_id=None):
     """Handle reverse P2P upload: push file to another client.
     
     Args:
@@ -3105,16 +3105,23 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         resume_from: Byte position to resume from (default: 0)
         expected_size: Expected file size in bytes (optional)
         download_id: Download ID for tracking (optional)
+        request_id: Unique request ID for feedback mechanism (optional)
+        target_token_id: Token ID of the target client for feedback (optional)
     """
+    success = False
+    error_message = None
+    
     try:
         # Verify download_id if available (P2P security check)
         if download_id:
             if not verify_p2p_download_id(download_id, system, rom_path):
                 logger.warning(f"Reverse P2P upload rejected: download_id {download_id} verification failed for {system}/{rom_path}")
+                error_message = "Download ID verification failed"
                 return
         # Build source file path
         if not ROMS_PATH or not os.path.exists(ROMS_PATH):
             logger.error(f"ROMS_PATH does not exist: {ROMS_PATH}, cannot serve file via reverse connection")
+            error_message = "ROMS_PATH does not exist"
             return
         
         file_path = os.path.join(ROMS_PATH, system, rom_path.lstrip('./'))
@@ -3125,13 +3132,16 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
             file_path_abs = os.path.abspath(file_path)
             if not str(file_path_abs).startswith(str(roms_path_abs)):
                 logger.error(f"Access denied: file path outside ROMS_PATH")
+                error_message = "Access denied: path outside ROMS_PATH"
                 return
         except Exception:
             logger.error(f"Access denied: invalid path")
+            error_message = "Access denied: invalid path"
             return
         
         if not os.path.exists(file_path) or not os.path.isfile(file_path):
             logger.error(f"File not found for reverse connection: {file_path}")
+            error_message = "File not found"
             return
         
         # Get file size
@@ -3145,6 +3155,7 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         
         if bytes_to_send <= 0:
             logger.warning(f"Nothing to send: resume_from={resume_from}, file_size={file_size}")
+            error_message = "Nothing to send"
             return
         
         # Build target URL (use target_path provided)
@@ -3191,11 +3202,47 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         response.raise_for_status()
         
         logger.info(f"Reverse P2P upload completed: {system}/{rom_path} -> {target_url} ({bytes_to_send} bytes sent)")
+        success = True
             
     except requests.exceptions.RequestException as e:
         logger.error(f"Reverse P2P upload failed: {system}/{rom_path} -> {target_ip}:{target_port}: {e}")
+        error_message = str(e)
     except Exception as e:
         logger.error(f"Unexpected error during reverse P2P upload: {e}", exc_info=True)
+        error_message = str(e)
+    finally:
+        # Report result to backend for feedback to Client A
+        if request_id and target_token_id:
+            _report_reverse_connection_result(request_id, target_token_id, success, error_message)
+
+def _report_reverse_connection_result(request_id, target_token_id, success, error_message=None):
+    """Report reverse connection result to backend.
+    
+    Args:
+        request_id: Unique request ID
+        target_token_id: Token ID of the target client (Client A)
+        success: Whether the upload succeeded
+        error_message: Error message if failed
+    """
+    try:
+        url = f"{API_URL}/api/download/p2p/reverse-connection-result"
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        
+        data = {
+            "request_id": request_id,
+            "target_token_id": target_token_id,
+            "success": success,
+            "error_message": error_message
+        }
+        
+        response = requests.post(url, json=data, headers=headers, timeout=5)
+        response.raise_for_status()
+        logger.debug(f"Reported reverse connection result for request_id={request_id}: success={success}")
+    except Exception as e:
+        logger.warning(f"Failed to report reverse connection result: {e}")
 
 def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, download_id=None, bytes_transferred_ref=None):
     """Try to download a file via reverse P2P connection.
@@ -3238,6 +3285,7 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
         # Generate unique request ID for this reverse connection
         request_id = str(uuid.uuid4())
         success_ref = [False]
+        failed_ref = [False]  # Set by WebSocket handler when upload fails
         
         # Register reverse connection request (include download_id for verification)
         register_reverse_connection_request(
@@ -3246,6 +3294,7 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
             expected_size=expected_size,
             resume_from=resume_from,
             success_ref=success_ref,
+            failed_ref=failed_ref,
             download_id=download_id,
             system=system,
             rom_path=rom_path
@@ -3273,7 +3322,8 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
                 "rom_path": rom_path,
                 "resume_from": resume_from,
                 "expected_size": expected_size,
-                "download_id": download_id
+                "download_id": download_id,
+                "request_id": request_id  # For feedback mechanism
             }
             
             response = requests.post(url, json=data, headers=headers, timeout=10)
@@ -3288,13 +3338,22 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
             logger.info(f"Reverse connection request sent to backend for source_token_id={source_token_id}, waiting for upload...")
             
             # Wait for connection to complete (up to 5 minutes)
+            # Also check failed_ref which is set via WebSocket when upload fails
             start_time = time.time()
             timeout = 300
-            while not success_ref[0]:
+            while not success_ref[0] and not failed_ref[0]:
                 if time.time() - start_time > timeout:
                     logger.warning(f"Reverse connection timeout after {timeout}s")
                     break
                 time.sleep(0.1)
+            
+            # Check if upload failed (reported via WebSocket)
+            if failed_ref[0]:
+                from p2p_client import get_reverse_connection_error
+                peer_error = get_reverse_connection_error(request_id)
+                logger.warning(f"Reverse connection upload failed (reported by source peer): {peer_error}")
+                unregister_reverse_connection_request(request_id)
+                return False
             
             # Unregister request
             unregister_reverse_connection_request(request_id)
@@ -4821,17 +4880,32 @@ async def websocket_client():
                                         resume_from = data.get("resume_from", 0)
                                         expected_size = data.get("expected_size")
                                         download_id = data.get("download_id")
+                                        request_id = data.get("request_id")  # For feedback mechanism
                                         
-                                        logger.info(f"Received reverse P2P download request: push {system}/{rom_path} to {target_ip}:{target_port}{target_path} (resume_from={resume_from})")
+                                        logger.info(f"Received reverse P2P download request: push {system}/{rom_path} to {target_ip}:{target_port}{target_path} (resume_from={resume_from}, request_id={request_id})")
                                         
                                         # Handle reverse connection in a separate thread to avoid blocking WebSocket
                                         import threading
                                         reverse_thread = threading.Thread(
                                             target=handle_reverse_p2p_upload,
-                                            args=(target_ip, target_port, target_path, system, rom_path, resume_from, expected_size, download_id),
+                                            args=(target_ip, target_port, target_path, system, rom_path, resume_from, expected_size, download_id, request_id, target_token_id),
                                             daemon=True
                                         )
                                         reverse_thread.start()
+                                    
+                                    elif message_type == "reverse_p2p_result":
+                                        # Result of reverse P2P upload from Client B
+                                        request_id = data.get("request_id")
+                                        upload_success = data.get("success", False)
+                                        error_msg = data.get("error_message")
+                                        
+                                        if upload_success:
+                                            logger.info(f"Reverse P2P upload succeeded for request_id={request_id}")
+                                        else:
+                                            logger.warning(f"Reverse P2P upload failed for request_id={request_id}: {error_msg}")
+                                            # Mark the request as failed so try_reverse_p2p_download can stop waiting
+                                            from p2p_client import mark_reverse_connection_failed
+                                            mark_reverse_connection_failed(request_id, error_msg)
                                     
                                     else:
                                         logger.debug(f"Received unknown message type: {message_type}")

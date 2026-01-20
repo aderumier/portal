@@ -98,6 +98,13 @@ class ReverseP2PConnectionRequest(BaseModel):
     resume_from: Optional[int] = 0  # Byte position to resume from (default: 0)
     expected_size: Optional[int] = None  # Expected file size in bytes
     download_id: Optional[int] = None  # Download ID for tracking
+    request_id: Optional[str] = None  # Unique request ID for feedback mechanism
+
+class ReverseP2PConnectionResultRequest(BaseModel):
+    request_id: str  # Unique request ID from the original request
+    target_token_id: int  # Token ID of the target client (Client A)
+    success: bool  # Whether the upload succeeded
+    error_message: Optional[str] = None  # Error message if failed
 
 class MarkErrorRequest(BaseModel):
     download_id: int
@@ -3917,7 +3924,8 @@ async def request_reverse_p2p_connection(
             "rom_path": body.rom_path,
             "resume_from": body.resume_from or 0,
             "expected_size": body.expected_size,
-            "download_id": body.download_id
+            "download_id": body.download_id,
+            "request_id": body.request_id  # For feedback mechanism
         }
         
         notification_sent = await ws_manager.send_notification(body.source_token_id, reverse_msg)
@@ -3942,6 +3950,71 @@ async def request_reverse_p2p_connection(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while requesting reverse connection"
+        )
+
+@router.post("/p2p/reverse-connection-result")
+async def report_reverse_p2p_connection_result(
+    body: ReverseP2PConnectionResultRequest,
+    request: Request,
+    current_user: dict = Depends(require_auth_user),
+    db: Session = Depends(get_db)
+):
+    """Report the result of a reverse P2P connection attempt.
+    
+    Called by Client B (source) after attempting to upload to Client A (target).
+    The result is forwarded to Client A via WebSocket so it can stop waiting.
+    """
+    try:
+        # Check if P2P is enabled
+        if not settings.P2P_ENABLED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="P2P downloads are disabled"
+            )
+        
+        # Get source token_id from request state (set by API token middleware)
+        source_token_id = getattr(request.state, 'token_id', None)
+        
+        if source_token_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token ID not found. API token authentication required."
+            )
+        
+        # Send result notification to target client (Client A) via WebSocket
+        from app.services.websocket_manager import get_websocket_manager
+        ws_manager = get_websocket_manager()
+        
+        result_msg = {
+            "type": "reverse_p2p_result",
+            "request_id": body.request_id,
+            "success": body.success,
+            "error_message": body.error_message
+        }
+        
+        notification_sent = await ws_manager.send_notification(body.target_token_id, result_msg)
+        
+        if body.success:
+            logger.info(f"Reverse P2P result: request_id={body.request_id} SUCCESS (source={source_token_id} -> target={body.target_token_id})")
+        else:
+            logger.info(f"Reverse P2P result: request_id={body.request_id} FAILED (source={source_token_id} -> target={body.target_token_id}): {body.error_message}")
+        
+        if not notification_sent:
+            # Target not connected - log but don't fail (they'll timeout anyway)
+            logger.warning(f"Could not send reverse P2P result to target_token_id {body.target_token_id} (not connected)")
+        
+        return {
+            "success": True,
+            "notification_sent": notification_sent
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reporting reverse P2P connection result: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while reporting reverse connection result"
         )
 
 class VerifyP2PDownloadRequest(BaseModel):

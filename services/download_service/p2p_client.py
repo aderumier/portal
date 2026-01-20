@@ -753,7 +753,7 @@ def get_local_ip():
         # Fallback to localhost
         return "127.0.0.1"
 
-def register_reverse_connection_request(request_id, dest_path, expected_size=None, resume_from=0, success_ref=None, download_id=None, system=None, rom_path=None):
+def register_reverse_connection_request(request_id, dest_path, expected_size=None, resume_from=0, success_ref=None, failed_ref=None, download_id=None, system=None, rom_path=None):
     """Register a reverse connection request.
     
     Args:
@@ -762,6 +762,7 @@ def register_reverse_connection_request(request_id, dest_path, expected_size=Non
         expected_size: Expected file size (optional)
         resume_from: Byte position to resume from
         success_ref: List to store success flag [False]
+        failed_ref: List to store failure flag [False] - set when upload fails
         download_id: Download ID for verification (optional)
         system: System identifier for verification (optional)
         rom_path: ROM path for verification (optional)
@@ -772,10 +773,50 @@ def register_reverse_connection_request(request_id, dest_path, expected_size=Non
             'expected_size': expected_size,
             'resume_from': resume_from,
             'success_ref': success_ref or [False],
+            'failed_ref': failed_ref or [False],
             'download_id': download_id,
             'system': system,
             'rom_path': rom_path
         }
+
+def mark_reverse_connection_failed(request_id, error_message=None):
+    """Mark a reverse connection request as failed.
+    
+    Called when Client B reports that the upload failed.
+    
+    Args:
+        request_id: Unique request identifier
+        error_message: Error message from Client B (optional)
+        
+    Returns:
+        True if request was found and marked, False otherwise
+    """
+    with _reverse_connection_lock:
+        request_info = _reverse_connection_requests.get(request_id)
+        if request_info:
+            failed_ref = request_info.get('failed_ref')
+            if failed_ref is not None:
+                failed_ref[0] = True
+                # Store error message for later retrieval
+                request_info['error_message'] = error_message
+                logger.info(f"Marked reverse connection request {request_id} as failed: {error_message}")
+                return True
+    return False
+
+def get_reverse_connection_error(request_id):
+    """Get the error message for a failed reverse connection request.
+    
+    Args:
+        request_id: Unique request identifier
+        
+    Returns:
+        Error message string or None
+    """
+    with _reverse_connection_lock:
+        request_info = _reverse_connection_requests.get(request_id)
+        if request_info:
+            return request_info.get('error_message')
+    return None
 
 def unregister_reverse_connection_request(request_id):
     """Unregister a reverse connection request.
