@@ -3297,10 +3297,80 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
             failed_ref=failed_ref,
             download_id=download_id,
             system=system,
-            rom_path=rom_path
+            rom_path=rom_path,
+            bytes_transferred_ref=bytes_transferred_ref
         )
         
         logger.info(f"Registered reverse connection request {request_id} on port {actual_port} for {system}/{rom_path}")
+        
+        # Set up progress reporting thread if download_id and bytes_transferred_ref are provided
+        progress_thread_running = False
+        progress_thread = None
+        if download_id and bytes_transferred_ref is not None:
+            import threading
+            progress_thread_running = True
+            total_bytes_transferred = resume_from
+            last_report_time = time.time()
+            
+            def progress_reporter():
+                """Background thread to report progress periodically."""
+                nonlocal total_bytes_transferred, last_report_time, progress_thread_running
+                while progress_thread_running and not success_ref[0] and not failed_ref[0]:
+                    time.sleep(5.0)  # Report every 5 seconds
+                    
+                    if not progress_thread_running:
+                        break
+                    
+                    elapsed = time.time() - last_report_time
+                    if elapsed > 0:
+                        # Accumulate bytes from this session into total
+                        total_bytes_transferred += bytes_transferred_ref[0]
+                        
+                        if bytes_transferred_ref[0] > 0:
+                            bytes_per_second = int(bytes_transferred_ref[0] / elapsed)
+                        else:
+                            bytes_per_second = 0
+                        
+                        # Report progress - check return value
+                        if not progress_thread_running:
+                            break
+                        
+                        try:
+                            progress_result = report_progress(download_id, total_bytes_transferred, bytes_per_second)
+                            if progress_result is None:
+                                # Download was removed from queue (likely completed) - stop reporting
+                                logger.debug(f"Download {download_id} was removed from queue (likely completed), stopping progress reporter")
+                                progress_thread_running = False
+                                break
+                            elif progress_result is False:
+                                # Download is paused
+                                logger.info(f"Download {download_id} is paused - stopping progress reporter")
+                                progress_thread_running = False
+                                break
+                        except requests.exceptions.HTTPError as e:
+                            # Handle HTTP errors - check if it's a 410 Gone (download completed/removed)
+                            if e.response and e.response.status_code == 410:
+                                logger.debug(f"Progress report returned 410 Gone - download {download_id} was removed from queue (likely completed)")
+                                progress_thread_running = False
+                                break
+                            # For other HTTP errors, check if thread should still run
+                            logger.debug(f"Progress report failed (download may be completed): {e}")
+                            if not progress_thread_running:
+                                break
+                        except Exception as e:
+                            # If reporting fails, check if thread should still run
+                            logger.debug(f"Progress report failed (download may be completed): {e}")
+                            if not progress_thread_running:
+                                break
+                        
+                        last_report_time = time.time()
+                        bytes_transferred_ref[0] = 0
+            
+            progress_thread = threading.Thread(target=progress_reporter, daemon=True)
+            progress_thread.start()
+        
+        # Initialize transfer_start_time before try block so it's available for final progress reporting
+        transfer_start_time = None
         
         try:
             # Request reverse connection from backend
@@ -3332,6 +3402,10 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
             result = response.json()
             if not result.get('success'):
                 logger.error(f"Reverse connection request failed: {result.get('message', 'Unknown error')}")
+                if progress_thread_running:
+                    progress_thread_running = False
+                    if progress_thread:
+                        progress_thread.join(timeout=1)
                 unregister_reverse_connection_request(request_id)
                 return False
             
@@ -3339,19 +3413,30 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
             
             # Wait for connection to complete (up to 5 minutes)
             # Also check failed_ref which is set via WebSocket when upload fails
-            start_time = time.time()
+            transfer_start_time = time.time()  # Set when we start waiting for the transfer
             timeout = 300
             while not success_ref[0] and not failed_ref[0]:
-                if time.time() - start_time > timeout:
+                if time.time() - transfer_start_time > timeout:
                     logger.warning(f"Reverse connection timeout after {timeout}s")
                     break
                 time.sleep(0.1)
+            
+            # Stop progress reporting thread
+            if progress_thread_running:
+                progress_thread_running = False
+                if progress_thread:
+                    progress_thread.join(timeout=1)
             
             # Check if upload failed (reported via WebSocket)
             if failed_ref[0]:
                 from p2p_client import get_reverse_connection_error
                 peer_error = get_reverse_connection_error(request_id)
                 logger.warning(f"Reverse connection upload failed (reported by source peer): {peer_error}")
+                # Stop progress reporting thread
+                if progress_thread_running:
+                    progress_thread_running = False
+                    if progress_thread:
+                        progress_thread.join(timeout=1)
                 unregister_reverse_connection_request(request_id)
                 return False
             
@@ -3361,14 +3446,29 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
             success = success_ref[0]
             if not success:
                 logger.error("Reverse connection did not complete successfully")
+                # Stop progress reporting thread
+                if progress_thread_running:
+                    progress_thread_running = False
+                    if progress_thread:
+                        progress_thread.join(timeout=1)
                 return False
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Error requesting reverse connection: {e}")
+            # Stop progress reporting thread
+            if progress_thread_running:
+                progress_thread_running = False
+                if progress_thread:
+                    progress_thread.join(timeout=1)
             unregister_reverse_connection_request(request_id)
             return False
         except Exception as e:
             logger.error(f"Error during reverse connection: {e}", exc_info=True)
+            # Stop progress reporting thread
+            if progress_thread_running:
+                progress_thread_running = False
+                if progress_thread:
+                    progress_thread.join(timeout=1)
             unregister_reverse_connection_request(request_id)
             return False
         
@@ -3417,11 +3517,21 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
             
             logger.info(f"Reverse P2P checksum verification passed")
         
-        # Update bytes_transferred_ref if provided
-        if bytes_transferred_ref and os.path.exists(dest_path):
+        # Report final progress if download_id is provided
+        if download_id and bytes_transferred_ref and os.path.exists(dest_path):
             final_size = os.path.getsize(dest_path)
             bytes_received = final_size - resume_from
-            bytes_transferred_ref[0] += bytes_received
+            if bytes_received > 0:
+                # Calculate final bytes per second (approximate)
+                if transfer_start_time is not None:
+                    total_time = time.time() - transfer_start_time
+                else:
+                    total_time = 1.0  # Default if transfer_start_time wasn't set
+                final_bytes_per_second = int(bytes_received / total_time) if total_time > 0 else 0
+                try:
+                    report_progress(download_id, final_size, final_bytes_per_second)
+                except Exception as e:
+                    logger.debug(f"Final progress report failed: {e}")
         
         logger.info(f"Successfully downloaded file via reverse P2P connection: {dest_path}")
         return True
@@ -3611,6 +3721,10 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
     Returns:
         token_id (int) of the successful peer if download succeeded via P2P, False otherwise (should fall back to server)
     """
+    # Set up progress reporting thread if download_id and bytes_transferred_ref are provided
+    progress_thread_running = False
+    progress_thread = None
+    
     try:
         if not p2p_peers:
             logger.debug(f"No P2P peers provided for {system}/{rom_path}")
@@ -3702,6 +3816,80 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                 except Exception as e:
                     logger.warning(f"Failed to delete existing file: {e}")
         
+        # Determine initial resume point (before starting downloads)
+        initial_resume_from = 0
+        if os.path.exists(dest_path):
+            existing_size = os.path.getsize(dest_path)
+            if expected_size and existing_size < expected_size:
+                initial_resume_from = existing_size
+        
+        # Set up progress reporting thread if download_id and bytes_transferred_ref are provided
+        if download_id and bytes_transferred_ref is not None:
+            import threading
+            import time
+            progress_thread_running = True
+            total_bytes_transferred = initial_resume_from
+            last_report_time = time.time()
+            
+            def progress_reporter():
+                """Background thread to report progress periodically."""
+                nonlocal total_bytes_transferred, last_report_time, progress_thread_running
+                while progress_thread_running:
+                    time.sleep(5.0)  # Report every 5 seconds
+                    
+                    if not progress_thread_running:
+                        break
+                    
+                    elapsed = time.time() - last_report_time
+                    if elapsed > 0:
+                        # Accumulate bytes from this session into total
+                        total_bytes_transferred += bytes_transferred_ref[0]
+                        
+                        if bytes_transferred_ref[0] > 0:
+                            bytes_per_second = int(bytes_transferred_ref[0] / elapsed)
+                        else:
+                            bytes_per_second = 0
+                        
+                        # Report progress - check return value
+                        if not progress_thread_running:
+                            break
+                        
+                        try:
+                            progress_result = report_progress(download_id, total_bytes_transferred, bytes_per_second)
+                            if progress_result is None:
+                                # Download was removed from queue (likely completed) - stop reporting
+                                logger.debug(f"Download {download_id} was removed from queue (likely completed), stopping progress reporter")
+                                progress_thread_running = False
+                                break
+                            elif progress_result is False:
+                                # Download is paused
+                                logger.info(f"Download {download_id} is paused - stopping progress reporter")
+                                if paused_ref:
+                                    paused_ref[0] = True
+                                progress_thread_running = False
+                                break
+                        except requests.exceptions.HTTPError as e:
+                            # Handle HTTP errors - check if it's a 410 Gone (download completed/removed)
+                            if e.response and e.response.status_code == 410:
+                                logger.debug(f"Progress report returned 410 Gone - download {download_id} was removed from queue (likely completed)")
+                                progress_thread_running = False
+                                break
+                            # For other HTTP errors, check if thread should still run
+                            logger.debug(f"Progress report failed (download may be completed): {e}")
+                            if not progress_thread_running:
+                                break
+                        except Exception as e:
+                            # If reporting fails, check if thread should still run
+                            logger.debug(f"Progress report failed (download may be completed): {e}")
+                            if not progress_thread_running:
+                                break
+                        
+                        last_report_time = time.time()
+                        bytes_transferred_ref[0] = 0
+            
+            progress_thread = threading.Thread(target=progress_reporter, daemon=True)
+            progress_thread.start()
+        
         # Try each peer in the list (already sorted by upload bandwidth)
         for peer_idx, peer in enumerate(p2p_peers):
             # Check if download is paused
@@ -3754,6 +3942,19 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                     
                     if reverse_result:
                         logger.info(f"Successfully downloaded via reverse P2P connection from peer {source_token_id}")
+                        # Stop progress reporting thread before returning
+                        if progress_thread_running:
+                            progress_thread_running = False
+                            if progress_thread:
+                                progress_thread.join(timeout=1)
+                        # Report final progress
+                        if download_id and bytes_transferred_ref and os.path.exists(dest_path):
+                            final_size = os.path.getsize(dest_path)
+                            if final_size > 0:
+                                try:
+                                    report_progress(download_id, final_size, 0)
+                                except Exception as e:
+                                    logger.debug(f"Final progress report failed: {e}")
                         return source_token_id
                     else:
                         logger.warning(f"Reverse P2P connection failed for peer {source_token_id}, trying next peer")
@@ -3788,6 +3989,19 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
             
             if result is True:
                 logger.info(f"Successfully downloaded via P2P from {peer_url}")
+                # Stop progress reporting thread before returning
+                if progress_thread_running:
+                    progress_thread_running = False
+                    if progress_thread:
+                        progress_thread.join(timeout=1)
+                # Report final progress
+                if download_id and bytes_transferred_ref and os.path.exists(dest_path):
+                    final_size = os.path.getsize(dest_path)
+                    if final_size > 0:
+                        try:
+                            report_progress(download_id, final_size, 0)
+                        except Exception as e:
+                            logger.debug(f"Final progress report failed: {e}")
                 peer_token_id = peer.get('token_id')
                 return peer_token_id if peer_token_id is not None else True
             elif result is None:
@@ -3820,6 +4034,19 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                     
                     if reverse_result:
                         logger.info(f"Successfully downloaded via reverse P2P connection from peer {source_token_id}")
+                        # Stop progress reporting thread before returning
+                        if progress_thread_running:
+                            progress_thread_running = False
+                            if progress_thread:
+                                progress_thread.join(timeout=1)
+                        # Report final progress
+                        if download_id and bytes_transferred_ref and os.path.exists(dest_path):
+                            final_size = os.path.getsize(dest_path)
+                            if final_size > 0:
+                                try:
+                                    report_progress(download_id, final_size, 0)
+                                except Exception as e:
+                                    logger.debug(f"Final progress report failed: {e}")
                         return source_token_id
                     else:
                         logger.warning(f"Reverse P2P connection also failed for peer {source_token_id}, trying next peer")
@@ -3840,6 +4067,12 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
     except Exception as e:
         logger.error(f"Error during P2P download attempt: {e}", exc_info=True)
         return False
+    finally:
+        # Stop progress reporting thread (only if it was started)
+        if progress_thread_running:
+            progress_thread_running = False
+            if progress_thread:
+                progress_thread.join(timeout=1)
 
 # ============================================================================
 # End of P2P Download Helper Functions
