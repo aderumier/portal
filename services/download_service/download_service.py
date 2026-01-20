@@ -3185,9 +3185,9 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         }
         
         # Use tuple format for timeout: (connect_timeout, read_timeout)
-        # Shorter connect timeout (10s) to fail fast if connection can't be established
+        # Shorter connect timeout (5s) to fail fast if connection can't be established
         # Longer read timeout (300s) for data transfer
-        connect_timeout = 10
+        connect_timeout = 5
         read_timeout = 300
         timeout_tuple = (connect_timeout, read_timeout)
         
@@ -3430,7 +3430,7 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
         logger.error(f"Unexpected error during reverse P2P download: {e}", exc_info=True)
         return False
 
-def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, paused_ref=None, download_id=None, bytes_transferred_ref=None, chunk_size=1024*1024, connect_timeout=10, read_timeout=300):
+def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, paused_ref=None, download_id=None, bytes_transferred_ref=None, chunk_size=1024*1024, connect_timeout=5, read_timeout=300):
     """Download a file from a peer via HTTP.
     
     Args:
@@ -3446,7 +3446,7 @@ def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, 
         download_id: Download ID for progress reporting (optional)
         bytes_transferred_ref: Optional list to track bytes transferred
         chunk_size: Size of chunks to read (default: 1MB)
-        connect_timeout: Connection timeout in seconds (default: 10)
+        connect_timeout: Connection timeout in seconds (default: 5)
         read_timeout: Read timeout in seconds (default: 300)
         
     Returns:

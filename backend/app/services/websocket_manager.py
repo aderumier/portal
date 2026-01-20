@@ -521,6 +521,40 @@ class WebSocketManager:
         """
         return len(self._websocket_objects)
     
+    def get_local_token_ids(self) -> list:
+        """Get the list of token_ids connected to this worker's WebSocket.
+        
+        Returns:
+            List of token_ids with active WebSocket connections on this process
+        """
+        return list(self._websocket_objects.keys())
+    
+    async def send_notification_direct(self, token_id: int, message: dict) -> bool:
+        """Send a notification directly to a local WebSocket connection (no pub/sub).
+        
+        Only sends if the client is connected to THIS worker. Does not use pub/sub.
+        
+        Args:
+            token_id: The API token ID
+            message: The message to send (will be JSON serialized)
+            
+        Returns:
+            True if message was sent successfully, False if no local connection
+        """
+        async with self._lock:
+            websocket = self._websocket_objects.get(token_id)
+        
+        if websocket:
+            try:
+                await websocket.send_json(message)
+                logger.debug(f"Direct notification sent to token_id {token_id}: {message.get('type', 'unknown')}")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to send direct notification to token_id {token_id}: {e}")
+                return False
+        
+        return False
+    
     async def refresh_ttl_for_active_connections(self) -> int:
         """Refresh TTL and last_updated for all connections owned by this worker.
         

@@ -341,10 +341,12 @@ async def health():
 async def promote_user_queue_items():
     """Background task to periodically check and promote user_queue items to pending.
     
-    Runs every 5 seconds and:
-    - Checks for items in user_queue
-    - Promotes items to pending if user has no active downloads
-    - Sends WebSocket notifications to connected clients
+    Runs every 5 seconds on each worker and:
+    - Only handles clients connected to THIS worker's WebSocket
+    - Checks for items in user_queue for those clients
+    - Sends WebSocket notifications directly (no pub/sub needed)
+    
+    Each worker handles its own connected clients - no locking needed.
     """
     from app.database import get_db, DownloadQueue
     from app.services.download import DownloadService
@@ -354,17 +356,24 @@ async def promote_user_queue_items():
         try:
             await asyncio.sleep(5)  # Run every 5 seconds
             
+            ws_manager = get_websocket_manager()
+            
+            # Get token_ids connected to THIS worker's WebSocket only
+            local_token_ids = ws_manager.get_local_token_ids()
+            
+            if not local_token_ids:
+                # No clients connected to this worker, nothing to do
+                continue
+            
             # Get database session
             db = next(get_db())
             try:
-                from app.api.routes.catalog import get_game_service
-                game_service = get_game_service()
-                download_service = DownloadService(db, game_service)
-                ws_manager = get_websocket_manager()
-                
-                # Get all items in user_queue grouped by token_id
+                # Only query for user_queue items belonging to our connected clients
                 user_queue_items = db.query(DownloadQueue).filter(
-                    DownloadQueue.status == 'user_queue'
+                    and_(
+                        DownloadQueue.status == 'user_queue',
+                        DownloadQueue.token_id.in_(local_token_ids)
+                    )
                 ).order_by(DownloadQueue.created_at.asc()).all()
                 
                 if not user_queue_items:
@@ -378,11 +387,10 @@ async def promote_user_queue_items():
                             items_by_token[item.token_id] = []
                         items_by_token[item.token_id].append(item)
                 
-                # Process each token_id
+                # Process each token_id (all are guaranteed to be local)
                 for token_id, items in items_by_token.items():
                     try:
                         # Check if this token_id has any active downloads (downloading status)
-                        # This includes downloads that are actively being downloaded
                         has_active = db.query(DownloadQueue).filter(
                             and_(
                                 DownloadQueue.token_id == token_id,
@@ -392,16 +400,13 @@ async def promote_user_queue_items():
                         ).first()
                         
                         if not has_active:
-                            # No active downloads for this token - items stay in user_queue
-                            # get_next_download now looks for user_queue items directly, so no status change needed
-                            # Just send notification so client requests next download
+                            # No active downloads for this token - send notification directly
                             queue_types_processed = set()
                             
                             for item in items:
                                 if item.queue_type not in queue_types_processed:
-                                    # Item stays in user_queue - get_next_download will pick it up
-                                    # Send WebSocket notification if client is connected
-                                    notification_sent = await ws_manager.send_notification(token_id, {
+                                    # Send WebSocket notification directly (no pub/sub)
+                                    notification_sent = await ws_manager.send_notification_direct(token_id, {
                                         "type": "download_available",
                                         "queue_type": item.queue_type
                                     })
@@ -426,20 +431,17 @@ async def promote_user_queue_items():
             await asyncio.sleep(5)  # Wait before retrying
 
 async def cleanup_p2p_index_periodically():
-    """Background task to periodically clean up the p2p_index (worker 0 only).
+    """Background task to periodically clean up the p2p_index.
     
     Runs every 24 hours (86400 seconds) and removes disconnected clients from the index.
-    Only runs on worker 0 to avoid multiple workers cleaning up simultaneously.
+    Uses Redis distributed lock to avoid multiple workers cleaning up simultaneously.
     """
     import os
     from app.services.p2p_inventory import P2PInventoryService
+    from app.services.redis_client import get_redis_ws_client
     
-    worker_id = os.getenv('WORKER_ID', os.getpid())
-    
-    # Only run on worker 0
-    if str(worker_id) != '0':
-        logger.debug(f"[Worker {worker_id}] Skipping periodic p2p_index cleanup (only worker 0 cleans up)")
-        return
+    lock_key = "lock:cleanup_p2p_index"
+    lock_ttl = 3600  # Lock expires after 1 hour (task runs every 24h, cleanup takes time)
     
     # Wait a bit before first run to let server fully start
     await asyncio.sleep(60)  # Wait 1 minute after startup
@@ -448,18 +450,31 @@ async def cleanup_p2p_index_periodically():
         try:
             await asyncio.sleep(86400)  # Run every 24 hours (86400 seconds)
             
-            logger.info(f"[Worker {worker_id}] Starting periodic p2p_index cleanup...")
+            # Try to acquire Redis lock - only one worker will succeed
+            redis_client = get_redis_ws_client()
+            if not redis_client:
+                logger.debug("Redis not available for cleanup_p2p_index lock, skipping")
+                continue
+            
+            # SET NX (only if not exists) with expiry - atomic operation
+            lock_acquired = await redis_client.set(lock_key, os.getpid(), nx=True, ex=lock_ttl)
+            if not lock_acquired:
+                # Another worker has the lock, skip this iteration
+                logger.debug("Another worker is running p2p_index cleanup, skipping")
+                continue
+            
+            logger.info("Starting periodic p2p_index cleanup...")
             success = await P2PInventoryService.p2p_index_garbage_collector()
             if success:
-                logger.info(f"[Worker {worker_id}] Periodic p2p_index cleanup completed")
+                logger.info("Periodic p2p_index cleanup completed")
             else:
-                logger.warning(f"[Worker {worker_id}] Periodic p2p_index cleanup failed")
+                logger.warning("Periodic p2p_index cleanup failed")
                 
         except asyncio.CancelledError:
-            logger.info(f"[Worker {worker_id}] p2p_index cleanup task cancelled")
+            logger.info("p2p_index cleanup task cancelled")
             break
         except Exception as e:
-            logger.error(f"[Worker {worker_id}] Error in cleanup_p2p_index_periodically background task: {e}", exc_info=True)
+            logger.error(f"Error in cleanup_p2p_index_periodically background task: {e}", exc_info=True)
             await asyncio.sleep(60)  # Wait 1 minute before retrying on error
 
 async def refresh_websocket_connection_ttl_periodically():
@@ -551,19 +566,37 @@ async def cleanup_stuck_downloads():
     
     - Downloads in Redis with no progress for 2 minutes -> move back to user_queue for retry
     - Redis is the source of truth for active downloads (any download in Redis is actively downloading)
+    
+    Uses Redis distributed lock to avoid multiple workers processing the same stuck downloads simultaneously.
     """
+    import os
     from app.database import SessionLocal, DownloadQueue
     from app.services.redis_downloads import RedisDownloadTracker, get_redis_downloads_client
+    from app.services.redis_client import get_redis_ws_client
     from datetime import timedelta
+    
+    lock_key = "lock:cleanup_stuck_downloads"
+    lock_ttl = 120  # Lock expires after 120 seconds (task runs every 60s)
     
     while True:
         try:
             await asyncio.sleep(60)  # Run every minute
             
+            # Try to acquire Redis lock - only one worker will succeed
+            redis_ws_client = get_redis_ws_client()
+            if not redis_ws_client:
+                logger.debug("Redis not available for cleanup_stuck_downloads lock, skipping")
+                continue
+            
+            # SET NX (only if not exists) with expiry - atomic operation
+            lock_acquired = await redis_ws_client.set(lock_key, os.getpid(), nx=True, ex=lock_ttl)
+            if not lock_acquired:
+                # Another worker has the lock, skip this iteration
+                continue
+            
             redis_client = get_redis_downloads_client()
             if not redis_client:
-                logger.debug("Redis not available for cleanup_stuck_downloads, skipping")
-                await asyncio.sleep(60)
+                logger.debug("Redis downloads client not available for cleanup_stuck_downloads, skipping")
                 continue
             
             now = datetime.now(timezone.utc)
