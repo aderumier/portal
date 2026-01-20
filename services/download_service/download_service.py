@@ -1456,6 +1456,13 @@ def report_progress(download_id, bytes_transferred, bytes_per_second):
         SystemExit: If API token is invalid (401 Unauthorized)
     """
     try:
+        # Calculate stats for logging
+        bytes_mb = bytes_transferred / (1024 * 1024)
+        speed_mbits = (bytes_per_second * 8) / (1024 * 1024) if bytes_per_second > 0 else 0
+        
+        # Log progress with bandwidth stats
+        logger.info(f"Progress API call: download_id={download_id}, bytes_transferred={bytes_mb:.2f} MB ({bytes_transferred} bytes), speed={speed_mbits:.2f} Mbits/s ({bytes_per_second} bytes/s)")
+        
         headers = {
             'Content-Type': 'application/json'
         }
@@ -3163,53 +3170,57 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         
         logger.info(f"Starting reverse P2P upload: {system}/{rom_path} -> {target_url} (sending {bytes_to_send} bytes from byte {resume_from})")
         
-        # Create a generator to read file in chunks
+        # Use 1MB chunks to match normal download chunk size
+        chunk_size_bytes = 1024 * 1024  # 1MB
+        connect_timeout = 5
+        read_timeout = 60  # Per-chunk timeout (applies to final response)
+        
+        # Create generator for streaming upload
+        # requests.put with a generator automatically uses chunked transfer encoding
         def file_chunk_generator():
+            """Generator that yields file data in 1MB chunks for streaming upload."""
             with open(file_path, 'rb') as f:
                 if resume_from > 0:
                     f.seek(resume_from)
                 
                 remaining = bytes_to_send
-                chunk_size = 8192  # 8KB chunks
                 while remaining > 0:
-                    chunk = f.read(min(chunk_size, remaining))
+                    # Read up to 1MB chunk
+                    read_size = min(chunk_size_bytes, remaining)
+                    chunk = f.read(read_size)
                     if not chunk:
                         break
                     remaining -= len(chunk)
                     yield chunk
         
-        # Send file via PUT request
+        # Send file via PUT request with streaming (chunked encoding)
+        # requests automatically uses chunked transfer encoding when a generator is provided
         headers = {
             'Content-Type': 'application/octet-stream',
-            'Content-Length': str(bytes_to_send)
+            'Expect': '100-continue'  # Request periodic acknowledgments from Client A
         }
         
         # Use tuple format for timeout: (connect_timeout, read_timeout)
-        # Shorter connect timeout (5s) to fail fast if connection can't be established
-        # Longer read timeout (300s) for data transfer
-        connect_timeout = 5
-        read_timeout = 300
+        # read_timeout applies to waiting for the final response
+        # HTTP 100 Continue responses from Client A will keep the connection alive
         timeout_tuple = (connect_timeout, read_timeout)
         
-        logger.info(f"Reverse P2P upload: connect_timeout={connect_timeout}s, read_timeout={read_timeout}s")
+        logger.info(f"Reverse P2P upload: connect_timeout={connect_timeout}s, read_timeout={read_timeout}s (per-chunk), using streaming with 1MB chunks")
         
         response = requests.put(
             target_url,
             data=file_chunk_generator(),
             headers=headers,
-            timeout=timeout_tuple
+            timeout=timeout_tuple,
+            stream=True  # Enable streaming mode
         )
         response.raise_for_status()
         
+        # Read response body (if any)
+        response_body = response.content
+        
         logger.info(f"Reverse P2P upload completed: {system}/{rom_path} -> {target_url} ({bytes_to_send} bytes sent)")
         success = True
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Reverse P2P upload failed: {system}/{rom_path} -> {target_ip}:{target_port}: {e}")
-        error_message = str(e)
-    except Exception as e:
-        logger.error(f"Unexpected error during reverse P2P upload: {e}", exc_info=True)
-        error_message = str(e)
     finally:
         # Report result to backend for feedback to Client A
         if request_id and target_token_id:
