@@ -1233,7 +1233,7 @@ class DownloadService:
                         logger.info(f"Retrieved p2p_remote_token_id={p2p_remote_token_id} from Redis for download_id={download_id}")
                         
                         if p2p_remote_token_id:
-                            logger.info(f"Download {download_id} cancelled: Notifying remote peer token_id={p2p_remote_token_id}")
+                            logger.info(f"Download {download_id} cancelled: Notifying remote peer token_id={p2p_remote_token_id} (will use Redis pub/sub if on different worker)")
                             ws_manager = get_websocket_manager()
                             notification_sent = await ws_manager.send_notification(
                                 p2p_remote_token_id,
@@ -1244,9 +1244,9 @@ class DownloadService:
                                 }
                             )
                             if notification_sent:
-                                logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
+                                logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id} (via local WebSocket or Redis pub/sub)")
                             else:
-                                logger.warning(f"Failed to send cancellation notification to remote peer token_id={p2p_remote_token_id} (not connected)")
+                                logger.warning(f"Failed to send cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id} (not connected or pub/sub failed)")
                         else:
                             logger.info(f"No p2p_remote_token_id found in Redis for download_id={download_id} - not a P2P download or token not stored")
                         
