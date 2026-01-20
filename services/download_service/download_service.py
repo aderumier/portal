@@ -3710,7 +3710,7 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                 
                 # Try reverse connection if:
                 # 1. Peer's port is closed (p2p_port_accessible=False) - normal connection failed
-                # 2. Client A's port is accessible - can receive reverse connection
+                # 2. Client A's port is accessible (True) - can receive reverse connection
                 should_try_reverse = (not peer_port_accessible) and (client_port_accessible is True)
                 
                 if should_try_reverse:
@@ -3742,7 +3742,7 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                     # Peer's port is closed and Client A's port is also closed - cannot do reverse connection
                     logger.warning(f"P2P download failed from {peer_url} (peer port not accessible), cannot try reverse connection (Client A port is also not accessible), trying next peer")
                 elif not peer_port_accessible and client_port_accessible is None:
-                    # Peer's port is closed but Client A's port status unknown - skip reverse connection to be safe
+                    # Peer's port is closed but Client A's port status unknown - skip reverse connection
                     logger.warning(f"P2P download failed from {peer_url} (peer port not accessible), cannot try reverse connection (Client A port accessibility unknown), trying next peer")
                 else:
                     # Peer's port should be accessible but connection still failed - might be network issue
@@ -4018,6 +4018,9 @@ def download_game(download_info):
                     
                     # Get client's port accessibility from download_info (provided by backend)
                     client_p2p_port_accessible = download_info.get('client_p2p_port_accessible')
+                    
+                    if client_p2p_port_accessible is None:
+                        logger.warning(f"client_p2p_port_accessible is None in download_info for download_id {download_id}, cannot determine if reverse P2P is possible")
                     
                     p2p_result = try_p2p_download_from_list(
                         p2p_peers=p2p_peers,

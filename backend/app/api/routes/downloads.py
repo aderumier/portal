@@ -1374,10 +1374,25 @@ async def request_download(
                     try:
                         ws_key = f"ws:connections:{token_id}"
                         client_port_accessible_str = await redis_ws_client.hget(ws_key, 'p2p_port_accessible')
-                        if client_port_accessible_str:
-                            client_p2p_port_accessible = client_port_accessible_str == 'true'
+                        logger.debug(f"Retrieved p2p_port_accessible from Redis for token_id {token_id}: {repr(client_port_accessible_str)}")
+                        
+                        if client_port_accessible_str is not None and client_port_accessible_str != '':
+                            # Convert string to boolean (handle both 'true' and 'True', 'false' and 'False')
+                            client_port_accessible_str_lower = str(client_port_accessible_str).lower().strip()
+                            if client_port_accessible_str_lower == 'true':
+                                client_p2p_port_accessible = True
+                            elif client_port_accessible_str_lower == 'false':
+                                client_p2p_port_accessible = False
+                            else:
+                                logger.warning(f"Unexpected p2p_port_accessible value for token_id {token_id}: {repr(client_port_accessible_str)}")
+                            
+                            logger.info(f"Retrieved client_p2p_port_accessible={client_p2p_port_accessible} for token_id {token_id} from Redis")
+                        else:
+                            logger.warning(f"client_p2p_port_accessible not set in Redis for token_id {token_id} (value: {repr(client_port_accessible_str)})")
                     except Exception as e:
-                        logger.debug(f"Error getting client's port accessibility for token_id {token_id}: {e}")
+                        logger.error(f"Error getting client's port accessibility for token_id {token_id}: {e}", exc_info=True)
+                else:
+                    logger.warning(f"Redis WebSocket client not available for token_id {token_id}")
                 download_info['client_p2p_port_accessible'] = client_p2p_port_accessible
                 
                 peer_list_str = ', '.join([f"{p['external_ip']}:{p['external_port']}" for p in p2p_peers])
