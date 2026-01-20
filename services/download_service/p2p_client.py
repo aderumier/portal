@@ -146,15 +146,21 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                         self.send_error(403, "Download verification failed")
                         return
                 
-                # Check for chunked transfer encoding
+                # Check for chunked transfer encoding (required)
                 transfer_encoding = self.headers.get('Transfer-Encoding', '').lower()
                 is_chunked = transfer_encoding == 'chunked'
                 expect_100_continue = self.headers.get('Expect', '').lower() == '100-continue'
                 
+                # Require chunked transfer encoding
+                if not is_chunked:
+                    logger.warning("Reverse connection: Chunked transfer encoding required")
+                    self.send_response(400, "Transfer-Encoding: chunked required")
+                    self.end_headers()
+                    return
+                
                 # Handle resume: check existing file size if resume_from > 0
                 mode = 'r+b' if resume_from > 0 and os.path.exists(dest_path) else 'wb'
                 bytes_written = 0
-                chunk_size_bytes = 1024 * 1024  # 1MB chunks to match normal download
                 
                 # Send initial HTTP 100 Continue if Expect: 100-continue header is present
                 if expect_100_continue:
@@ -169,107 +175,69 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                         f.seek(resume_from)
                         bytes_written = resume_from
                     
-                    if is_chunked:
-                        # Parse chunked transfer encoding
-                        chunk_count = 0
-                        total_received = 0
+                    # Parse chunked transfer encoding
+                    chunk_count = 0
+                    total_received = 0
+                    
+                    while True:
+                        # Read chunk size line (hex number + \r\n)
+                        chunk_size_line = b''
+                        while b'\r\n' not in chunk_size_line:
+                            byte = self.rfile.read(1)
+                            if not byte:
+                                raise Exception("Connection closed while reading chunk size")
+                            chunk_size_line += byte
                         
-                        while True:
-                            # Read chunk size line (hex number + \r\n)
-                            chunk_size_line = b''
-                            while b'\r\n' not in chunk_size_line:
-                                byte = self.rfile.read(1)
-                                if not byte:
-                                    raise Exception("Connection closed while reading chunk size")
-                                chunk_size_line += byte
-                            
-                            # Parse chunk size (hex)
-                            chunk_size_str = chunk_size_line.strip().decode('ascii', errors='ignore')
-                            if not chunk_size_str:
-                                continue
-                            
+                        # Parse chunk size (hex)
+                        chunk_size_str = chunk_size_line.strip().decode('ascii', errors='ignore')
+                        if not chunk_size_str:
+                            continue
+                        
+                        try:
+                            chunk_size = int(chunk_size_str, 16)
+                        except ValueError:
+                            raise Exception(f"Invalid chunk size: {chunk_size_str}")
+                        
+                        # Final chunk (size 0)
+                        if chunk_size == 0:
+                            # Read trailing \r\n
+                            self.rfile.read(2)
+                            break
+                        
+                        # Read chunk data (read exactly chunk_size bytes)
+                        chunk_data = b''
+                        while len(chunk_data) < chunk_size:
+                            to_read = chunk_size - len(chunk_data)
+                            data = self.rfile.read(to_read)
+                            if not data:
+                                raise Exception("Connection closed while reading chunk data")
+                            chunk_data += data
+                        
+                        # Read trailing \r\n after chunk data
+                        trailing = self.rfile.read(2)
+                        if trailing != b'\r\n':
+                            raise Exception(f"Invalid chunk format: expected \\r\\n after chunk data")
+                        
+                        # Write chunk data to file
+                        f.write(chunk_data)
+                        bytes_written += len(chunk_data)
+                        chunk_count += 1
+                        total_received += len(chunk_data)
+                        
+                        # Update bytes_transferred_ref for progress reporting
+                        if bytes_transferred_ref is not None:
+                            bytes_transferred_ref[0] += len(chunk_data)
+                        
+                        # Send HTTP 100 Continue after each chunk
+                        # This resets the timeout on Client B's side and provides per-chunk acknowledgment
+                        if expect_100_continue:
                             try:
-                                chunk_size = int(chunk_size_str, 16)
-                            except ValueError:
-                                raise Exception(f"Invalid chunk size: {chunk_size_str}")
-                            
-                            # Final chunk (size 0)
-                            if chunk_size == 0:
-                                # Read trailing \r\n
-                                self.rfile.read(2)
-                                break
-                            
-                            # Read chunk data (read exactly chunk_size bytes)
-                            chunk_data = b''
-                            while len(chunk_data) < chunk_size:
-                                to_read = chunk_size - len(chunk_data)
-                                data = self.rfile.read(to_read)
-                                if not data:
-                                    raise Exception("Connection closed while reading chunk data")
-                                chunk_data += data
-                            
-                            # Read trailing \r\n after chunk data
-                            trailing = self.rfile.read(2)
-                            if trailing != b'\r\n':
-                                raise Exception(f"Invalid chunk format: expected \\r\\n after chunk data")
-                            
-                            # Write chunk data to file
-                            f.write(chunk_data)
-                            bytes_written += len(chunk_data)
-                            chunk_count += 1
-                            total_received += len(chunk_data)
-                            
-                            # Update bytes_transferred_ref for progress reporting
-                            if bytes_transferred_ref is not None:
-                                bytes_transferred_ref[0] += len(chunk_data)
-                            
-                            # Send HTTP 100 Continue after each chunk
-                            # This resets the timeout on Client B's side and provides per-chunk acknowledgment
-                            if expect_100_continue:
-                                try:
-                                    self.send_response_only(100)  # HTTP 100 Continue
-                                    self.end_headers()
-                                    logger.debug(f"Sent HTTP 100 Continue acknowledgment after chunk {chunk_count} ({total_received} bytes received, chunk size: {len(chunk_data)} bytes)")
-                                except Exception as e:
-                                    logger.warning(f"Failed to send HTTP 100 Continue: {e}")
-                                    # Continue anyway
-                    else:
-                        # Use Content-Length (legacy mode)
-                        content_length = int(self.headers.get('Content-Length', 0))
-                        
-                        if content_length == 0:
-                            logger.warning("Reverse connection: Received request with Content-Length=0")
-                            self.send_response(400, "Content-Length required")
-                            self.end_headers()
-                            return
-                        
-                        # Read and write file data in 1MB chunks
-                        remaining = content_length
-                        chunk_count = 0
-                        while remaining > 0:
-                            read_size = min(chunk_size_bytes, remaining)
-                            chunk = self.rfile.read(read_size)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            bytes_written += len(chunk)
-                            remaining -= len(chunk)
-                            chunk_count += 1
-                            
-                            # Update bytes_transferred_ref for progress reporting
-                            if bytes_transferred_ref is not None:
-                                bytes_transferred_ref[0] += len(chunk)
-                            
-                            # Send HTTP 100 Continue after each 1MB chunk if Expect: 100-continue
-                            # This resets the timeout on Client B's side and provides per-chunk acknowledgment
-                            if expect_100_continue and len(chunk) >= chunk_size_bytes:
-                                try:
-                                    self.send_response_only(100)  # HTTP 100 Continue
-                                    self.end_headers()
-                                    logger.debug(f"Sent HTTP 100 Continue acknowledgment after chunk {chunk_count} ({bytes_written} bytes received, chunk size: {len(chunk)} bytes)")
-                                except Exception as e:
-                                    logger.warning(f"Failed to send HTTP 100 Continue: {e}")
-                                    # Continue anyway
+                                self.send_response_only(100)  # HTTP 100 Continue
+                                self.end_headers()
+                                logger.debug(f"Sent HTTP 100 Continue acknowledgment after chunk {chunk_count} ({total_received} bytes received, chunk size: {len(chunk_data)} bytes)")
+                            except Exception as e:
+                                logger.warning(f"Failed to send HTTP 100 Continue: {e}")
+                                # Continue anyway
                 
                 # Verify file size if expected_size provided
                 if expected_size and bytes_written != expected_size:

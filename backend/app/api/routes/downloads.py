@@ -1323,10 +1323,10 @@ async def request_download(
     download_info = download_service.get_next_download(queue_type, service_id, token_id=token_id, platform=platform, client_version=client_version)
     
     # Store active download in Redis for fast status checks (after get_next_download returns)
-    if download_info and download_info.get('download_id'):
+    download_id = download_info.get('download_id') if download_info else None
+    if download_info and download_id:
         try:
             from app.services.redis_downloads import RedisDownloadTracker
-            download_id = download_info['download_id']
             # Fire and forget - don't wait for completion
             # Store system and rom_path in Redis for P2P verification
             system = download_info.get('system')
@@ -1364,13 +1364,82 @@ async def request_download(
                 # Use rom_path for P2P inventory lookup (normalized, system-relative, without snapshot paths)
                 # This matches what's stored in the p2p_index (normalized paths without snapshot prefixes)
                 logger.info(f"Finding P2P peers for download_id={download_id}, token_id={token_id}, system={system}, rom_path={rom_path}, file_size={download_info.get('file_size')}")
-                p2p_peers = await P2PInventoryService.find_eligible_peers(
-                    system=system,
-                    rom_path=rom_path,  # Use rom_path instead of game_id
-                    exclude_token_id=token_id,
-                    limit=20,
-                    rom_file_size_bytes=download_info.get('file_size')
-                )
+                
+                # Check for forced target in session (for admin-configured forced targets)
+                forced_targets = http_request.session.get('p2p_forced_targets', {})
+                forced_target_token_id = forced_targets.get(str(token_id))
+                
+                # Also check Redis for forced targets (in case session isn't available)
+                if not forced_target_token_id:
+                    try:
+                        from app.services.websocket_manager import get_redis_ws_client
+                        redis_ws_client = get_redis_ws_client()
+                        if redis_ws_client:
+                            redis_key = f"p2p:forced_target:{token_id}"
+                            forced_target_str = await redis_ws_client.get(redis_key)
+                            if forced_target_str:
+                                forced_target_token_id = int(forced_target_str)
+                    except Exception as e:
+                        logger.debug(f"Error checking Redis for forced target: {e}")
+                
+                # If forced target is configured, use it
+                if forced_target_token_id:
+                    logger.info(f"Using forced P2P target token_id={forced_target_token_id} for source token_id={token_id}")
+                    
+                    # Verify forced target has the ROM
+                    clients_with_rom = await P2PInventoryService.find_clients_with_rom(system, rom_path)
+                    if forced_target_token_id in clients_with_rom:
+                        # Get connection info for forced target
+                        forced_target_info = await P2PInventoryService.get_client_connection_info(forced_target_token_id)
+                        if forced_target_info:
+                            external_ip = forced_target_info.get('external_ip')
+                            external_port = forced_target_info.get('external_port')
+                            
+                            if external_ip and external_port:
+                                # Get port accessibility status
+                                p2p_port_accessible = False
+                                try:
+                                    from app.services.websocket_manager import get_redis_ws_client
+                                    redis_ws_client = get_redis_ws_client()
+                                    if redis_ws_client:
+                                        ws_key = f"ws:connections:{forced_target_token_id}"
+                                        p2p_port_accessible_str = await redis_ws_client.hget(ws_key, 'p2p_port_accessible')
+                                        if p2p_port_accessible_str:
+                                            p2p_port_accessible = p2p_port_accessible_str == 'true'
+                                except Exception as e:
+                                    logger.debug(f"Error getting port accessibility for forced target {forced_target_token_id}: {e}")
+                                
+                                # Return only the forced target as peer
+                                p2p_peers = [{
+                                    'external_ip': external_ip,
+                                    'external_port': external_port,
+                                    'token_id': forced_target_token_id,
+                                    'p2p_port_accessible': p2p_port_accessible
+                                }]
+                                logger.info(f"Using forced P2P target: {external_ip}:{external_port} (token_id={forced_target_token_id})")
+                            else:
+                                logger.warning(f"Forced target {forced_target_token_id} connection info incomplete, falling back to normal peer selection")
+                                # Fall through to normal peer selection
+                                forced_target_token_id = None
+                        else:
+                            logger.warning(f"Forced target {forced_target_token_id} connection info not found, falling back to normal peer selection")
+                            # Fall through to normal peer selection
+                            forced_target_token_id = None
+                    else:
+                        logger.warning(f"Forced target {forced_target_token_id} does not have ROM {system}/{rom_path}, falling back to normal peer selection")
+                        # Fall through to normal peer selection
+                        forced_target_token_id = None
+                
+                # If no forced target or forced target failed, use normal peer selection
+                if not forced_target_token_id:
+                    p2p_peers = await P2PInventoryService.find_eligible_peers(
+                        system=system,
+                        rom_path=rom_path,  # Use rom_path instead of game_id
+                        exclude_token_id=token_id,
+                        limit=20,
+                        rom_file_size_bytes=download_info.get('file_size')
+                    )
+                
                 download_info['p2p_peers'] = p2p_peers
                 
                 # Also include requesting client's own port accessibility status for reverse connection decisions
@@ -1419,6 +1488,7 @@ async def request_download(
 @router.post("/progress")
 async def report_progress(
     request: ProgressRequest,
+    http_request: Request,
     current_user: dict = Depends(require_auth_user),
     download_service: DownloadService = Depends(get_download_service),
     db: Session = Depends(get_db)
@@ -1434,6 +1504,45 @@ async def report_progress(
             detail="Invalid download ID"
         )
     
+    # Get token_id for bandwidth stats
+    token_id = getattr(http_request.state, 'token_id', None)
+    
+    # Get client bandwidth stats for logging
+    upload_bandwidth = None
+    download_bandwidth = None
+    if token_id:
+        try:
+            from app.services.websocket_manager import get_redis_ws_client
+            redis_ws_client = get_redis_ws_client()
+            if redis_ws_client:
+                ws_key = f"ws:connections:{token_id}"
+                upload_bandwidth_str = await redis_ws_client.hget(ws_key, 'upload_bandwidth')
+                download_bandwidth_str = await redis_ws_client.hget(ws_key, 'download_bandwidth')
+                
+                if upload_bandwidth_str:
+                    try:
+                        upload_bandwidth = float(upload_bandwidth_str)
+                    except (ValueError, TypeError):
+                        pass
+                
+                if download_bandwidth_str:
+                    try:
+                        download_bandwidth = float(download_bandwidth_str)
+                    except (ValueError, TypeError):
+                        pass
+            
+            # Fallback to database if not in Redis
+            if upload_bandwidth is None or download_bandwidth is None:
+                from app.database import ApiToken
+                api_token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
+                if api_token:
+                    if upload_bandwidth is None and api_token.upload_bandwidth is not None:
+                        upload_bandwidth = api_token.upload_bandwidth
+                    if download_bandwidth is None and api_token.download_bandwidth is not None:
+                        download_bandwidth = api_token.download_bandwidth
+        except Exception as e:
+            logger.debug(f"Error getting bandwidth stats for token_id {token_id}: {e}")
+    
     # Check Redis for active downloads (required for active downloads)
     from app.services.redis_downloads import RedisDownloadTracker
     redis_status = await RedisDownloadTracker.get_download_status(download_id)
@@ -1446,6 +1555,17 @@ async def report_progress(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Download is paused"
             )
+        
+        # Log progress with bandwidth stats
+        bytes_mb = bytes_transferred / (1024 * 1024)
+        speed_mbits = (bytes_per_second * 8) / (1024 * 1024) if bytes_per_second > 0 else 0
+        bandwidth_info = f"speed={speed_mbits:.2f} Mbits/s"
+        if upload_bandwidth is not None:
+            bandwidth_info += f", upload_bw={upload_bandwidth:.2f} Mbits/s"
+        if download_bandwidth is not None:
+            bandwidth_info += f", download_bw={download_bandwidth:.2f} Mbits/s"
+        
+        logger.info(f"Progress report: download_id={download_id}, bytes_transferred={bytes_mb:.2f} MB ({bytes_transferred} bytes), {bandwidth_info}")
         
         # Update progress in Redis
         await RedisDownloadTracker.update_progress(download_id, bytes_transferred, bytes_per_second)

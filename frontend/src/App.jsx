@@ -23,6 +23,7 @@ import ClientsStats from './pages/ClientsStats'
 import SystemsConfiguration from './pages/SystemsConfiguration'
 import ConnectedClients from './pages/ConnectedClients'
 import BugReports from './pages/BugReports'
+import Debug from './pages/Debug'
 
 function App() {
   return (
@@ -50,6 +51,7 @@ function App() {
             <Route path="download-queues" element={<ProtectedRoute requireAdmin><DownloadQueues /></ProtectedRoute>} />
             <Route path="connected-clients" element={<ProtectedRoute requireAdmin><ConnectedClients /></ProtectedRoute>} />
             <Route path="systems-configuration" element={<ProtectedRoute requireAdmin><SystemsConfiguration /></ProtectedRoute>} />
+            <Route path="debug" element={<ProtectedRoute requireAdmin><Debug /></ProtectedRoute>} />
           </Route>
         </Routes>
       </Router>

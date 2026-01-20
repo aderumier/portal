@@ -150,6 +150,13 @@ const Layout = () => {
                           >
                             Systems Configuration
                           </Link>
+                          <Link 
+                            to="/debug" 
+                            className="account-menu-item"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Debug
+                          </Link>
                           <button 
                             onClick={handleRefreshCatalog}
                             className="account-menu-item"
