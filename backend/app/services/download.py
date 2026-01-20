@@ -1226,27 +1226,35 @@ class DownloadService:
                 from app.services.websocket_manager import get_websocket_manager
                 
                 async def notify_and_cleanup():
-                    # Get p2p_remote_token_id from Redis before removing
-                    p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
-                    
-                    if p2p_remote_token_id:
-                        logger.info(f"Download {download_id} cancelled: Notifying remote peer token_id={p2p_remote_token_id}")
-                        ws_manager = get_websocket_manager()
-                        notification_sent = await ws_manager.send_notification(
-                            p2p_remote_token_id,
-                            {
-                                "type": "p2p_download_cancelled",
-                                "download_id": download_id,
-                                "message": "Download was cancelled by the downloading client"
-                            }
-                        )
-                        if notification_sent:
-                            logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
+                    try:
+                        logger.info(f"Checking for P2P remote token for download_id={download_id} before cancellation")
+                        # Get p2p_remote_token_id from Redis before removing
+                        p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
+                        logger.info(f"Retrieved p2p_remote_token_id={p2p_remote_token_id} from Redis for download_id={download_id}")
+                        
+                        if p2p_remote_token_id:
+                            logger.info(f"Download {download_id} cancelled: Notifying remote peer token_id={p2p_remote_token_id}")
+                            ws_manager = get_websocket_manager()
+                            notification_sent = await ws_manager.send_notification(
+                                p2p_remote_token_id,
+                                {
+                                    "type": "p2p_download_cancelled",
+                                    "download_id": download_id,
+                                    "message": "Download was cancelled by the downloading client"
+                                }
+                            )
+                            if notification_sent:
+                                logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
+                            else:
+                                logger.warning(f"Failed to send cancellation notification to remote peer token_id={p2p_remote_token_id} (not connected)")
                         else:
-                            logger.warning(f"Failed to send cancellation notification to remote peer token_id={p2p_remote_token_id} (not connected)")
-                    
-                    # Remove from Redis
-                    await RedisDownloadTracker.remove_download(download_id)
+                            logger.info(f"No p2p_remote_token_id found in Redis for download_id={download_id} - not a P2P download or token not stored")
+                        
+                        # Remove from Redis
+                        await RedisDownloadTracker.remove_download(download_id)
+                        logger.info(f"Removed download_id={download_id} from Redis")
+                    except Exception as e:
+                        logger.error(f"Error in notify_and_cleanup for download_id={download_id}: {e}", exc_info=True)
                 
                 try:
                     loop = asyncio.get_event_loop()
@@ -1257,7 +1265,7 @@ class DownloadService:
                 except RuntimeError:
                     asyncio.run(notify_and_cleanup())
             except Exception as e:
-                logger.warning(f"Error notifying remote peer or removing from Redis: {e}")
+                logger.error(f"Error notifying remote peer or removing from Redis for download_id={download_id}: {e}", exc_info=True)
             
             # Archive the download before deletion (user cancelled)
             self.archive_download(download_id, 'cancelled')

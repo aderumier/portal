@@ -4078,10 +4078,15 @@ async def request_reverse_p2p_connection(
         if body.download_id:
             try:
                 from app.services.redis_downloads import RedisDownloadTracker
-                await RedisDownloadTracker.set_p2p_remote_token_id(body.download_id, body.source_token_id)
-                logger.info(f"Stored p2p_remote_token_id={body.source_token_id} in Redis for reverse P2P download_id={body.download_id}")
+                success = await RedisDownloadTracker.set_p2p_remote_token_id(body.download_id, body.source_token_id)
+                if success:
+                    logger.info(f"Stored p2p_remote_token_id={body.source_token_id} in Redis for reverse P2P download_id={body.download_id}")
+                else:
+                    logger.warning(f"Failed to store p2p_remote_token_id={body.source_token_id} in Redis for download_id={body.download_id} (Redis operation returned False)")
             except Exception as e:
-                logger.warning(f"Failed to store p2p_remote_token_id in Redis: {e}")
+                logger.error(f"Failed to store p2p_remote_token_id in Redis for download_id={body.download_id}: {e}", exc_info=True)
+        else:
+            logger.warning(f"Reverse P2P connection requested but no download_id provided - cannot store p2p_remote_token_id for cancellation notification")
         
         return {
             "success": True,

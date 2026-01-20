@@ -189,33 +189,40 @@ class RedisDownloadTracker:
         """Store P2P remote token ID in Redis for cancellation notification."""
         redis_client = get_redis_downloads_client()
         if not redis_client:
+            logger.warning(f"Redis client not available, cannot store p2p_remote_token_id for download_id={download_id}")
             return False
         
         try:
             key = RedisDownloadTracker._get_key(download_id)
+            logger.info(f"Storing p2p_remote_token_id={p2p_remote_token_id} for download_id={download_id} in Redis key={key}")
             data_str = await redis_client.get(key)
             
             if data_str:
                 # Update existing download entry
+                logger.info(f"Found existing Redis entry for download_id={download_id}, updating with p2p_remote_token_id")
                 data = json.loads(data_str)
                 data['p2p_remote_token_id'] = p2p_remote_token_id
                 ttl = await redis_client.ttl(key)
                 if ttl > 0:
                     await redis_client.setex(key, ttl, json.dumps(data))
+                    logger.info(f"Updated Redis entry for download_id={download_id} with p2p_remote_token_id={p2p_remote_token_id}, TTL={ttl}")
                 else:
                     await redis_client.setex(key, 86400, json.dumps(data))
+                    logger.info(f"Updated Redis entry for download_id={download_id} with p2p_remote_token_id={p2p_remote_token_id}, set new TTL=86400")
             else:
                 # Create new entry if download not in Redis yet
+                logger.warning(f"No existing Redis entry for download_id={download_id}, creating new entry with p2p_remote_token_id")
                 data = {
                     'download_id': download_id,
                     'p2p_remote_token_id': p2p_remote_token_id,
                     'status': 'downloading'
                 }
                 await redis_client.setex(key, 86400, json.dumps(data))
+                logger.info(f"Created new Redis entry for download_id={download_id} with p2p_remote_token_id={p2p_remote_token_id}")
             
             return True
         except Exception as e:
-            logger.error(f"Error setting P2P remote token ID in Redis: {e}")
+            logger.error(f"Error setting P2P remote token ID in Redis for download_id={download_id}: {e}", exc_info=True)
             return False
     
     @staticmethod
@@ -223,19 +230,24 @@ class RedisDownloadTracker:
         """Get P2P remote token ID from Redis."""
         redis_client = get_redis_downloads_client()
         if not redis_client:
+            logger.warning(f"Redis client not available, cannot get p2p_remote_token_id for download_id={download_id}")
             return None
         
         try:
             key = RedisDownloadTracker._get_key(download_id)
+            logger.info(f"Retrieving p2p_remote_token_id for download_id={download_id} from Redis key={key}")
             data_str = await redis_client.get(key)
             
             if not data_str:
+                logger.info(f"No Redis entry found for download_id={download_id}")
                 return None
             
             data = json.loads(data_str)
-            return data.get('p2p_remote_token_id')
+            p2p_remote_token_id = data.get('p2p_remote_token_id')
+            logger.info(f"Retrieved p2p_remote_token_id={p2p_remote_token_id} from Redis for download_id={download_id} (data keys: {list(data.keys())})")
+            return p2p_remote_token_id
         except Exception as e:
-            logger.error(f"Error getting P2P remote token ID from Redis: {e}")
+            logger.error(f"Error getting P2P remote token ID from Redis for download_id={download_id}: {e}", exc_info=True)
             return None
     
     @staticmethod
