@@ -3888,14 +3888,29 @@ async def request_reverse_p2p_connection(
                 detail=f"Source peer (token_id: {body.source_token_id}) not found or not connected"
             )
         
-        # Send WebSocket notification to source peer to initiate reverse connection
-        from app.services.websocket_manager import get_websocket_manager
+        # Get target client's (requesting client's) public IP from WebSocket connection
+        # This is the actual IP as seen by the server, not the client-provided IP which may be a private IP
+        from app.services.websocket_manager import get_websocket_manager, get_redis_ws_client
         ws_manager = get_websocket_manager()
+        
+        target_public_ip = body.target_ip  # Default to client-provided IP
+        redis_ws_client = get_redis_ws_client()
+        if redis_ws_client:
+            try:
+                ws_key = f"ws:connections:{target_token_id}"
+                target_ws_ip = await redis_ws_client.hget(ws_key, 'ip')
+                if target_ws_ip and target_ws_ip != 'unknown':
+                    target_public_ip = target_ws_ip
+                    logger.info(f"Reverse P2P: Using target client's public IP {target_public_ip} from WebSocket connection (client provided: {body.target_ip})")
+                else:
+                    logger.warning(f"Reverse P2P: Could not get public IP for target_token_id {target_token_id} from WebSocket, using client-provided IP: {body.target_ip}")
+            except Exception as e:
+                logger.warning(f"Reverse P2P: Error getting target client's public IP: {e}, using client-provided IP: {body.target_ip}")
         
         reverse_msg = {
             "type": "reverse_p2p_download",
             "target_token_id": target_token_id,
-            "target_ip": body.target_ip,
+            "target_ip": target_public_ip,
             "target_port": body.target_port,
             "target_path": body.target_path,
             "system": body.system,
@@ -3913,7 +3928,7 @@ async def request_reverse_p2p_connection(
                 detail="Source peer is not connected via WebSocket. Reverse connection request failed."
             )
         
-        logger.info(f"Reverse P2P connection requested: source_token_id={body.source_token_id} -> target_token_id={target_token_id} at {body.target_ip}:{body.target_port} for {body.system}/{body.rom_path} (resume_from={body.resume_from})")
+        logger.info(f"Reverse P2P connection requested: source_token_id={body.source_token_id} -> target_token_id={target_token_id} at {target_public_ip}:{body.target_port} for {body.system}/{body.rom_path} (resume_from={body.resume_from})")
         
         return {
             "success": True,
