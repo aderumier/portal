@@ -3914,11 +3914,23 @@ async def request_reverse_p2p_connection(
             except Exception as e:
                 logger.warning(f"Reverse P2P: Error getting target client's public IP: {e}, using client-provided IP: {body.target_ip}")
         
+        # Get target client's public port from P2P connection info
+        # This handles UPnP external port and custom_public_port override
+        target_public_port = body.target_port  # Default to client-provided port
+        try:
+            target_p2p_info = await P2PInventoryService.get_client_connection_info(target_token_id)
+            if target_p2p_info and target_p2p_info.get('external_port'):
+                target_public_port = target_p2p_info['external_port']
+                if target_public_port != body.target_port:
+                    logger.info(f"Reverse P2P: Using target client's public port {target_public_port} from P2P info (client provided: {body.target_port})")
+        except Exception as e:
+            logger.warning(f"Reverse P2P: Error getting target client's public port: {e}, using client-provided port: {body.target_port}")
+        
         reverse_msg = {
             "type": "reverse_p2p_download",
             "target_token_id": target_token_id,
             "target_ip": target_public_ip,
-            "target_port": body.target_port,
+            "target_port": target_public_port,
             "target_path": body.target_path,
             "system": body.system,
             "rom_path": body.rom_path,
@@ -3936,7 +3948,7 @@ async def request_reverse_p2p_connection(
                 detail="Source peer is not connected via WebSocket. Reverse connection request failed."
             )
         
-        logger.info(f"Reverse P2P connection requested: source_token_id={body.source_token_id} -> target_token_id={target_token_id} at {target_public_ip}:{body.target_port} for {body.system}/{body.rom_path} (resume_from={body.resume_from})")
+        logger.info(f"Reverse P2P connection requested: source_token_id={body.source_token_id} -> target_token_id={target_token_id} at {target_public_ip}:{target_public_port} for {body.system}/{body.rom_path} (resume_from={body.resume_from})")
         
         return {
             "success": True,
