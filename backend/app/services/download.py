@@ -2,7 +2,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from datetime import datetime, timezone
@@ -2093,15 +2093,20 @@ class DownloadService:
             self.db.rollback()
             return False
     
-    def archive_download(self, download_id: int, status: str) -> bool:
+    def archive_download(self, download_id: int, status: str) -> Tuple[bool, int]:
         """Archive a download before deletion.
+        
+        This function also syncs bytes_transferred from Redis if available,
+        since progress reports update Redis but not the database. This ensures
+        accurate archive data and P2P statistics.
         
         Args:
             download_id: Download ID to archive
             status: Download status ('completed', 'error', 'cancelled', 'stuck', etc.)
         
         Returns:
-            bool: True if archived successfully, False otherwise
+            Tuple[bool, int]: (success, bytes_transferred) - True if archived successfully, 
+                              and the synced bytes_transferred value
         """
         try:
             from app.database import DownloadArchive, User
@@ -2113,7 +2118,7 @@ class DownloadService:
             
             if not download:
                 logger.warning(f"Download {download_id} not found for archiving")
-                return False
+                return (False, 0)
             
             # Get game information
             # Get catalog_version from download queue item and derive catalog_type
@@ -2240,6 +2245,60 @@ class DownloadService:
             if user:
                 username = user.username
             
+            # Sync bytes_transferred from Redis if available (for accurate archive data and P2P statistics)
+            # Progress reports update Redis but not the database, so we sync once when archiving
+            bytes_transferred = download.bytes_transferred or 0
+            if download.status == 'downloading':
+                try:
+                    import asyncio
+                    from app.services.redis_downloads import RedisDownloadTracker
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If loop is running, we can't use run_until_complete - use run_coroutine_threadsafe
+                            import concurrent.futures
+                            future = asyncio.run_coroutine_threadsafe(
+                                RedisDownloadTracker.get_download_status(download_id),
+                                loop
+                            )
+                            try:
+                                redis_status = future.result(timeout=5.0)
+                                if redis_status:
+                                    redis_bytes = redis_status.get('bytes_transferred', 0)
+                                    if redis_bytes > bytes_transferred:
+                                        # Redis has more recent data, use it
+                                        bytes_transferred = redis_bytes
+                                        # Update database for consistency
+                                        download.bytes_transferred = redis_bytes
+                                        self.db.commit()
+                                        logger.debug(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes")
+                            except concurrent.futures.TimeoutError:
+                                logger.debug(f"Timeout syncing from Redis for archive {download_id}")
+                        else:
+                            redis_status = loop.run_until_complete(RedisDownloadTracker.get_download_status(download_id))
+                            if redis_status:
+                                redis_bytes = redis_status.get('bytes_transferred', 0)
+                                if redis_bytes > bytes_transferred:
+                                    # Redis has more recent data, use it
+                                    bytes_transferred = redis_bytes
+                                    # Update database for consistency
+                                    download.bytes_transferred = redis_bytes
+                                    self.db.commit()
+                                    logger.debug(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes")
+                    except RuntimeError:
+                        # No event loop - create one
+                        redis_status = asyncio.run(RedisDownloadTracker.get_download_status(download_id))
+                        if redis_status:
+                            redis_bytes = redis_status.get('bytes_transferred', 0)
+                            if redis_bytes > bytes_transferred:
+                                bytes_transferred = redis_bytes
+                                download.bytes_transferred = redis_bytes
+                                self.db.commit()
+                                logger.debug(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes")
+                except Exception as e:
+                    logger.debug(f"Could not sync from Redis for archive {download_id}: {e}")
+                    # Continue with database value
+            
             # Create archive entry
             archive_entry = DownloadArchive(
                 download_id=download.id,
@@ -2250,7 +2309,7 @@ class DownloadService:
                 system=system,
                 rompath=archive_game_id,  # Use unified key if available, otherwise use resolved game_id
                 download_status=status,
-                bytes_transferred=download.bytes_transferred or 0,
+                bytes_transferred=bytes_transferred,  # Use synced value
                 file_size=download.file_size,
                 catalog_version=download.catalog_version,  # Store catalog version (e.g., "v2-RGS_bbc") for Releases, None for WIP
                 client_version=download.client_version  # Store client version (e.g., "0.1")
@@ -2259,12 +2318,12 @@ class DownloadService:
             self.db.add(archive_entry)
             self.db.commit()
             
-            logger.info(f"Archived download {download_id} with status '{status}'")
-            return True
+            logger.info(f"Archived download {download_id} with status '{status}', bytes_transferred: {bytes_transferred}")
+            return (True, bytes_transferred)
         except Exception as e:
             logger.error(f"Error archiving download {download_id}: {e}", exc_info=True)
             self.db.rollback()
-            return False
+            return (False, 0)
     
     def get_user_download_history(self, user_id: str, limit: int = 100) -> List[Dict]:
         """Get download history for a specific user from archive."""
@@ -2551,8 +2610,12 @@ class DownloadService:
             token_id = download.token_id
             catalog_version = download.catalog_version
             
+            # Archive the download first (this syncs bytes_transferred from Redis and updates DB)
+            archive_success, downloaded_bytes = self.archive_download(download_id, 'completed')
+            if not archive_success:
+                logger.warning(f"Failed to archive download {download_id}, but continuing with completion")
+            
             # Calculate downloaded MB (convert bytes to MB: 1 MB = 1024 * 1024 bytes)
-            downloaded_bytes = download.bytes_transferred or 0
             downloaded_mb = downloaded_bytes / (1024 * 1024)
             
             # Handle P2P traffic tracking if this was a P2P download
@@ -2634,10 +2697,7 @@ class DownloadService:
                 self.db.add(user)
                 logger.info(f"Created new user record for {user_id} with {downloaded_mb:.2f} MB, total_download_number: 1")
             
-            # Archive the download before deletion
-            self.archive_download(download_id, 'completed')
-            
-            # Remove from Redis before deletion
+            # Remove from Redis before deletion (archive_download already synced from Redis)
             try:
                 from app.services.redis_downloads import RedisDownloadTracker
                 await RedisDownloadTracker.remove_download(download_id)
