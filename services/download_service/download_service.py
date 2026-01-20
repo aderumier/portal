@@ -3670,7 +3670,50 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                     resume_from = existing_size
                     logger.info(f"Resuming P2P download from byte {resume_from}")
             
-            # Download from peer
+            # Check if peer's port is known to be inaccessible - skip direct download and try reverse connection
+            peer_port_accessible = peer.get('p2p_port_accessible', True)  # Default to True for backwards compatibility
+            source_token_id = peer.get('token_id')
+            
+            if peer_port_accessible is False:
+                # Peer's port is known to be closed - skip direct download attempt
+                logger.info(f"Peer {peer_idx + 1} port is not accessible (p2p_port_accessible=False), skipping direct download")
+                
+                # Check if we can do reverse connection
+                if client_p2p_port_accessible is True and source_token_id:
+                    logger.info(f"Attempting reverse connection directly (Client A port is accessible)")
+                    reverse_result = try_reverse_p2p_download(
+                        source_token_id=source_token_id,
+                        system=system,
+                        rom_path=rom_path,
+                        dest_path=dest_path,
+                        resume_from=resume_from,
+                        expected_size=expected_size,
+                        expected_checksum=expected_checksum,
+                        download_id=download_id,
+                        bytes_transferred_ref=bytes_transferred_ref
+                    )
+                    
+                    if reverse_result:
+                        logger.info(f"Successfully downloaded via reverse P2P connection from peer {source_token_id}")
+                        return source_token_id
+                    else:
+                        logger.warning(f"Reverse P2P connection failed for peer {source_token_id}, trying next peer")
+                elif client_p2p_port_accessible is False:
+                    logger.warning(f"Peer port not accessible and Client A port also not accessible, cannot do P2P with this peer, trying next peer")
+                elif client_p2p_port_accessible is None:
+                    logger.warning(f"Peer port not accessible and Client A port accessibility unknown, skipping this peer")
+                else:
+                    logger.warning(f"Peer port not accessible but missing token_id, cannot try reverse connection, trying next peer")
+                
+                # Delete partial file if any
+                if os.path.exists(dest_path):
+                    try:
+                        os.remove(dest_path)
+                    except Exception:
+                        pass
+                continue
+            
+            # Peer's port is accessible (or unknown) - try direct download
             result = download_file_via_p2p(
                 peer_url=peer_url,
                 system=system,
@@ -3699,54 +3742,30 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                         pass
                 continue
             else:
-                # Connection failed - check if we should try reverse connection
-                source_token_id = peer.get('token_id')
-                peer_port_accessible = peer.get('p2p_port_accessible', True)  # Default to True for backwards compatibility
-                
-                # Check if Client A's own port is accessible before attempting reverse connection
-                # Reverse connection requires Client A to receive incoming connections
-                # Use client port accessibility from parameter (provided by backend in peer list)
-                client_port_accessible = client_p2p_port_accessible
-                
-                # Try reverse connection if:
-                # 1. Peer's port is closed (p2p_port_accessible=False) - normal connection failed
-                # 2. Client A's port is accessible (True) - can receive reverse connection
-                should_try_reverse = (not peer_port_accessible) and (client_port_accessible is True)
-                
-                if should_try_reverse:
-                    # Peer's port is closed and Client A's port is accessible - try reverse connection
-                    logger.warning(f"P2P download failed from {peer_url} (peer port not accessible), attempting reverse connection (Client A port is accessible)")
+                # Direct download failed - peer_port_accessible was True (or unknown) but connection still failed
+                # This could be a network issue, temporary failure, or the port check was wrong
+                # Try reverse connection as fallback if client's port is accessible
+                if client_p2p_port_accessible is True and source_token_id:
+                    logger.warning(f"P2P download failed from {peer_url} (connection error despite port being accessible), attempting reverse connection as fallback")
+                    reverse_result = try_reverse_p2p_download(
+                        source_token_id=source_token_id,
+                        system=system,
+                        rom_path=rom_path,
+                        dest_path=dest_path,
+                        resume_from=resume_from,
+                        expected_size=expected_size,
+                        expected_checksum=expected_checksum,
+                        download_id=download_id,
+                        bytes_transferred_ref=bytes_transferred_ref
+                    )
                     
-                    if source_token_id:
-                        # Try reverse connection: Client B pushes file to Client A
-                        reverse_result = try_reverse_p2p_download(
-                            source_token_id=source_token_id,
-                            system=system,
-                            rom_path=rom_path,
-                            dest_path=dest_path,
-                            resume_from=resume_from,
-                            expected_size=expected_size,
-                            expected_checksum=expected_checksum,
-                            download_id=download_id,
-                            bytes_transferred_ref=bytes_transferred_ref
-                        )
-                        
-                        if reverse_result:
-                            logger.info(f"Successfully downloaded via reverse P2P connection from peer {source_token_id}")
-                            return source_token_id
-                        else:
-                            logger.warning(f"Reverse P2P connection also failed for peer {source_token_id}, trying next peer")
+                    if reverse_result:
+                        logger.info(f"Successfully downloaded via reverse P2P connection from peer {source_token_id}")
+                        return source_token_id
                     else:
-                        logger.warning(f"Peer missing token_id, cannot try reverse connection, trying next peer")
-                elif not peer_port_accessible and client_port_accessible is False:
-                    # Peer's port is closed and Client A's port is also closed - cannot do reverse connection
-                    logger.warning(f"P2P download failed from {peer_url} (peer port not accessible), cannot try reverse connection (Client A port is also not accessible), trying next peer")
-                elif not peer_port_accessible and client_port_accessible is None:
-                    # Peer's port is closed but Client A's port status unknown - skip reverse connection
-                    logger.warning(f"P2P download failed from {peer_url} (peer port not accessible), cannot try reverse connection (Client A port accessibility unknown), trying next peer")
+                        logger.warning(f"Reverse P2P connection also failed for peer {source_token_id}, trying next peer")
                 else:
-                    # Peer's port should be accessible but connection still failed - might be network issue
-                    logger.warning(f"P2P download failed from {peer_url} (connection error, peer port reported as accessible), trying next peer")
+                    logger.warning(f"P2P download failed from {peer_url} (connection error), trying next peer")
                 
                 # Delete partial file if download failed
                 if os.path.exists(dest_path):
