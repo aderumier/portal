@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 # Global Redis client for websocket connections (initialized on first use)
 _redis_ws_client = None
 
+# Redis pub/sub channel for cross-process WebSocket notifications
+WS_PUBSUB_CHANNEL = "ws:notifications"
+
 
 def get_redis_ws_client():
     """Get or create Redis client for websocket connection tracking."""
@@ -74,6 +77,11 @@ class WebSocketManager:
         # Check Redis availability on initialization
         self._redis_available = False
         self._check_redis_availability()
+        
+        # Pub/sub for cross-process notifications
+        self._pubsub_task: Optional[asyncio.Task] = None
+        self._pubsub_running = False
+        self._pubsub = None  # Redis pubsub object
     
     def _check_redis_availability(self) -> bool:
         """Check if Redis is available."""
@@ -114,6 +122,166 @@ class WebSocketManager:
                 self._redis_available = False
                 return False
         return True
+    
+    async def start_pubsub_listener(self) -> bool:
+        """Start the Redis pub/sub listener for cross-process notifications.
+        
+        This should be called once when the application starts.
+        
+        Returns:
+            True if listener started successfully, False otherwise
+        """
+        if self._pubsub_running:
+            logger.debug("Pub/sub listener already running")
+            return True
+        
+        if not await self._ensure_redis_available():
+            logger.warning("Cannot start pub/sub listener: Redis not available")
+            return False
+        
+        try:
+            # Create a separate Redis client for pub/sub (it blocks during subscribe)
+            import redis.asyncio as aioredis
+            redis_url = settings.REDIS_URL
+            db_num = settings.REDIS_WS_DB
+            if '/0' in redis_url or '/1' in redis_url or '/2' in redis_url or '/3' in redis_url or '/4' in redis_url:
+                import re
+                redis_url = re.sub(r'/\d+$', f'/{db_num}', redis_url)
+            elif redis_url.endswith('/'):
+                redis_url = redis_url + str(db_num)
+            else:
+                redis_url = redis_url + f'/{db_num}'
+            
+            pubsub_client = aioredis.from_url(
+                redis_url,
+                decode_responses=True,
+                encoding='utf-8'
+            )
+            
+            self._pubsub = pubsub_client.pubsub()
+            await self._pubsub.subscribe(WS_PUBSUB_CHANNEL)
+            
+            # Start the listener task
+            self._pubsub_running = True
+            self._pubsub_task = asyncio.create_task(self._pubsub_listener_loop())
+            
+            logger.info(f"Pub/sub listener started for process {self._process_id} on channel {WS_PUBSUB_CHANNEL}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start pub/sub listener: {e}", exc_info=True)
+            self._pubsub_running = False
+            return False
+    
+    async def stop_pubsub_listener(self) -> None:
+        """Stop the Redis pub/sub listener."""
+        self._pubsub_running = False
+        
+        if self._pubsub_task:
+            self._pubsub_task.cancel()
+            try:
+                await self._pubsub_task
+            except asyncio.CancelledError:
+                pass
+            self._pubsub_task = None
+        
+        if self._pubsub:
+            try:
+                await self._pubsub.unsubscribe(WS_PUBSUB_CHANNEL)
+                await self._pubsub.close()
+            except Exception as e:
+                logger.debug(f"Error closing pubsub: {e}")
+            self._pubsub = None
+        
+        logger.info(f"Pub/sub listener stopped for process {self._process_id}")
+    
+    async def _pubsub_listener_loop(self) -> None:
+        """Background task that listens for pub/sub messages."""
+        logger.info(f"Pub/sub listener loop started for process {self._process_id}")
+        
+        try:
+            while self._pubsub_running and self._pubsub:
+                try:
+                    message = await self._pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if message and message['type'] == 'message':
+                        await self._handle_pubsub_message(message['data'])
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in pub/sub listener: {e}", exc_info=True)
+                    await asyncio.sleep(1)  # Brief pause before retry
+        finally:
+            logger.info(f"Pub/sub listener loop ended for process {self._process_id}")
+    
+    async def _handle_pubsub_message(self, data: str) -> None:
+        """Handle a message received via pub/sub.
+        
+        Args:
+            data: JSON string containing the notification
+        """
+        try:
+            payload = json.loads(data)
+            target_token_id = payload.get('token_id')
+            source_process = payload.get('source_process')
+            message = payload.get('message')
+            
+            if not target_token_id or not message:
+                logger.warning(f"Invalid pub/sub message: missing token_id or message")
+                return
+            
+            # Skip if this message was sent by us (avoid echo)
+            if source_process == self._process_id:
+                return
+            
+            # Check if we have this websocket locally
+            async with self._lock:
+                websocket = self._websocket_objects.get(target_token_id)
+            
+            if websocket:
+                try:
+                    await websocket.send_json(message)
+                    logger.info(f"Pub/sub: Forwarded notification to token_id {target_token_id} (type: {message.get('type', 'unknown')}, from process {source_process})")
+                except Exception as e:
+                    logger.warning(f"Pub/sub: Failed to send to token_id {target_token_id}: {e}")
+            else:
+                logger.debug(f"Pub/sub: token_id {target_token_id} not on this process ({self._process_id})")
+                
+        except json.JSONDecodeError as e:
+            logger.warning(f"Invalid JSON in pub/sub message: {e}")
+        except Exception as e:
+            logger.error(f"Error handling pub/sub message: {e}", exc_info=True)
+    
+    async def _publish_notification(self, token_id: int, message: dict) -> bool:
+        """Publish a notification via Redis pub/sub for cross-process delivery.
+        
+        Args:
+            token_id: Target token ID
+            message: The message to send
+            
+        Returns:
+            True if published successfully, False otherwise
+        """
+        if not await self._ensure_redis_available():
+            return False
+        
+        redis_client = get_redis_ws_client()
+        if not redis_client:
+            return False
+        
+        try:
+            payload = json.dumps({
+                'token_id': token_id,
+                'source_process': self._process_id,
+                'message': message
+            })
+            
+            await redis_client.publish(WS_PUBSUB_CHANNEL, payload)
+            logger.debug(f"Published notification via pub/sub for token_id {token_id} (type: {message.get('type', 'unknown')})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to publish notification via pub/sub: {e}", exc_info=True)
+            return False
     
     def _get_redis_key(self, token_id: int) -> str:
         """Get Redis key for a connection."""
@@ -278,12 +446,16 @@ class WebSocketManager:
     async def send_notification(self, token_id: int, message: dict) -> bool:
         """Send a notification to a connected client.
         
+        If the client is connected to this process, sends directly.
+        If connected to another process, publishes via Redis pub/sub.
+        
         Args:
             token_id: The API token ID
             message: The message to send (will be JSON serialized)
             
         Returns:
-            True if message was sent successfully, False if no connection exists or send failed
+            True if message was sent successfully (or published via pub/sub), 
+            False if no connection exists or send failed
         """
         # Check local memory first (fast path)
         async with self._lock:
@@ -305,9 +477,23 @@ class WebSocketManager:
                 logger.error(f"Failed to send notification to token_id {token_id}: {e}", exc_info=True)
                 return False
         
-        # Connection not in local memory - check Redis (might be on another process)
-        # But we can't send to websocket on another process, so return False
-        logger.debug(f"No WebSocket connection found in local memory for token_id {token_id}")
+        # Connection not in local memory - check Redis to see if it exists on another process
+        if await self._ensure_redis_available():
+            redis_client = get_redis_ws_client()
+            if redis_client:
+                try:
+                    key = self._get_redis_key(token_id)
+                    conn_data = await redis_client.hgetall(key)
+                    
+                    if conn_data and conn_data.get('process_id'):
+                        # Connection exists on another process - use pub/sub
+                        target_process = conn_data.get('process_id')
+                        logger.info(f"Token {token_id} connected on process {target_process}, publishing via pub/sub (type: {message.get('type', 'unknown')})")
+                        return await self._publish_notification(token_id, message)
+                except Exception as e:
+                    logger.error(f"Error checking Redis for token_id {token_id}: {e}")
+        
+        logger.debug(f"No WebSocket connection found for token_id {token_id}")
         return False
     
     def has_connection(self, token_id: int) -> bool:

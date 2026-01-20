@@ -136,10 +136,31 @@ async def preload_game_data():
             logger.info("Cleared Discord roles cache on startup")
     except Exception as e:
         logger.debug(f"Error clearing Discord cache on startup: {e}")
+    
+    # Start WebSocket pub/sub listener for cross-process notifications
+    try:
+        from app.services.websocket_manager import get_websocket_manager
+        ws_manager = get_websocket_manager()
+        pubsub_started = await ws_manager.start_pubsub_listener()
+        if pubsub_started:
+            logger.info("WebSocket pub/sub listener started for cross-process notifications")
+        else:
+            logger.warning("Failed to start WebSocket pub/sub listener (cross-process notifications disabled)")
+    except Exception as e:
+        logger.warning(f"Error starting WebSocket pub/sub listener: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on application shutdown."""
+    # Stop WebSocket pub/sub listener
+    try:
+        from app.services.websocket_manager import get_websocket_manager
+        ws_manager = get_websocket_manager()
+        await ws_manager.stop_pubsub_listener()
+        logger.info("WebSocket pub/sub listener stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping WebSocket pub/sub listener: {e}")
+    
     try:
         from app.services.geoip import close_geoip_instance
         close_geoip_instance()
