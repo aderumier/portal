@@ -4115,7 +4115,8 @@ def download_game(download_info):
         # Prepare server path for checksum request (preserve snapshot path for releases)
         # Server stores release files in .zfs/snapshot/vX/ directory, so we need the full path
         # P2P clients store files without snapshot path, so clean_original_path is used for P2P transfers
-        server_rom_path = game_id.lstrip('./')
+        # Use removeprefix instead of lstrip to preserve .zfs prefix (lstrip would corrupt .zfs to zfs)
+        server_rom_path = game_id.removeprefix('./')
         # Remove system prefix if present, but preserve snapshot path
         if server_rom_path.startswith(f"{system}/"):
             server_rom_path = server_rom_path[len(system) + 1:]
