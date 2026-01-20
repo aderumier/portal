@@ -86,7 +86,7 @@ class MarkCompletedRequest(BaseModel):
     download_id: int
     client_version: Optional[str] = None  # Download client version
     log_content: Optional[str] = None  # Download task log content
-    p2p_source_token_id: Optional[int] = None  # Source peer's token_id for P2P downloads
+    p2p_remote_token_id: Optional[int] = None  # Remote peer's token_id for P2P downloads (peer serving the file)
 
 class ReverseP2PConnectionRequest(BaseModel):
     source_token_id: int  # Token ID of the peer that should send the file (Client B)
@@ -1588,7 +1588,7 @@ async def mark_completed(
     """Mark a download as completed (used by download service)."""
     download_id = request.download_id
     log_content = request.log_content
-    p2p_source_token_id = request.p2p_source_token_id
+    p2p_remote_token_id = request.p2p_remote_token_id
     
     if download_id <= 0:
         raise HTTPException(
@@ -1600,7 +1600,7 @@ async def mark_completed(
     if log_content:
         download_service.store_download_log(download_id, log_content)
     
-    success = await download_service.complete_download(download_id, p2p_source_token_id=p2p_source_token_id)
+    success = await download_service.complete_download(download_id, p2p_remote_token_id=p2p_remote_token_id)
     
     if not success:
         raise HTTPException(
@@ -4073,6 +4073,16 @@ async def request_reverse_p2p_connection(
         
         logger.info(f"Reverse P2P connection requested: source_token_id={body.source_token_id} -> target_token_id={target_token_id} at {target_public_ip}:{target_public_port} for {body.system}/{body.rom_path} (resume_from={body.resume_from})")
         
+        # Store p2p_remote_token_id in Redis for cancellation notification
+        # source_token_id is the remote peer serving the file
+        if body.download_id:
+            try:
+                from app.services.redis_downloads import RedisDownloadTracker
+                await RedisDownloadTracker.set_p2p_remote_token_id(body.download_id, body.source_token_id)
+                logger.info(f"Stored p2p_remote_token_id={body.source_token_id} in Redis for reverse P2P download_id={body.download_id}")
+            except Exception as e:
+                logger.warning(f"Failed to store p2p_remote_token_id in Redis: {e}")
+        
         return {
             "success": True,
             "message": "Reverse connection request sent to source peer"
@@ -4152,10 +4162,41 @@ async def report_reverse_p2p_connection_result(
             detail="An error occurred while reporting reverse connection result"
         )
 
+class StoreP2PRemoteTokenRequest(BaseModel):
+    download_id: int
+    p2p_remote_token_id: int
+
 class VerifyP2PDownloadRequest(BaseModel):
     download_id: int
     system: str
     rom_path: str
+
+@router.post("/p2p/store-remote-token")
+async def store_p2p_remote_token(
+    body: StoreP2PRemoteTokenRequest,
+    current_user: dict = Depends(require_auth_user)
+):
+    """Store P2P remote token ID in Redis for cancellation notification."""
+    try:
+        from app.services.redis_downloads import RedisDownloadTracker
+        
+        success = await RedisDownloadTracker.set_p2p_remote_token_id(body.download_id, body.p2p_remote_token_id)
+        
+        if success:
+            return {"success": True}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to store P2P remote token ID"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error storing P2P remote token ID: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while storing P2P remote token ID"
+        )
 
 @router.post("/verify-p2p-download")
 async def verify_p2p_download(

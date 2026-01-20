@@ -185,6 +185,60 @@ class RedisDownloadTracker:
             return False
     
     @staticmethod
+    async def set_p2p_remote_token_id(download_id: int, p2p_remote_token_id: int) -> bool:
+        """Store P2P remote token ID in Redis for cancellation notification."""
+        redis_client = get_redis_downloads_client()
+        if not redis_client:
+            return False
+        
+        try:
+            key = RedisDownloadTracker._get_key(download_id)
+            data_str = await redis_client.get(key)
+            
+            if data_str:
+                # Update existing download entry
+                data = json.loads(data_str)
+                data['p2p_remote_token_id'] = p2p_remote_token_id
+                ttl = await redis_client.ttl(key)
+                if ttl > 0:
+                    await redis_client.setex(key, ttl, json.dumps(data))
+                else:
+                    await redis_client.setex(key, 86400, json.dumps(data))
+            else:
+                # Create new entry if download not in Redis yet
+                data = {
+                    'download_id': download_id,
+                    'p2p_remote_token_id': p2p_remote_token_id,
+                    'status': 'downloading'
+                }
+                await redis_client.setex(key, 86400, json.dumps(data))
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error setting P2P remote token ID in Redis: {e}")
+            return False
+    
+    @staticmethod
+    async def get_p2p_remote_token_id(download_id: int) -> Optional[int]:
+        """Get P2P remote token ID from Redis."""
+        redis_client = get_redis_downloads_client()
+        if not redis_client:
+            return None
+        
+        try:
+            key = RedisDownloadTracker._get_key(download_id)
+            data_str = await redis_client.get(key)
+            
+            if not data_str:
+                return None
+            
+            data = json.loads(data_str)
+            return data.get('p2p_remote_token_id')
+        except Exception as e:
+            logger.error(f"Error getting P2P remote token ID from Redis: {e}")
+            return None
+    
+    @staticmethod
     async def remove_download(download_id: int) -> bool:
         """Remove download from Redis (when completed/cancelled)."""
         redis_client = get_redis_downloads_client()

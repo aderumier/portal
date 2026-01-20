@@ -1217,8 +1217,50 @@ class DownloadService:
                 logger.warning(f"Game not found in queue: {game_id}")
                 return False
             
+            download_id = queue_item.id
+            
+            # Check if this is a P2P download and notify remote peer before archiving
+            try:
+                import asyncio
+                from app.services.redis_downloads import RedisDownloadTracker
+                from app.services.websocket_manager import get_websocket_manager
+                
+                async def notify_and_cleanup():
+                    # Get p2p_remote_token_id from Redis before removing
+                    p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
+                    
+                    if p2p_remote_token_id:
+                        logger.info(f"Download {download_id} cancelled: Notifying remote peer token_id={p2p_remote_token_id}")
+                        ws_manager = get_websocket_manager()
+                        notification_sent = await ws_manager.send_notification(
+                            p2p_remote_token_id,
+                            {
+                                "type": "p2p_download_cancelled",
+                                "download_id": download_id,
+                                "message": "Download was cancelled by the downloading client"
+                            }
+                        )
+                        if notification_sent:
+                            logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
+                        else:
+                            logger.warning(f"Failed to send cancellation notification to remote peer token_id={p2p_remote_token_id} (not connected)")
+                    
+                    # Remove from Redis
+                    await RedisDownloadTracker.remove_download(download_id)
+                
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(notify_and_cleanup())
+                    else:
+                        loop.run_until_complete(notify_and_cleanup())
+                except RuntimeError:
+                    asyncio.run(notify_and_cleanup())
+            except Exception as e:
+                logger.warning(f"Error notifying remote peer or removing from Redis: {e}")
+            
             # Archive the download before deletion (user cancelled)
-            self.archive_download(queue_item.id, 'cancelled')
+            self.archive_download(download_id, 'cancelled')
             
             self.db.delete(queue_item)
             self.db.commit()
@@ -1233,12 +1275,64 @@ class DownloadService:
     def clear_queue(self, user_id: str) -> bool:
         """Clear all games from the download queue for a user."""
         try:
+            # Get all downloads before deleting to notify remote peers
+            downloads = self.db.query(DownloadQueue).filter(
+                DownloadQueue.user_id == user_id
+            ).all()
+            
+            download_ids = [d.id for d in downloads]
+            
+            # Notify remote peers for P2P downloads before clearing
+            if download_ids:
+                try:
+                    import asyncio
+                    from app.services.redis_downloads import RedisDownloadTracker
+                    from app.services.websocket_manager import get_websocket_manager
+                    
+                    async def notify_all_and_cleanup():
+                        ws_manager = get_websocket_manager()
+                        for download_id in download_ids:
+                            # Get p2p_remote_token_id from Redis before removing
+                            p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
+                            
+                            if p2p_remote_token_id:
+                                logger.info(f"Download {download_id} cancelled (queue cleared): Notifying remote peer token_id={p2p_remote_token_id}")
+                                notification_sent = await ws_manager.send_notification(
+                                    p2p_remote_token_id,
+                                    {
+                                        "type": "p2p_download_cancelled",
+                                        "download_id": download_id,
+                                        "message": "Download was cancelled (queue cleared)"
+                                    }
+                                )
+                                if notification_sent:
+                                    logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
+                            
+                            # Remove from Redis
+                            await RedisDownloadTracker.remove_download(download_id)
+                    
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.create_task(notify_all_and_cleanup())
+                        else:
+                            loop.run_until_complete(notify_all_and_cleanup())
+                    except RuntimeError:
+                        asyncio.run(notify_all_and_cleanup())
+                except Exception as e:
+                    logger.warning(f"Error notifying remote peers or removing from Redis: {e}")
+            
+            # Archive all downloads before deletion
+            for download in downloads:
+                self.archive_download(download.id, 'cancelled')
+            
+            # Delete all downloads
             self.db.query(DownloadQueue).filter(
                 DownloadQueue.user_id == user_id
             ).delete()
             self.db.commit()
             
-            logger.info(f"Successfully cleared queue for user: {user_id}")
+            logger.info(f"Successfully cleared queue for user: {user_id} ({len(download_ids)} downloads)")
             return True
         except Exception as e:
             logger.error(f"Error clearing queue: {e}")
@@ -2483,23 +2577,62 @@ class DownloadService:
                 logger.warning(f"Download {download_id} not found")
                 return False
             
-            # Archive the download before deletion
-            self.archive_download(download_id, 'error')
-            
-            # Remove from Redis before deletion
+            # Check if this is a P2P download and notify remote peer
             try:
                 import asyncio
                 from app.services.redis_downloads import RedisDownloadTracker
+                from app.services.websocket_manager import get_websocket_manager
+                
+                async def notify_and_cleanup():
+                    # Get p2p_remote_token_id from Redis before removing
+                    p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
+                    
+                    if p2p_remote_token_id:
+                        logger.info(f"Download {download_id} cancelled: Notifying remote peer token_id={p2p_remote_token_id}")
+                        ws_manager = get_websocket_manager()
+                        notification_sent = await ws_manager.send_notification(
+                            p2p_remote_token_id,
+                            {
+                                "type": "p2p_download_cancelled",
+                                "download_id": download_id,
+                                "message": "Download was cancelled by the downloading client"
+                            }
+                        )
+                        if notification_sent:
+                            logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
+                        else:
+                            logger.warning(f"Failed to send cancellation notification to remote peer token_id={p2p_remote_token_id} (not connected)")
+                    
+                    # Remove from Redis
+                    await RedisDownloadTracker.remove_download(download_id)
+                
                 try:
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
-                        asyncio.create_task(RedisDownloadTracker.remove_download(download_id))
+                        asyncio.create_task(notify_and_cleanup())
                     else:
-                        loop.run_until_complete(RedisDownloadTracker.remove_download(download_id))
+                        loop.run_until_complete(notify_and_cleanup())
                 except RuntimeError:
-                    asyncio.run(RedisDownloadTracker.remove_download(download_id))
+                    asyncio.run(notify_and_cleanup())
             except Exception as e:
-                logger.debug(f"Failed to remove download from Redis: {e}")
+                logger.warning(f"Error notifying remote peer or removing from Redis: {e}")
+                # Try to remove from Redis anyway
+                try:
+                    import asyncio
+                    from app.services.redis_downloads import RedisDownloadTracker
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.create_task(RedisDownloadTracker.remove_download(download_id))
+                        else:
+                            loop.run_until_complete(RedisDownloadTracker.remove_download(download_id))
+                    except RuntimeError:
+                        asyncio.run(RedisDownloadTracker.remove_download(download_id))
+                except Exception as e2:
+                    logger.debug(f"Failed to remove download from Redis: {e2}")
+            
+            # Archive the download before deletion
+            self.archive_download(download_id, 'cancelled')
             
             # Delete the download without updating statistics
             self.db.delete(download)
@@ -2602,7 +2735,7 @@ class DownloadService:
             logger.error(f"Error reading download log for {download_id}: {e}")
             return None
     
-    async def complete_download(self, download_id: int, p2p_source_token_id: Optional[int] = None) -> bool:
+    async def complete_download(self, download_id: int, p2p_remote_token_id: Optional[int] = None) -> bool:
         """Remove download from queue and update user download statistics.
         
         After completion, checks if there are more items in user_queue for the same token_id
@@ -2610,7 +2743,7 @@ class DownloadService:
         
         Args:
             download_id: ID of the download to complete
-            p2p_source_token_id: Optional source peer's token_id for P2P downloads
+            p2p_remote_token_id: Optional remote peer's token_id for P2P downloads (peer serving the file)
         """
         try:
             from app.database import User, ApiToken
@@ -2632,7 +2765,7 @@ class DownloadService:
             catalog_version = download.catalog_version
             
             # Archive the download first (this syncs bytes_transferred from Redis and updates DB)
-            logger.info(f"Complete download {download_id}: p2p_source_token_id={p2p_source_token_id} (type={type(p2p_source_token_id).__name__ if p2p_source_token_id is not None else 'None'})")
+            logger.info(f"Complete download {download_id}: p2p_remote_token_id={p2p_remote_token_id} (type={type(p2p_remote_token_id).__name__ if p2p_remote_token_id is not None else 'None'})")
             archive_success, downloaded_bytes = self.archive_download(download_id, 'completed')
             if not archive_success:
                 logger.warning(f"Failed to archive download {download_id}, but continuing with completion")
@@ -2642,9 +2775,9 @@ class DownloadService:
             logger.info(f"Complete download {download_id}: downloaded_bytes={downloaded_bytes} ({downloaded_mb:.2f} MB)")
             
             # Handle P2P traffic tracking if this was a P2P download
-            # Validate p2p_source_token_id is an actual integer token ID (not True/False)
-            if p2p_source_token_id is not None and isinstance(p2p_source_token_id, int) and p2p_source_token_id > 0:
-                logger.info(f"Complete download {download_id}: Processing P2P stats - target_token_id={token_id}, source_token_id={p2p_source_token_id}, downloaded_mb={downloaded_mb:.2f}")
+            # Validate p2p_remote_token_id is an actual integer token ID (not True/False)
+            if p2p_remote_token_id is not None and isinstance(p2p_remote_token_id, int) and p2p_remote_token_id > 0:
+                logger.info(f"Complete download {download_id}: Processing P2P stats - downloading_token_id={token_id}, serving_token_id={p2p_remote_token_id}, downloaded_mb={downloaded_mb:.2f}")
                 try:
                     # Update target token (downloading client) - add to p2p_total_download_mb
                     target_token = self.db.query(ApiToken).filter(ApiToken.id == token_id).first()
@@ -2656,15 +2789,15 @@ class DownloadService:
                     else:
                         logger.warning(f"Target token {token_id} not found for P2P download tracking")
                     
-                    # Update source token (serving peer) - add to p2p_total_upload_mb
-                    source_token = self.db.query(ApiToken).filter(ApiToken.id == p2p_source_token_id).first()
-                    if source_token:
-                        old_value = source_token.p2p_total_upload_mb or 0.0
-                        source_token.p2p_total_upload_mb += downloaded_mb
+                    # Update remote token (peer serving the file) - add to p2p_total_upload_mb
+                    remote_token = self.db.query(ApiToken).filter(ApiToken.id == p2p_remote_token_id).first()
+                    if remote_token:
+                        old_value = remote_token.p2p_total_upload_mb or 0.0
+                        remote_token.p2p_total_upload_mb += downloaded_mb
                         self.db.commit()
-                        logger.info(f"Updated source token {p2p_source_token_id} p2p_total_upload_mb: {old_value:.2f} -> {source_token.p2p_total_upload_mb:.2f} MB (+{downloaded_mb:.2f} MB)")
+                        logger.info(f"Updated remote token {p2p_remote_token_id} p2p_total_upload_mb: {old_value:.2f} -> {remote_token.p2p_total_upload_mb:.2f} MB (+{downloaded_mb:.2f} MB)")
                     else:
-                        logger.warning(f"Source token {p2p_source_token_id} not found for P2P upload tracking")
+                        logger.warning(f"Remote token {p2p_remote_token_id} not found for P2P upload tracking")
                     
                     # Update user statistics by summing all their tokens' P2P traffic
                     # For target user (downloading client)
@@ -2681,42 +2814,42 @@ class DownloadService:
                         self.db.commit()
                         logger.info(f"Updated target user {user_id} P2P totals: download {old_download:.2f} -> {target_user_download_mb:.2f} MB, upload {old_upload:.2f} -> {target_user_upload_mb:.2f} MB")
                     
-                    # For source user (serving peer)
-                    if source_token:
-                        source_user_id = source_token.user_id
-                        source_user_tokens = self.db.query(ApiToken).filter(ApiToken.user_id == source_user_id).all()
-                        source_user_download_mb = sum(token.p2p_total_download_mb or 0.0 for token in source_user_tokens)
-                        source_user_upload_mb = sum(token.p2p_total_upload_mb or 0.0 for token in source_user_tokens)
+                    # For remote user (peer serving the file)
+                    if remote_token:
+                        remote_user_id = remote_token.user_id
+                        remote_user_tokens = self.db.query(ApiToken).filter(ApiToken.user_id == remote_user_id).all()
+                        remote_user_download_mb = sum(token.p2p_total_download_mb or 0.0 for token in remote_user_tokens)
+                        remote_user_upload_mb = sum(token.p2p_total_upload_mb or 0.0 for token in remote_user_tokens)
                         
-                        source_user = self.db.query(User).filter(User.user_id == source_user_id).first()
-                        if source_user:
-                            old_download = source_user.p2p_total_download_mb or 0.0
-                            old_upload = source_user.p2p_total_upload_mb or 0.0
-                            source_user.p2p_total_download_mb = source_user_download_mb
-                            source_user.p2p_total_upload_mb = source_user_upload_mb
+                        remote_user = self.db.query(User).filter(User.user_id == remote_user_id).first()
+                        if remote_user:
+                            old_download = remote_user.p2p_total_download_mb or 0.0
+                            old_upload = remote_user.p2p_total_upload_mb or 0.0
+                            remote_user.p2p_total_download_mb = remote_user_download_mb
+                            remote_user.p2p_total_upload_mb = remote_user_upload_mb
                             self.db.commit()
-                            logger.info(f"Updated source user {source_user_id} P2P totals: download {old_download:.2f} -> {source_user_download_mb:.2f} MB, upload {old_upload:.2f} -> {source_user_upload_mb:.2f} MB")
+                            logger.info(f"Updated remote user {remote_user_id} P2P totals: download {old_download:.2f} -> {remote_user_download_mb:.2f} MB, upload {old_upload:.2f} -> {remote_user_upload_mb:.2f} MB")
                         else:
                             # Create user record if it doesn't exist
-                            source_user = User(
-                                user_id=source_user_id,
-                                p2p_total_download_mb=source_user_download_mb,
-                                p2p_total_upload_mb=source_user_upload_mb,
+                            remote_user = User(
+                                user_id=remote_user_id,
+                                p2p_total_download_mb=remote_user_download_mb,
+                                p2p_total_upload_mb=remote_user_upload_mb,
                                 created_at=datetime.now(timezone.utc),
                                 updated_at=datetime.now(timezone.utc)
                             )
-                            self.db.add(source_user)
-                            logger.info(f"Created source user {source_user_id} with P2P totals: download={source_user_download_mb:.2f} MB, upload={source_user_upload_mb:.2f} MB")
+                            self.db.add(remote_user)
+                            logger.info(f"Created remote user {remote_user_id} with P2P totals: download={remote_user_download_mb:.2f} MB, upload={remote_user_upload_mb:.2f} MB")
                 except Exception as e:
                     logger.error(f"Error tracking P2P traffic: {e}", exc_info=True)
                     # Don't fail the download completion if P2P tracking fails
             else:
-                if p2p_source_token_id is None:
-                    logger.info(f"Complete download {download_id}: Not a P2P download (p2p_source_token_id is None), skipping P2P stats")
-                elif not isinstance(p2p_source_token_id, int):
-                    logger.warning(f"Complete download {download_id}: Invalid p2p_source_token_id type: {type(p2p_source_token_id).__name__} (value: {p2p_source_token_id}), skipping P2P stats")
-                elif p2p_source_token_id <= 0:
-                    logger.warning(f"Complete download {download_id}: Invalid p2p_source_token_id value: {p2p_source_token_id} (must be > 0), skipping P2P stats")
+                if p2p_remote_token_id is None:
+                    logger.info(f"Complete download {download_id}: Not a P2P download (p2p_remote_token_id is None), skipping P2P stats")
+                elif not isinstance(p2p_remote_token_id, int):
+                    logger.warning(f"Complete download {download_id}: Invalid p2p_remote_token_id type: {type(p2p_remote_token_id).__name__} (value: {p2p_remote_token_id}), skipping P2P stats")
+                elif p2p_remote_token_id <= 0:
+                    logger.warning(f"Complete download {download_id}: Invalid p2p_remote_token_id value: {p2p_remote_token_id} (must be > 0), skipping P2P stats")
             
             # Update or create user statistics
             user = self.db.query(User).filter(

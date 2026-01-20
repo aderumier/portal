@@ -4337,8 +4337,8 @@ def download_game(download_info):
                     # p2p_result is token_id (int) if successful P2P download, True if file already existed (no transfer), False otherwise
                     p2p_download_success = bool(p2p_result)
                     # Only track P2P stats if we have an actual token_id (int), not True (file already existed)
-                    p2p_source_token_id = p2p_result if isinstance(p2p_result, int) else None
-                    logger.info(f"P2P download result for download_id={download_id}: p2p_result={p2p_result} (type={type(p2p_result).__name__}), p2p_download_success={p2p_download_success}, p2p_source_token_id={p2p_source_token_id}")
+                    p2p_remote_token_id = p2p_result if isinstance(p2p_result, int) else None
+                    logger.info(f"P2P download result for download_id={download_id}: p2p_result={p2p_result} (type={type(p2p_result).__name__}), p2p_download_success={p2p_download_success}, p2p_remote_token_id={p2p_remote_token_id}")
                 
                 if p2p_download_success:
                     logger.info(f"P2P download successful for {system}/{clean_original_path}")
@@ -4408,12 +4408,31 @@ def download_game(download_info):
                     except Exception as e:
                         logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
                     
-                    # Store p2p_source_token_id in download_info for mark_completed
-                    if p2p_source_token_id is not None:
-                        download_info['p2p_source_token_id'] = p2p_source_token_id
-                        logger.info(f"P2P download successful: Stored p2p_source_token_id={p2p_source_token_id} in download_info for download_id={download_id}")
+                    # Store p2p_remote_token_id in download_info for mark_completed
+                    if p2p_remote_token_id is not None:
+                        download_info['p2p_remote_token_id'] = p2p_remote_token_id
+                        logger.info(f"P2P download successful: Stored p2p_remote_token_id={p2p_remote_token_id} in download_info for download_id={download_id}")
+                        
+                        # Store p2p_remote_token_id in Redis for cancellation notification
+                        try:
+                            headers = {
+                                'Authorization': f'Bearer {API_TOKEN}',
+                                'Content-Type': 'application/json'
+                            }
+                            response = http_session.post(
+                                f"{API_URL}/api/download/p2p/store-remote-token",
+                                json={'download_id': download_id, 'p2p_remote_token_id': p2p_remote_token_id},
+                                headers=headers,
+                                timeout=5
+                            )
+                            if response.status_code == 200:
+                                logger.info(f"Stored p2p_remote_token_id={p2p_remote_token_id} in Redis for download_id={download_id}")
+                            else:
+                                logger.warning(f"Failed to store p2p_remote_token_id in Redis: {response.status_code}")
+                        except Exception as e:
+                            logger.warning(f"Error storing p2p_remote_token_id in Redis: {e}")
                     else:
-                        logger.warning(f"P2P download successful but p2p_source_token_id is None for download_id={download_id} (p2p_result was {p2p_result})")
+                        logger.warning(f"P2P download successful but p2p_remote_token_id is None for download_id={download_id} (p2p_result was {p2p_result})")
                     return True
             else:
                 logger.error(f"P2P downloaded file not found: {dest_path}")
@@ -4730,7 +4749,7 @@ def mark_completed(download_id, download_info=None):
     
     Args:
         download_id: Download ID
-        download_info: Optional download info dict (used to pass p2p_source_token_id)
+        download_info: Optional download info dict (used to pass p2p_remote_token_id)
                        Note: Backend handles p2p_index registration automatically
     """
     try:
@@ -4756,17 +4775,17 @@ def mark_completed(download_id, download_info=None):
         if log_content:
             data['log_content'] = log_content
         
-        # Get p2p_source_token_id from download_info if provided
-        if download_info and 'p2p_source_token_id' in download_info:
-            p2p_source_token_id = download_info.get('p2p_source_token_id')
-            if p2p_source_token_id is not None:
-                data['p2p_source_token_id'] = p2p_source_token_id
-                logger.info(f"mark_completed: Including p2p_source_token_id={p2p_source_token_id} for download_id={download_id}")
+        # Get p2p_remote_token_id from download_info if provided
+        if download_info and 'p2p_remote_token_id' in download_info:
+            p2p_remote_token_id = download_info.get('p2p_remote_token_id')
+            if p2p_remote_token_id is not None:
+                data['p2p_remote_token_id'] = p2p_remote_token_id
+                logger.info(f"mark_completed: Including p2p_remote_token_id={p2p_remote_token_id} for download_id={download_id}")
             else:
-                logger.info(f"mark_completed: p2p_source_token_id in download_info but is None for download_id={download_id}")
+                logger.info(f"mark_completed: p2p_remote_token_id in download_info but is None for download_id={download_id}")
         else:
             if download_info:
-                logger.info(f"mark_completed: download_info provided but no 'p2p_source_token_id' key for download_id={download_id}, keys={list(download_info.keys())}")
+                logger.info(f"mark_completed: download_info provided but no 'p2p_remote_token_id' key for download_id={download_id}, keys={list(download_info.keys())}")
             else:
                 logger.info(f"mark_completed: No download_info provided for download_id={download_id}")
         
