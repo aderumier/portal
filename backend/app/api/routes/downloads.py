@@ -97,6 +97,7 @@ class ReverseP2PConnectionRequest(BaseModel):
     rom_path: str  # ROM file path (relative to system directory)
     resume_from: Optional[int] = 0  # Byte position to resume from (default: 0)
     expected_size: Optional[int] = None  # Expected file size in bytes
+    expected_checksum: Optional[dict] = None  # Expected checksum data for validation
     download_id: Optional[int] = None  # Download ID for tracking
     request_id: Optional[str] = None  # Unique request ID for feedback mechanism
 
@@ -4056,6 +4057,7 @@ async def request_reverse_p2p_connection(
             "rom_path": body.rom_path,
             "resume_from": body.resume_from or 0,
             "expected_size": body.expected_size,
+            "expected_checksum": body.expected_checksum,  # For validation before upload
             "download_id": body.download_id,
             "request_id": body.request_id  # For feedback mechanism
         }

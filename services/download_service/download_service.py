@@ -3100,7 +3100,7 @@ def get_server_checksum(system, rom_path):
         logger.error(f"Unexpected error requesting checksum from server: {e}", exc_info=True)
         return None
 
-def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_path, resume_from=0, expected_size=None, download_id=None, request_id=None, target_token_id=None):
+def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_path, resume_from=0, expected_size=None, expected_checksum=None, download_id=None, request_id=None, target_token_id=None):
     """Handle reverse P2P upload: push file to another client.
     
     Args:
@@ -3111,6 +3111,7 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         rom_path: ROM file path (relative to system directory)
         resume_from: Byte position to resume from (default: 0)
         expected_size: Expected file size in bytes (optional)
+        expected_checksum: Expected checksum data (optional, for validation before upload)
         download_id: Download ID for tracking (optional)
         request_id: Unique request ID for feedback mechanism (optional)
         target_token_id: Token ID of the target client for feedback (optional)
@@ -3159,6 +3160,48 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
             logger.error(f"File size mismatch on sender side: local file is {file_size} bytes, expected {expected_size} bytes for {system}/{rom_path}")
             error_message = f"File size mismatch: local={file_size}, expected={expected_size}"
             return
+        
+        # Validate checksum against expected_checksum if provided
+        if expected_checksum:
+            logger.info(f"Validating checksum before upload for {system}/{rom_path}")
+            local_checksum = calculate_partial_checksum(file_path)
+            if not local_checksum:
+                logger.error(f"Failed to calculate checksum for local file: {file_path}")
+                error_message = "Failed to calculate local file checksum"
+                return
+            
+            # Compare file sizes first
+            if local_checksum['file_size'] != expected_checksum.get('file_size'):
+                logger.error(f"Checksum validation failed: size mismatch - local={local_checksum['file_size']}, expected={expected_checksum.get('file_size')}")
+                error_message = f"Checksum validation failed: size mismatch"
+                return
+            
+            # For small files, compare full_hash
+            if 'full_hash' in expected_checksum:
+                if 'full_hash' not in local_checksum:
+                    logger.error(f"Checksum validation failed: format mismatch - expected full_hash, got partial checksum")
+                    error_message = "Checksum validation failed: format mismatch"
+                    return
+                if local_checksum['full_hash'].lower() != expected_checksum['full_hash'].lower():
+                    logger.error(f"Checksum validation failed: hash mismatch - local={local_checksum['full_hash']}, expected={expected_checksum['full_hash']}")
+                    error_message = f"Checksum validation failed: hash mismatch"
+                    return
+            else:
+                # For large files, compare beginning_hash and end_hash
+                if 'beginning_hash' not in local_checksum or 'end_hash' not in local_checksum:
+                    logger.error(f"Checksum validation failed: format mismatch - expected partial checksum, got full_hash")
+                    error_message = "Checksum validation failed: format mismatch"
+                    return
+                if local_checksum['beginning_hash'].lower() != expected_checksum.get('beginning_hash', '').lower():
+                    logger.error(f"Checksum validation failed: beginning hash mismatch")
+                    error_message = "Checksum validation failed: beginning hash mismatch"
+                    return
+                if local_checksum['end_hash'].lower() != expected_checksum.get('end_hash', '').lower():
+                    logger.error(f"Checksum validation failed: end hash mismatch")
+                    error_message = "Checksum validation failed: end hash mismatch"
+                    return
+            
+            logger.info(f"Checksum validation passed for {system}/{rom_path}")
         
         # Calculate bytes to send (from resume_from to end)
         if resume_from > 0:
@@ -3348,11 +3391,12 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
                 "rom_path": rom_path,
                 "resume_from": resume_from,
                 "expected_size": expected_size,
+                "expected_checksum": expected_checksum,  # For validation on sender side
                 "download_id": download_id,
                 "request_id": request_id  # For feedback mechanism
             }
             
-            logger.info(f"Sending reverse connection request to backend: source_token_id={source_token_id}, resume_from={resume_from}, expected_size={expected_size}")
+            logger.info(f"Sending reverse connection request to backend: source_token_id={source_token_id}, resume_from={resume_from}, expected_size={expected_size}, has_checksum={expected_checksum is not None}")
             response = requests.post(url, json=data, headers=headers, timeout=10)
             response.raise_for_status()
             
@@ -5054,16 +5098,17 @@ async def websocket_client():
                                         rom_path = data.get("rom_path")
                                         resume_from = data.get("resume_from", 0)
                                         expected_size = data.get("expected_size")
+                                        expected_checksum = data.get("expected_checksum")  # For validation before upload
                                         download_id = data.get("download_id")
                                         request_id = data.get("request_id")  # For feedback mechanism
                                         
-                                        logger.info(f"Received reverse P2P download request: push {system}/{rom_path} to {target_ip}:{target_port}{target_path} (resume_from={resume_from}, request_id={request_id})")
+                                        logger.info(f"Received reverse P2P download request: push {system}/{rom_path} to {target_ip}:{target_port}{target_path} (resume_from={resume_from}, request_id={request_id}, has_checksum={expected_checksum is not None})")
                                         
                                         # Handle reverse connection in a separate thread to avoid blocking WebSocket
                                         import threading
                                         reverse_thread = threading.Thread(
                                             target=handle_reverse_p2p_upload,
-                                            args=(target_ip, target_port, target_path, system, rom_path, resume_from, expected_size, download_id, request_id, target_token_id),
+                                            args=(target_ip, target_port, target_path, system, rom_path, resume_from, expected_size, expected_checksum, download_id, request_id, target_token_id),
                                             daemon=True
                                         )
                                         reverse_thread.start()
