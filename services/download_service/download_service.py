@@ -3168,7 +3168,7 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         # Build target URL (use target_path provided)
         target_url = f"http://{target_ip}:{target_port}{target_path}"
         
-        logger.info(f"Starting reverse P2P upload: {system}/{rom_path} -> {target_url} (sending {bytes_to_send} bytes from byte {resume_from})")
+        logger.info(f"Starting reverse P2P upload: {system}/{rom_path} -> {target_url} (sending {bytes_to_send} bytes from byte {resume_from}, file_size={file_size})")
         
         # Use 1MB chunks to match normal download chunk size
         chunk_size_bytes = 1024 * 1024  # 1MB
@@ -3346,6 +3346,7 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
                 "request_id": request_id  # For feedback mechanism
             }
             
+            logger.info(f"Sending reverse connection request to backend: source_token_id={source_token_id}, resume_from={resume_from}, expected_size={expected_size}")
             response = requests.post(url, json=data, headers=headers, timeout=10)
             response.raise_for_status()
             
@@ -3888,12 +3889,14 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                 else:
                     logger.warning(f"Peer port not accessible but missing token_id, cannot try reverse connection, trying next peer")
                 
-                # Delete partial file if any
+                # Delete partial/corrupted file if any
                 if os.path.exists(dest_path):
                     try:
+                        file_size_before_delete = os.path.getsize(dest_path)
                         os.remove(dest_path)
-                    except Exception:
-                        pass
+                        logger.info(f"Deleted partial/corrupted file after P2P failure: {dest_path} ({file_size_before_delete} bytes)")
+                    except Exception as del_err:
+                        logger.warning(f"Failed to delete partial file {dest_path}: {del_err}")
                 continue
             
             # Peer's port is accessible (or unknown) - try direct download

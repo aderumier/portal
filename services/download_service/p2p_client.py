@@ -140,6 +140,8 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                 bytes_transferred_ref = request_info.get('bytes_transferred_ref')
                 last_activity_ref = request_info.get('last_activity_ref')
                 
+                logger.info(f"Reverse connection request found: request_id={request_id}, expected_size={expected_size}, resume_from={resume_from}, dest_path={dest_path}")
+                
                 # Verify download_id if available (P2P security check)
                 if download_id and system and rom_path:
                     if not self._verify_download_id(download_id, system, rom_path):
@@ -247,7 +249,13 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                 
                 # Verify file size if expected_size provided
                 if expected_size and bytes_written != expected_size:
-                    logger.error(f"Reverse connection: File size mismatch: received {bytes_written}, expected {expected_size}")
+                    logger.error(f"Reverse connection: File size mismatch: received {bytes_written}, expected {expected_size} (resume_from={resume_from}, total_received={total_received})")
+                    # Delete the corrupted oversized file
+                    try:
+                        os.remove(dest_path)
+                        logger.info(f"Deleted corrupted file after size mismatch: {dest_path}")
+                    except Exception as del_err:
+                        logger.warning(f"Failed to delete corrupted file {dest_path}: {del_err}")
                     self.send_response(400, "File size mismatch")
                     self.end_headers()
                     return
