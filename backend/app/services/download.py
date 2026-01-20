@@ -2619,7 +2619,8 @@ class DownloadService:
             downloaded_mb = downloaded_bytes / (1024 * 1024)
             
             # Handle P2P traffic tracking if this was a P2P download
-            if p2p_source_token_id is not None:
+            # Validate p2p_source_token_id is an actual integer token ID (not True/False)
+            if p2p_source_token_id is not None and isinstance(p2p_source_token_id, int) and p2p_source_token_id > 0:
                 try:
                     # Update target token (downloading client) - add to p2p_total_download_mb
                     target_token = self.db.query(ApiToken).filter(ApiToken.id == token_id).first()

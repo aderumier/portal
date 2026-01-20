@@ -4332,9 +4332,10 @@ def download_game(download_info):
                         bytes_transferred_ref=bytes_transferred_this_session,
                         client_p2p_port_accessible=client_p2p_port_accessible
                     )
-                    # p2p_result is token_id (int) if successful, False otherwise
+                    # p2p_result is token_id (int) if successful P2P download, True if file already existed (no transfer), False otherwise
                     p2p_download_success = bool(p2p_result)
-                    p2p_source_token_id = p2p_result if p2p_download_success else None
+                    # Only track P2P stats if we have an actual token_id (int), not True (file already existed)
+                    p2p_source_token_id = p2p_result if isinstance(p2p_result, int) else None
                 
                 if p2p_download_success:
                     logger.info(f"P2P download successful for {system}/{clean_original_path}")
