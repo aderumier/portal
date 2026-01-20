@@ -3154,6 +3154,12 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         # Get file size
         file_size = os.path.getsize(file_path)
         
+        # Validate file size against expected_size if provided
+        if expected_size and file_size != expected_size:
+            logger.error(f"File size mismatch on sender side: local file is {file_size} bytes, expected {expected_size} bytes for {system}/{rom_path}")
+            error_message = f"File size mismatch: local={file_size}, expected={expected_size}"
+            return
+        
         # Calculate bytes to send (from resume_from to end)
         if resume_from > 0:
             bytes_to_send = file_size - resume_from
