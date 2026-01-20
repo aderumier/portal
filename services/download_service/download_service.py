@@ -3100,6 +3100,31 @@ def get_server_checksum(system, rom_path):
         logger.error(f"Unexpected error requesting checksum from server: {e}", exc_info=True)
         return None
 
+# Global set for tracking cancelled reverse uploads (by download_id)
+_cancelled_reverse_uploads = set()
+import threading as _threading_for_cancel  # Import for lock
+_cancelled_reverse_uploads_lock = _threading_for_cancel.Lock()
+
+class ReverseUploadCancelled(Exception):
+    """Exception raised when reverse upload is cancelled by remote client."""
+    pass
+
+def cancel_reverse_upload(download_id: int):
+    """Mark a reverse upload as cancelled so it will abort."""
+    with _cancelled_reverse_uploads_lock:
+        _cancelled_reverse_uploads.add(download_id)
+        logger.info(f"Marked reverse upload for download_id={download_id} as cancelled")
+
+def is_reverse_upload_cancelled(download_id: int) -> bool:
+    """Check if a reverse upload should be cancelled."""
+    with _cancelled_reverse_uploads_lock:
+        return download_id in _cancelled_reverse_uploads
+
+def clear_reverse_upload_cancelled(download_id: int):
+    """Clear the cancelled flag for a reverse upload."""
+    with _cancelled_reverse_uploads_lock:
+        _cancelled_reverse_uploads.discard(download_id)
+
 def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_path, resume_from=0, expected_size=None, expected_checksum=None, download_id=None, request_id=None, target_token_id=None):
     """Handle reverse P2P upload: push file to another client.
     
@@ -3228,12 +3253,19 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         # requests.put with a generator automatically uses chunked transfer encoding
         def file_chunk_generator():
             """Generator that yields file data in 1MB chunks for streaming upload."""
+            nonlocal error_message
             with open(file_path, 'rb') as f:
                 if resume_from > 0:
                     f.seek(resume_from)
                 
                 remaining = bytes_to_send
                 while remaining > 0:
+                    # Check for cancellation before each chunk
+                    if download_id and is_reverse_upload_cancelled(download_id):
+                        logger.info(f"Reverse P2P upload cancelled by remote client for download_id={download_id}")
+                        clear_reverse_upload_cancelled(download_id)
+                        raise ReverseUploadCancelled(f"Upload cancelled by remote client for download_id={download_id}")
+                    
                     # Read up to 1MB chunk
                     read_size = min(chunk_size_bytes, remaining)
                     chunk = f.read(read_size)
@@ -3256,20 +3288,39 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         
         logger.info(f"Reverse P2P upload: connect_timeout={connect_timeout}s, read_timeout={read_timeout}s (per-chunk), using streaming with 1MB chunks")
         
-        response = requests.put(
-            target_url,
-            data=file_chunk_generator(),
-            headers=headers,
-            timeout=timeout_tuple,
-            stream=True  # Enable streaming mode
-        )
-        response.raise_for_status()
-        
-        # Read response body (if any)
-        response_body = response.content
-        
-        logger.info(f"Reverse P2P upload completed: {system}/{rom_path} -> {target_url} ({bytes_to_send} bytes sent)")
-        success = True
+        try:
+            response = requests.put(
+                target_url,
+                data=file_chunk_generator(),
+                headers=headers,
+                timeout=timeout_tuple,
+                stream=True  # Enable streaming mode
+            )
+            response.raise_for_status()
+            
+            # Read response body (if any)
+            response_body = response.content
+            
+            logger.info(f"Reverse P2P upload completed: {system}/{rom_path} -> {target_url} ({bytes_to_send} bytes sent)")
+            success = True
+        except ReverseUploadCancelled as e:
+            logger.info(f"Reverse P2P upload aborted: {e}")
+            error_message = "Upload cancelled by remote client"
+            success = False
+        except requests.exceptions.ChunkedEncodingError as e:
+            # This can happen when the generator raises an exception
+            if download_id and is_reverse_upload_cancelled(download_id):
+                logger.info(f"Reverse P2P upload cancelled (caught as ChunkedEncodingError) for download_id={download_id}")
+                error_message = "Upload cancelled by remote client"
+                clear_reverse_upload_cancelled(download_id)
+            else:
+                logger.error(f"Reverse P2P upload chunked encoding error: {e}")
+                error_message = f"Upload encoding error: {e}"
+            success = False
+    except ReverseUploadCancelled as e:
+        logger.info(f"Reverse P2P upload aborted (outer): {e}")
+        error_message = "Upload cancelled by remote client"
+        success = False
     finally:
         # Report result to backend for feedback to Client A
         if request_id and target_token_id:
@@ -5166,6 +5217,17 @@ async def websocket_client():
                                             # Mark the request as failed so try_reverse_p2p_download can stop waiting
                                             from p2p_client import mark_reverse_connection_failed
                                             mark_reverse_connection_failed(request_id, error_msg)
+                                    
+                                    elif message_type == "p2p_download_cancelled":
+                                        # Remote client cancelled their download - stop any active upload for this download_id
+                                        cancelled_download_id = data.get("download_id")
+                                        cancel_message = data.get("message", "Download cancelled")
+                                        
+                                        if cancelled_download_id:
+                                            logger.info(f"Received p2p_download_cancelled notification for download_id={cancelled_download_id}: {cancel_message}")
+                                            cancel_reverse_upload(cancelled_download_id)
+                                        else:
+                                            logger.warning(f"Received p2p_download_cancelled but no download_id provided")
                                     
                                     else:
                                         logger.debug(f"Received unknown message type: {message_type}")
