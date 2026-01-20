@@ -3933,7 +3933,8 @@ async def get_p2p_md5(
                 detail="GAMES_PATH not configured"
             )
         
-        file_path = Path(settings.GAMES_PATH) / system / rom_path.lstrip('./')
+        # Use removeprefix instead of lstrip to preserve .zfs prefix for ZFS snapshots
+        file_path = Path(settings.GAMES_PATH) / system / rom_path.removeprefix('./')
         
         # Security check: ensure path is within GAMES_PATH
         try:
