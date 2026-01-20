@@ -2247,57 +2247,78 @@ class DownloadService:
             
             # Sync bytes_transferred from Redis if available (for accurate archive data and P2P statistics)
             # Progress reports update Redis but not the database, so we sync once when archiving
+            # Always attempt to sync from Redis regardless of status - Redis has the most up-to-date data
+            # This is especially important for P2P downloads where progress is tracked in Redis
             bytes_transferred = download.bytes_transferred or 0
-            if download.status == 'downloading':
+            logger.info(f"Archive download {download_id}: status={download.status}, db_bytes_transferred={bytes_transferred}, attempting Redis sync")
+            # Always try to sync from Redis (not just when status is 'downloading')
+            # Redis is removed after archiving, so we must sync here before it's gone
+            try:
+                import asyncio
+                from app.services.redis_downloads import RedisDownloadTracker
                 try:
-                    import asyncio
-                    from app.services.redis_downloads import RedisDownloadTracker
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # If loop is running, we can't use run_until_complete - use run_coroutine_threadsafe
-                            import concurrent.futures
-                            future = asyncio.run_coroutine_threadsafe(
-                                RedisDownloadTracker.get_download_status(download_id),
-                                loop
-                            )
-                            try:
-                                redis_status = future.result(timeout=5.0)
-                                if redis_status:
-                                    redis_bytes = redis_status.get('bytes_transferred', 0)
-                                    if redis_bytes > bytes_transferred:
-                                        # Redis has more recent data, use it
-                                        bytes_transferred = redis_bytes
-                                        # Update database for consistency
-                                        download.bytes_transferred = redis_bytes
-                                        self.db.commit()
-                                        logger.debug(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes")
-                            except concurrent.futures.TimeoutError:
-                                logger.debug(f"Timeout syncing from Redis for archive {download_id}")
-                        else:
-                            redis_status = loop.run_until_complete(RedisDownloadTracker.get_download_status(download_id))
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # If loop is running, we can't use run_until_complete - use run_coroutine_threadsafe
+                        import concurrent.futures
+                        future = asyncio.run_coroutine_threadsafe(
+                            RedisDownloadTracker.get_download_status(download_id),
+                            loop
+                        )
+                        try:
+                            redis_status = future.result(timeout=10.0)
                             if redis_status:
                                 redis_bytes = redis_status.get('bytes_transferred', 0)
+                                logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
                                 if redis_bytes > bytes_transferred:
                                     # Redis has more recent data, use it
                                     bytes_transferred = redis_bytes
                                     # Update database for consistency
                                     download.bytes_transferred = redis_bytes
                                     self.db.commit()
-                                    logger.debug(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes")
-                    except RuntimeError:
-                        # No event loop - create one
-                        redis_status = asyncio.run(RedisDownloadTracker.get_download_status(download_id))
+                                    logger.info(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes (was {download.bytes_transferred - redis_bytes} bytes in DB)")
+                                else:
+                                    logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
+                            else:
+                                logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
+                        except concurrent.futures.TimeoutError:
+                            logger.warning(f"Timeout syncing from Redis for archive {download_id}, using DB value ({bytes_transferred} bytes)")
+                    else:
+                        redis_status = loop.run_until_complete(RedisDownloadTracker.get_download_status(download_id))
                         if redis_status:
                             redis_bytes = redis_status.get('bytes_transferred', 0)
+                            logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
                             if redis_bytes > bytes_transferred:
+                                # Redis has more recent data, use it
                                 bytes_transferred = redis_bytes
+                                # Update database for consistency
                                 download.bytes_transferred = redis_bytes
                                 self.db.commit()
-                                logger.debug(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes")
-                except Exception as e:
-                    logger.debug(f"Could not sync from Redis for archive {download_id}: {e}")
-                    # Continue with database value
+                                logger.info(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes (was {download.bytes_transferred - redis_bytes} bytes in DB)")
+                            else:
+                                logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
+                        else:
+                            logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
+                except RuntimeError:
+                    # No event loop - create one
+                    redis_status = asyncio.run(RedisDownloadTracker.get_download_status(download_id))
+                    if redis_status:
+                        redis_bytes = redis_status.get('bytes_transferred', 0)
+                        logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
+                        if redis_bytes > bytes_transferred:
+                            bytes_transferred = redis_bytes
+                            download.bytes_transferred = redis_bytes
+                            self.db.commit()
+                            logger.info(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes (was {download.bytes_transferred - redis_bytes} bytes in DB)")
+                        else:
+                            logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
+                    else:
+                        logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
+            except Exception as e:
+                logger.warning(f"Could not sync from Redis for archive {download_id}: {e}, using DB value ({bytes_transferred} bytes)")
+                # Continue with database value
+            
+            logger.info(f"Archive download {download_id}: Final bytes_transferred={bytes_transferred} bytes ({bytes_transferred / (1024*1024):.2f} MB)")
             
             # Create archive entry
             archive_entry = DownloadArchive(
@@ -2611,28 +2632,37 @@ class DownloadService:
             catalog_version = download.catalog_version
             
             # Archive the download first (this syncs bytes_transferred from Redis and updates DB)
+            logger.info(f"Complete download {download_id}: p2p_source_token_id={p2p_source_token_id} (type={type(p2p_source_token_id).__name__ if p2p_source_token_id is not None else 'None'})")
             archive_success, downloaded_bytes = self.archive_download(download_id, 'completed')
             if not archive_success:
                 logger.warning(f"Failed to archive download {download_id}, but continuing with completion")
             
             # Calculate downloaded MB (convert bytes to MB: 1 MB = 1024 * 1024 bytes)
             downloaded_mb = downloaded_bytes / (1024 * 1024)
+            logger.info(f"Complete download {download_id}: downloaded_bytes={downloaded_bytes} ({downloaded_mb:.2f} MB)")
             
             # Handle P2P traffic tracking if this was a P2P download
             # Validate p2p_source_token_id is an actual integer token ID (not True/False)
             if p2p_source_token_id is not None and isinstance(p2p_source_token_id, int) and p2p_source_token_id > 0:
+                logger.info(f"Complete download {download_id}: Processing P2P stats - target_token_id={token_id}, source_token_id={p2p_source_token_id}, downloaded_mb={downloaded_mb:.2f}")
                 try:
                     # Update target token (downloading client) - add to p2p_total_download_mb
                     target_token = self.db.query(ApiToken).filter(ApiToken.id == token_id).first()
                     if target_token:
+                        old_value = target_token.p2p_total_download_mb or 0.0
                         target_token.p2p_total_download_mb += downloaded_mb
-                        logger.info(f"Updated target token {token_id} p2p_total_download_mb: {target_token.p2p_total_download_mb:.2f} MB (+{downloaded_mb:.2f} MB)")
+                        self.db.commit()
+                        logger.info(f"Updated target token {token_id} p2p_total_download_mb: {old_value:.2f} -> {target_token.p2p_total_download_mb:.2f} MB (+{downloaded_mb:.2f} MB)")
+                    else:
+                        logger.warning(f"Target token {token_id} not found for P2P download tracking")
                     
                     # Update source token (serving peer) - add to p2p_total_upload_mb
                     source_token = self.db.query(ApiToken).filter(ApiToken.id == p2p_source_token_id).first()
                     if source_token:
+                        old_value = source_token.p2p_total_upload_mb or 0.0
                         source_token.p2p_total_upload_mb += downloaded_mb
-                        logger.info(f"Updated source token {p2p_source_token_id} p2p_total_upload_mb: {source_token.p2p_total_upload_mb:.2f} MB (+{downloaded_mb:.2f} MB)")
+                        self.db.commit()
+                        logger.info(f"Updated source token {p2p_source_token_id} p2p_total_upload_mb: {old_value:.2f} -> {source_token.p2p_total_upload_mb:.2f} MB (+{downloaded_mb:.2f} MB)")
                     else:
                         logger.warning(f"Source token {p2p_source_token_id} not found for P2P upload tracking")
                     
@@ -2644,9 +2674,12 @@ class DownloadService:
                     
                     user = self.db.query(User).filter(User.user_id == user_id).first()
                     if user:
+                        old_download = user.p2p_total_download_mb or 0.0
+                        old_upload = user.p2p_total_upload_mb or 0.0
                         user.p2p_total_download_mb = target_user_download_mb
                         user.p2p_total_upload_mb = target_user_upload_mb
-                        logger.info(f"Updated user {user_id} P2P totals: download={target_user_download_mb:.2f} MB, upload={target_user_upload_mb:.2f} MB")
+                        self.db.commit()
+                        logger.info(f"Updated target user {user_id} P2P totals: download {old_download:.2f} -> {target_user_download_mb:.2f} MB, upload {old_upload:.2f} -> {target_user_upload_mb:.2f} MB")
                     
                     # For source user (serving peer)
                     if source_token:
@@ -2657,9 +2690,12 @@ class DownloadService:
                         
                         source_user = self.db.query(User).filter(User.user_id == source_user_id).first()
                         if source_user:
+                            old_download = source_user.p2p_total_download_mb or 0.0
+                            old_upload = source_user.p2p_total_upload_mb or 0.0
                             source_user.p2p_total_download_mb = source_user_download_mb
                             source_user.p2p_total_upload_mb = source_user_upload_mb
-                            logger.info(f"Updated source user {source_user_id} P2P totals: download={source_user_download_mb:.2f} MB, upload={source_user_upload_mb:.2f} MB")
+                            self.db.commit()
+                            logger.info(f"Updated source user {source_user_id} P2P totals: download {old_download:.2f} -> {source_user_download_mb:.2f} MB, upload {old_upload:.2f} -> {source_user_upload_mb:.2f} MB")
                         else:
                             # Create user record if it doesn't exist
                             source_user = User(
@@ -2674,6 +2710,13 @@ class DownloadService:
                 except Exception as e:
                     logger.error(f"Error tracking P2P traffic: {e}", exc_info=True)
                     # Don't fail the download completion if P2P tracking fails
+            else:
+                if p2p_source_token_id is None:
+                    logger.info(f"Complete download {download_id}: Not a P2P download (p2p_source_token_id is None), skipping P2P stats")
+                elif not isinstance(p2p_source_token_id, int):
+                    logger.warning(f"Complete download {download_id}: Invalid p2p_source_token_id type: {type(p2p_source_token_id).__name__} (value: {p2p_source_token_id}), skipping P2P stats")
+                elif p2p_source_token_id <= 0:
+                    logger.warning(f"Complete download {download_id}: Invalid p2p_source_token_id value: {p2p_source_token_id} (must be > 0), skipping P2P stats")
             
             # Update or create user statistics
             user = self.db.query(User).filter(

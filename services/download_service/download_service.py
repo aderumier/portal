@@ -4295,6 +4295,7 @@ def download_game(download_info):
         # Try P2P download if enabled (before checking file existence for resume)
         p2p_download_success = False
         p2p_peers = download_info.get('p2p_peers', [])
+        logger.info(f"Download {download_id}: P2P check - p2p_enabled={p2p_enabled}, p2p_peers count={len(p2p_peers) if p2p_peers else 0}")
         if p2p_enabled and p2p_peers:
             # Set up pause tracking for P2P download
             paused = [False]
@@ -4337,6 +4338,7 @@ def download_game(download_info):
                     p2p_download_success = bool(p2p_result)
                     # Only track P2P stats if we have an actual token_id (int), not True (file already existed)
                     p2p_source_token_id = p2p_result if isinstance(p2p_result, int) else None
+                    logger.info(f"P2P download result for download_id={download_id}: p2p_result={p2p_result} (type={type(p2p_result).__name__}), p2p_download_success={p2p_download_success}, p2p_source_token_id={p2p_source_token_id}")
                 
                 if p2p_download_success:
                     logger.info(f"P2P download successful for {system}/{clean_original_path}")
@@ -4358,6 +4360,11 @@ def download_game(download_info):
                 # Clean up pause_ref on error
                 if download_id in _active_download_pause_refs:
                     del _active_download_pause_refs[download_id]
+        else:
+            if not p2p_enabled:
+                logger.info(f"Download {download_id}: P2P not attempted - P2P is disabled")
+            elif not p2p_peers:
+                logger.info(f"Download {download_id}: P2P not attempted - No P2P peers available")
         
         # If P2P download succeeded, skip server download and proceed with media/gamelist
         if p2p_download_success:
@@ -4404,6 +4411,9 @@ def download_game(download_info):
                     # Store p2p_source_token_id in download_info for mark_completed
                     if p2p_source_token_id is not None:
                         download_info['p2p_source_token_id'] = p2p_source_token_id
+                        logger.info(f"P2P download successful: Stored p2p_source_token_id={p2p_source_token_id} in download_info for download_id={download_id}")
+                    else:
+                        logger.warning(f"P2P download successful but p2p_source_token_id is None for download_id={download_id} (p2p_result was {p2p_result})")
                     return True
             else:
                 logger.error(f"P2P downloaded file not found: {dest_path}")
@@ -4751,7 +4761,16 @@ def mark_completed(download_id, download_info=None):
             p2p_source_token_id = download_info.get('p2p_source_token_id')
             if p2p_source_token_id is not None:
                 data['p2p_source_token_id'] = p2p_source_token_id
+                logger.info(f"mark_completed: Including p2p_source_token_id={p2p_source_token_id} for download_id={download_id}")
+            else:
+                logger.info(f"mark_completed: p2p_source_token_id in download_info but is None for download_id={download_id}")
+        else:
+            if download_info:
+                logger.info(f"mark_completed: download_info provided but no 'p2p_source_token_id' key for download_id={download_id}, keys={list(download_info.keys())}")
+            else:
+                logger.info(f"mark_completed: No download_info provided for download_id={download_id}")
         
+        logger.info(f"mark_completed: Sending completion request for download_id={download_id} with data keys: {list(data.keys())}")
         response = http_session.post(
             f"{API_URL}/api/download/complete",
             json=data,
