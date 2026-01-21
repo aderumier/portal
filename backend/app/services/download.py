@@ -1021,6 +1021,10 @@ class DownloadService:
                     bandwidth_used = item.bandwidth_used
                     status = item.status
                     
+                    # Get p2p_remote_token_id from Redis (for P2P transfers)
+                    p2p_remote_token_id = None
+                    p2p_remote_token_name = None
+                    
                     if item.status == 'downloading':
                         # Active downloads MUST be in Redis - get latest data from Redis
                         redis_status = await RedisDownloadTracker.get_download_status(item.id)
@@ -1028,12 +1032,25 @@ class DownloadService:
                             bytes_transferred = redis_status.get('bytes_transferred', 0)
                             bandwidth_used = redis_status.get('bytes_per_second', 0)
                             status = redis_status.get('status', status)
+                            p2p_remote_token_id = redis_status.get('p2p_remote_token_id')
                         else:
                             # Download marked as 'downloading' but not in Redis - log warning
                             logger.warning(f"Download {item.id} has status 'downloading' but not found in Redis")
                             # Use defaults (0) for active downloads not in Redis
                             bytes_transferred = 0
                             bandwidth_used = 0
+                        
+                        # If not in redis_status, try dedicated p2p_remote_token_id field
+                        if not p2p_remote_token_id:
+                            p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(item.id)
+                        
+                        # Get token name for p2p_remote_token_id if available
+                        if p2p_remote_token_id:
+                            remote_token = self.db.query(ApiToken).filter(
+                                ApiToken.id == p2p_remote_token_id
+                            ).first()
+                            if remote_token:
+                                p2p_remote_token_name = remote_token.name
                     
                     # Calculate progress for active downloads
                     progress_percent = 0
@@ -1068,7 +1085,9 @@ class DownloadService:
                         'token_name': token_name,
                         'download_id': item.id,  # Include download_id for pause/resume actions
                         'catalog_version': catalog_version,  # Include catalog version (e.g., "v2-RGS_bbc")
-                        'client_version': item.client_version  # Include client version (e.g., "0.1")
+                        'client_version': item.client_version,  # Include client version (e.g., "0.1")
+                        'p2p_remote_token_id': p2p_remote_token_id,  # Token ID of P2P source peer (if P2P transfer)
+                        'p2p_remote_token_name': p2p_remote_token_name  # Token name of P2P source peer
                     }
                     enriched_items.append(enriched_item)
             

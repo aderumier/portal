@@ -280,6 +280,11 @@ const Downloads = () => {
                           {item.bandwidth_used > 0 && (
                             <span className="progress-bandwidth">{formatBytesPerSecond(item.bandwidth_used)}</span>
                           )}
+                          {item.p2p_remote_token_name && (
+                            <span className="progress-p2p-source" title={`P2P source: ${item.p2p_remote_token_name}`}>
+                              P2P: {item.p2p_remote_token_name}
+                            </span>
+                          )}
                         </div>
                       </div>
                     ) : (
