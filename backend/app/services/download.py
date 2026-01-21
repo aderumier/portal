@@ -2322,7 +2322,7 @@ class DownloadService:
             self.db.rollback()
             return False
     
-    def archive_download(self, download_id: int, status: str) -> Tuple[bool, int]:
+    def archive_download(self, download_id: int, status: str, skip_redis_sync: bool = False) -> Tuple[bool, int]:
         """Archive a download before deletion.
         
         This function also syncs bytes_transferred from Redis if available,
@@ -2332,6 +2332,7 @@ class DownloadService:
         Args:
             download_id: Download ID to archive
             status: Download status ('completed', 'error', 'cancelled', 'stuck', etc.)
+            skip_redis_sync: If True, skip Redis sync (caller already synced in async context)
         
         Returns:
             Tuple[bool, int]: (success, bytes_transferred) - True if archived successfully, 
@@ -2479,23 +2480,46 @@ class DownloadService:
             # Always attempt to sync from Redis regardless of status - Redis has the most up-to-date data
             # This is especially important for P2P downloads where progress is tracked in Redis
             bytes_transferred = download.bytes_transferred or 0
-            logger.info(f"Archive download {download_id}: status={download.status}, db_bytes_transferred={bytes_transferred}, attempting Redis sync")
-            # Always try to sync from Redis (not just when status is 'downloading')
-            # Redis is removed after archiving, so we must sync here before it's gone
-            try:
-                import asyncio
-                from app.services.redis_downloads import RedisDownloadTracker
+            
+            if skip_redis_sync:
+                logger.info(f"Archive download {download_id}: status={download.status}, db_bytes_transferred={bytes_transferred}, skipping Redis sync (already done by caller)")
+            else:
+                logger.info(f"Archive download {download_id}: status={download.status}, db_bytes_transferred={bytes_transferred}, attempting Redis sync")
+                # Try to sync from Redis (unless caller already synced)
+                # Note: When called from async context, this can deadlock if using run_coroutine_threadsafe
+                # So callers in async context should pre-sync and pass skip_redis_sync=True
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # If loop is running, we can't use run_until_complete - use run_coroutine_threadsafe
-                        import concurrent.futures
-                        future = asyncio.run_coroutine_threadsafe(
-                            RedisDownloadTracker.get_download_status(download_id),
-                            loop
-                        )
-                        try:
-                            redis_status = future.result(timeout=10.0)
+                    import asyncio
+                    from app.services.redis_downloads import RedisDownloadTracker
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If loop is running, we can't use run_until_complete - use run_coroutine_threadsafe
+                            import concurrent.futures
+                            future = asyncio.run_coroutine_threadsafe(
+                                RedisDownloadTracker.get_download_status(download_id),
+                                loop
+                            )
+                            try:
+                                redis_status = future.result(timeout=10.0)
+                                if redis_status:
+                                    redis_bytes = redis_status.get('bytes_transferred', 0)
+                                    logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
+                                    if redis_bytes > bytes_transferred:
+                                        # Redis has more recent data, use it
+                                        bytes_transferred = redis_bytes
+                                        # Update database for consistency
+                                        download.bytes_transferred = redis_bytes
+                                        self.db.commit()
+                                        logger.info(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes (was {download.bytes_transferred - redis_bytes} bytes in DB)")
+                                    else:
+                                        logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
+                                else:
+                                    logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
+                            except concurrent.futures.TimeoutError:
+                                logger.warning(f"Timeout syncing from Redis for archive {download_id}, using DB value ({bytes_transferred} bytes)")
+                        else:
+                            redis_status = loop.run_until_complete(RedisDownloadTracker.get_download_status(download_id))
                             if redis_status:
                                 redis_bytes = redis_status.get('bytes_transferred', 0)
                                 logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
@@ -2510,17 +2534,14 @@ class DownloadService:
                                     logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
                             else:
                                 logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
-                        except concurrent.futures.TimeoutError:
-                            logger.warning(f"Timeout syncing from Redis for archive {download_id}, using DB value ({bytes_transferred} bytes)")
-                    else:
-                        redis_status = loop.run_until_complete(RedisDownloadTracker.get_download_status(download_id))
+                    except RuntimeError:
+                        # No event loop - create one
+                        redis_status = asyncio.run(RedisDownloadTracker.get_download_status(download_id))
                         if redis_status:
                             redis_bytes = redis_status.get('bytes_transferred', 0)
                             logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
                             if redis_bytes > bytes_transferred:
-                                # Redis has more recent data, use it
                                 bytes_transferred = redis_bytes
-                                # Update database for consistency
                                 download.bytes_transferred = redis_bytes
                                 self.db.commit()
                                 logger.info(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes (was {download.bytes_transferred - redis_bytes} bytes in DB)")
@@ -2528,24 +2549,9 @@ class DownloadService:
                                 logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
                         else:
                             logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
-                except RuntimeError:
-                    # No event loop - create one
-                    redis_status = asyncio.run(RedisDownloadTracker.get_download_status(download_id))
-                    if redis_status:
-                        redis_bytes = redis_status.get('bytes_transferred', 0)
-                        logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
-                        if redis_bytes > bytes_transferred:
-                            bytes_transferred = redis_bytes
-                            download.bytes_transferred = redis_bytes
-                            self.db.commit()
-                            logger.info(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes (was {download.bytes_transferred - redis_bytes} bytes in DB)")
-                        else:
-                            logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
-                    else:
-                        logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
-            except Exception as e:
-                logger.warning(f"Could not sync from Redis for archive {download_id}: {e}, using DB value ({bytes_transferred} bytes)")
-                # Continue with database value
+                except Exception as e:
+                    logger.warning(f"Could not sync from Redis for archive {download_id}: {e}, using DB value ({bytes_transferred} bytes)")
+                    # Continue with database value
             
             logger.info(f"Archive download {download_id}: Final bytes_transferred={bytes_transferred} bytes ({bytes_transferred / (1024*1024):.2f} MB)")
             
@@ -2899,9 +2905,28 @@ class DownloadService:
             token_id = download.token_id
             catalog_version = download.catalog_version
             
-            # Archive the download first (this syncs bytes_transferred from Redis and updates DB)
             logger.info(f"Complete download {download_id}: p2p_remote_token_id={p2p_remote_token_id} (type={type(p2p_remote_token_id).__name__ if p2p_remote_token_id is not None else 'None'})")
-            archive_success, downloaded_bytes = self.archive_download(download_id, 'completed')
+            
+            # Sync bytes_transferred from Redis BEFORE archiving (we're in async context, so await works)
+            # This avoids the async deadlock in archive_download when called from sync context
+            try:
+                from app.services.redis_downloads import RedisDownloadTracker
+                redis_status = await RedisDownloadTracker.get_download_status(download_id)
+                if redis_status:
+                    redis_bytes = redis_status.get('bytes_transferred', 0)
+                    db_bytes = download.bytes_transferred or 0
+                    logger.info(f"Complete download {download_id}: Redis bytes_transferred={redis_bytes}, DB had={db_bytes}")
+                    if redis_bytes > db_bytes:
+                        download.bytes_transferred = redis_bytes
+                        self.db.commit()
+                        logger.info(f"Synced bytes_transferred from Redis for download {download_id}: {redis_bytes} bytes")
+                else:
+                    logger.info(f"Complete download {download_id}: No Redis status found, using DB value ({download.bytes_transferred or 0} bytes)")
+            except Exception as e:
+                logger.warning(f"Complete download {download_id}: Failed to sync from Redis: {e}")
+            
+            # Archive the download (Redis sync already done above, skip it in archive_download to avoid deadlock)
+            archive_success, downloaded_bytes = self.archive_download(download_id, 'completed', skip_redis_sync=True)
             if not archive_success:
                 logger.warning(f"Failed to archive download {download_id}, but continuing with completion")
             
