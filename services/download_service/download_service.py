@@ -25,7 +25,7 @@ import random
 import struct
 
 # Client version
-CLIENT_VERSION = "0.7"
+CLIENT_VERSION = "0.8"
 
 # Configure stdout/stderr for Windows to handle non-ASCII characters gracefully
 # This prevents encoding errors when third-party libraries (like internetspeedtest) print emojis
