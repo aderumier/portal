@@ -3317,6 +3317,26 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
                 logger.error(f"Reverse P2P upload chunked encoding error: {e}")
                 error_message = f"Upload encoding error: {e}"
             success = False
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Reverse P2P upload connection error to {target_url}: {e}")
+            error_message = f"Connection error: {e}"
+            success = False
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Reverse P2P upload timeout to {target_url}: {e}")
+            error_message = f"Upload timeout: {e}"
+            success = False
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"Reverse P2P upload HTTP error to {target_url}: {e}")
+            error_message = f"HTTP error: {e}"
+            success = False
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Reverse P2P upload request error to {target_url}: {e}")
+            error_message = f"Request error: {e}"
+            success = False
+        except Exception as e:
+            logger.error(f"Reverse P2P upload unexpected error to {target_url}: {e}", exc_info=True)
+            error_message = f"Unexpected error: {e}"
+            success = False
     except ReverseUploadCancelled as e:
         logger.info(f"Reverse P2P upload aborted (outer): {e}")
         error_message = "Upload cancelled by remote client"
