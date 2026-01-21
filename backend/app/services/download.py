@@ -2804,6 +2804,18 @@ class DownloadService:
             
             logger.info(f"Complete download {download_id}: p2p_remote_token_id={p2p_remote_token_id} (type={type(p2p_remote_token_id).__name__ if p2p_remote_token_id is not None else 'None'})")
             
+            # If p2p_remote_token_id not passed by client, try to get it from Redis
+            # (client stores it at the start of P2P download)
+            if p2p_remote_token_id is None:
+                try:
+                    from app.services.redis_downloads import RedisDownloadTracker
+                    redis_p2p_token = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
+                    if redis_p2p_token:
+                        p2p_remote_token_id = redis_p2p_token
+                        logger.info(f"Complete download {download_id}: Retrieved p2p_remote_token_id={p2p_remote_token_id} from Redis")
+                except Exception as e:
+                    logger.warning(f"Complete download {download_id}: Failed to get p2p_remote_token_id from Redis: {e}")
+            
             # Archive the download (will sync bytes_transferred from Redis)
             archive_success, downloaded_bytes = await self.archive_download(download_id, 'completed')
             if not archive_success:
