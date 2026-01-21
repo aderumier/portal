@@ -1323,7 +1323,7 @@ class DownloadService:
                 'total_user_queue': 0
             }
     
-    def remove_from_queue(self, user_id: str, game_id: str) -> bool:
+    async def remove_from_queue(self, user_id: str, game_id: str) -> bool:
         """Remove a game from the download queue."""
         try:
             logger.info(f"Removing from queue - Game ID: {game_id}, User ID: {user_id}")
@@ -1348,54 +1348,40 @@ class DownloadService:
             
             # Check if this is a P2P download and notify remote peer before archiving
             try:
-                import asyncio
                 from app.services.redis_downloads import RedisDownloadTracker
                 from app.services.websocket_manager import get_websocket_manager
                 
-                async def notify_and_cleanup():
-                    try:
-                        logger.info(f"Checking for P2P remote token for download_id={download_id} before cancellation")
-                        # Get p2p_remote_token_id from Redis before removing
-                        p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
-                        logger.info(f"Retrieved p2p_remote_token_id={p2p_remote_token_id} from Redis for download_id={download_id}")
-                        
-                        if p2p_remote_token_id:
-                            logger.info(f"Download {download_id} cancelled: Notifying remote peer token_id={p2p_remote_token_id} (will use Redis pub/sub if on different worker)")
-                            ws_manager = get_websocket_manager()
-                            notification_sent = await ws_manager.send_notification(
-                                p2p_remote_token_id,
-                                {
-                                    "type": "p2p_download_cancelled",
-                                    "download_id": download_id,
-                                    "message": "Download was cancelled by the downloading client"
-                                }
-                            )
-                            if notification_sent:
-                                logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id} (via local WebSocket or Redis pub/sub)")
-                            else:
-                                logger.warning(f"Failed to send cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id} (not connected or pub/sub failed)")
-                        else:
-                            logger.info(f"No p2p_remote_token_id found in Redis for download_id={download_id} - not a P2P download or token not stored")
-                        
-                        # Remove from Redis
-                        await RedisDownloadTracker.remove_download(download_id)
-                        logger.info(f"Removed download_id={download_id} from Redis")
-                    except Exception as e:
-                        logger.error(f"Error in notify_and_cleanup for download_id={download_id}: {e}", exc_info=True)
+                logger.info(f"Checking for P2P remote token for download_id={download_id} before cancellation")
+                # Get p2p_remote_token_id from Redis before removing
+                p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
+                logger.info(f"Retrieved p2p_remote_token_id={p2p_remote_token_id} from Redis for download_id={download_id}")
                 
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(notify_and_cleanup())
+                if p2p_remote_token_id:
+                    logger.info(f"Download {download_id} cancelled: Notifying remote peer token_id={p2p_remote_token_id}")
+                    ws_manager = get_websocket_manager()
+                    notification_sent = await ws_manager.send_notification(
+                        p2p_remote_token_id,
+                        {
+                            "type": "p2p_download_cancelled",
+                            "download_id": download_id,
+                            "message": "Download was cancelled by the downloading client"
+                        }
+                    )
+                    if notification_sent:
+                        logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
                     else:
-                        loop.run_until_complete(notify_and_cleanup())
-                except RuntimeError:
-                    asyncio.run(notify_and_cleanup())
+                        logger.warning(f"Failed to send cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
+                else:
+                    logger.info(f"No p2p_remote_token_id found in Redis for download_id={download_id} - not a P2P download or token not stored")
+                
+                # Remove from Redis
+                await RedisDownloadTracker.remove_download(download_id)
+                logger.info(f"Removed download_id={download_id} from Redis")
             except Exception as e:
                 logger.error(f"Error notifying remote peer or removing from Redis for download_id={download_id}: {e}", exc_info=True)
             
             # Archive the download before deletion (user cancelled)
-            self.archive_download(download_id, 'cancelled')
+            await self.archive_download(download_id, 'cancelled')
             
             self.db.delete(queue_item)
             self.db.commit()
@@ -1407,7 +1393,7 @@ class DownloadService:
             self.db.rollback()
             return False
     
-    def clear_queue(self, user_id: str) -> bool:
+    async def clear_queue(self, user_id: str) -> bool:
         """Clear all games from the download queue for a user."""
         try:
             # Get all downloads before deleting to notify remote peers
@@ -1420,46 +1406,35 @@ class DownloadService:
             # Notify remote peers for P2P downloads before clearing
             if download_ids:
                 try:
-                    import asyncio
                     from app.services.redis_downloads import RedisDownloadTracker
                     from app.services.websocket_manager import get_websocket_manager
                     
-                    async def notify_all_and_cleanup():
-                        ws_manager = get_websocket_manager()
-                        for download_id in download_ids:
-                            # Get p2p_remote_token_id from Redis before removing
-                            p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
-                            
-                            if p2p_remote_token_id:
-                                logger.info(f"Download {download_id} cancelled (queue cleared): Notifying remote peer token_id={p2p_remote_token_id}")
-                                notification_sent = await ws_manager.send_notification(
-                                    p2p_remote_token_id,
-                                    {
-                                        "type": "p2p_download_cancelled",
-                                        "download_id": download_id,
-                                        "message": "Download was cancelled (queue cleared)"
-                                    }
-                                )
-                                if notification_sent:
-                                    logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
-                            
-                            # Remove from Redis
-                            await RedisDownloadTracker.remove_download(download_id)
-                    
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            asyncio.create_task(notify_all_and_cleanup())
-                        else:
-                            loop.run_until_complete(notify_all_and_cleanup())
-                    except RuntimeError:
-                        asyncio.run(notify_all_and_cleanup())
+                    ws_manager = get_websocket_manager()
+                    for download_id in download_ids:
+                        # Get p2p_remote_token_id from Redis before removing
+                        p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
+                        
+                        if p2p_remote_token_id:
+                            logger.info(f"Download {download_id} cancelled (queue cleared): Notifying remote peer token_id={p2p_remote_token_id}")
+                            notification_sent = await ws_manager.send_notification(
+                                p2p_remote_token_id,
+                                {
+                                    "type": "p2p_download_cancelled",
+                                    "download_id": download_id,
+                                    "message": "Download was cancelled (queue cleared)"
+                                }
+                            )
+                            if notification_sent:
+                                logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
+                        
+                        # Remove from Redis
+                        await RedisDownloadTracker.remove_download(download_id)
                 except Exception as e:
                     logger.warning(f"Error notifying remote peers or removing from Redis: {e}")
             
             # Archive all downloads before deletion
             for download in downloads:
-                self.archive_download(download.id, 'cancelled')
+                await self.archive_download(download.id, 'cancelled')
             
             # Delete all downloads
             self.db.query(DownloadQueue).filter(
@@ -1673,7 +1648,7 @@ class DownloadService:
             logger.error(f"Error checking available downloads: {e}")
             return {'has_user_queue': False, 'has_resumable': False, 'has_any': False}
     
-    def get_next_download(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None, platform: Optional[str] = None, client_version: Optional[str] = None) -> Optional[Dict]:
+    async def get_next_download(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None, platform: Optional[str] = None, client_version: Optional[str] = None) -> Optional[Dict]:
         """Get next available download from queue, including resumable interrupted downloads.
         
         Only returns downloads associated with the specified token_id.
@@ -1757,7 +1732,7 @@ class DownloadService:
                 if not game:
                     logger.warning(f"Game not found: {lookup_game_id} (catalog_type: {catalog_type}, version: {catalog_version})")
                     # Archive and remove from queue since game doesn't exist
-                    self.archive_download(resumable_download.id, 'error')
+                    await self.archive_download(resumable_download.id, 'error')
                     self.db.delete(resumable_download)
                     self.db.commit()
                     return None
@@ -1768,7 +1743,7 @@ class DownloadService:
                 db_system = self.db.query(System).filter(System.id == system).first()
                 if not db_system:
                     logger.error(f"System not found in database: {system}")
-                    self.archive_download(resumable_download.id, 'error')
+                    await self.archive_download(resumable_download.id, 'error')
                     self.db.delete(resumable_download)
                     self.db.commit()
                     return None
@@ -1784,7 +1759,7 @@ class DownloadService:
                 
                 if not target_system:
                     logger.error(f"{system_type} not set for system: {system}")
-                    self.archive_download(resumable_download.id, 'error')
+                    await self.archive_download(resumable_download.id, 'error')
                     self.db.delete(resumable_download)
                     self.db.commit()
                     return None
@@ -1801,7 +1776,7 @@ class DownloadService:
                 if is_unified_key and not platform:
                     logger.error(f"Cannot resolve unified key '{original_game_id}' - platform not provided. Platform is required for unified keys.")
                     # Archive and remove from queue - cannot proceed without platform info
-                    self.archive_download(resumable_download.id, 'error')
+                    await self.archive_download(resumable_download.id, 'error')
                     self.db.delete(resumable_download)
                     self.db.commit()
                     logger.info(f"Removed download {resumable_download.id} from queue - platform required for unified key")
@@ -1818,7 +1793,7 @@ class DownloadService:
                     # Resolution failed - log detailed error
                     logger.error(f"Failed to resolve unified key '{original_game_id}' - still unified after resolution. Platform: {platform}, System: {system}")
                     # Archive and remove from queue - resolution failed
-                    self.archive_download(resumable_download.id, 'error')
+                    await self.archive_download(resumable_download.id, 'error')
                     self.db.delete(resumable_download)
                     self.db.commit()
                     logger.info(f"Removed download {resumable_download.id} from queue - unified key resolution failed")
@@ -1834,7 +1809,7 @@ class DownloadService:
                     else:
                         logger.error(f"System is empty for game_id={resolved_game_id}, cannot build file path")
                         # Archive and remove from queue since system is missing
-                        self.archive_download(resumable_download.id, 'error')
+                        await self.archive_download(resumable_download.id, 'error')
                         self.db.delete(resumable_download)
                         self.db.commit()
                         return None
@@ -1844,7 +1819,7 @@ class DownloadService:
                 if not os.path.exists(file_path):
                     logger.error(f"File or directory does not exist: {file_path} for game_id={resolved_game_id}")
                     # Archive and remove from queue since file doesn't exist
-                    self.archive_download(resumable_download.id, 'error')
+                    await self.archive_download(resumable_download.id, 'error')
                     self.db.delete(resumable_download)
                     self.db.commit()
                     logger.info(f"Removed download {resumable_download.id} from queue - file not found")
@@ -2023,7 +1998,7 @@ class DownloadService:
             if not game:
                 logger.warning(f"Game not found: {lookup_game_id} (catalog_type: {catalog_type}, version: {catalog_version})")
                 # Archive and remove from queue since game doesn't exist
-                self.archive_download(pending_download.id, 'error')
+                await self.archive_download(pending_download.id, 'error')
                 self.db.delete(pending_download)
                 self.db.commit()
                 return None
@@ -2034,7 +2009,7 @@ class DownloadService:
             db_system = self.db.query(System).filter(System.id == system).first()
             if not db_system:
                 logger.error(f"System not found in database: {system}")
-                self.archive_download(pending_download.id, 'error')
+                await self.archive_download(pending_download.id, 'error')
                 self.db.delete(pending_download)
                 self.db.commit()
                 return None
@@ -2050,7 +2025,7 @@ class DownloadService:
             
             if not target_system:
                 logger.error(f"{system_type} not set for system: {system}")
-                self.archive_download(pending_download.id, 'error')
+                await self.archive_download(pending_download.id, 'error')
                 self.db.delete(pending_download)
                 self.db.commit()
                 return None
@@ -2067,7 +2042,7 @@ class DownloadService:
             if is_unified_key and not platform:
                 logger.error(f"Cannot resolve unified key '{original_game_id}' - platform not provided. Platform is required for unified keys.")
                 # Archive and remove from queue - cannot proceed without platform info
-                self.archive_download(pending_download.id, 'error')
+                await self.archive_download(pending_download.id, 'error')
                 self.db.delete(pending_download)
                 self.db.commit()
                 logger.info(f"Removed download {pending_download.id} from queue - platform required for unified key")
@@ -2084,7 +2059,7 @@ class DownloadService:
                 # Resolution failed - log detailed error
                 logger.error(f"Failed to resolve unified key '{original_game_id}' - still unified after resolution. Platform: {platform}, System: {system}")
                 # Archive and remove from queue - resolution failed
-                self.archive_download(pending_download.id, 'error')
+                await self.archive_download(pending_download.id, 'error')
                 self.db.delete(pending_download)
                 self.db.commit()
                 logger.info(f"Removed download {pending_download.id} from queue - unified key resolution failed")
@@ -2100,7 +2075,7 @@ class DownloadService:
                 else:
                     logger.error(f"System is empty for game_id={resolved_game_id}, cannot build file path")
                     # Archive and remove from queue since system is missing
-                    self.archive_download(pending_download.id, 'error')
+                    await self.archive_download(pending_download.id, 'error')
                     self.db.delete(pending_download)
                     self.db.commit()
                     return None
@@ -2110,7 +2085,7 @@ class DownloadService:
             if not os.path.exists(file_path):
                 logger.error(f"File or directory does not exist: {file_path} for game_id={resolved_game_id}")
                 # Archive and remove from queue since file doesn't exist
-                self.archive_download(pending_download.id, 'error')
+                await self.archive_download(pending_download.id, 'error')
                 self.db.delete(pending_download)
                 self.db.commit()
                 logger.info(f"Removed download {pending_download.id} from queue - file not found")
@@ -2322,7 +2297,7 @@ class DownloadService:
             self.db.rollback()
             return False
     
-    def archive_download(self, download_id: int, status: str, skip_redis_sync: bool = False) -> Tuple[bool, int]:
+    async def archive_download(self, download_id: int, status: str) -> Tuple[bool, int]:
         """Archive a download before deletion.
         
         This function also syncs bytes_transferred from Redis if available,
@@ -2332,7 +2307,6 @@ class DownloadService:
         Args:
             download_id: Download ID to archive
             status: Download status ('completed', 'error', 'cancelled', 'stuck', etc.)
-            skip_redis_sync: If True, skip Redis sync (caller already synced in async context)
         
         Returns:
             Tuple[bool, int]: (success, bytes_transferred) - True if archived successfully, 
@@ -2477,81 +2451,29 @@ class DownloadService:
             
             # Sync bytes_transferred from Redis if available (for accurate archive data and P2P statistics)
             # Progress reports update Redis but not the database, so we sync once when archiving
-            # Always attempt to sync from Redis regardless of status - Redis has the most up-to-date data
             # This is especially important for P2P downloads where progress is tracked in Redis
             bytes_transferred = download.bytes_transferred or 0
+            logger.info(f"Archive download {download_id}: status={download.status}, db_bytes_transferred={bytes_transferred}, syncing from Redis")
             
-            if skip_redis_sync:
-                logger.info(f"Archive download {download_id}: status={download.status}, db_bytes_transferred={bytes_transferred}, skipping Redis sync (already done by caller)")
-            else:
-                logger.info(f"Archive download {download_id}: status={download.status}, db_bytes_transferred={bytes_transferred}, attempting Redis sync")
-                # Try to sync from Redis (unless caller already synced)
-                # Note: When called from async context, this can deadlock if using run_coroutine_threadsafe
-                # So callers in async context should pre-sync and pass skip_redis_sync=True
-                try:
-                    import asyncio
-                    from app.services.redis_downloads import RedisDownloadTracker
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # If loop is running, we can't use run_until_complete - use run_coroutine_threadsafe
-                            import concurrent.futures
-                            future = asyncio.run_coroutine_threadsafe(
-                                RedisDownloadTracker.get_download_status(download_id),
-                                loop
-                            )
-                            try:
-                                redis_status = future.result(timeout=10.0)
-                                if redis_status:
-                                    redis_bytes = redis_status.get('bytes_transferred', 0)
-                                    logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
-                                    if redis_bytes > bytes_transferred:
-                                        # Redis has more recent data, use it
-                                        bytes_transferred = redis_bytes
-                                        # Update database for consistency
-                                        download.bytes_transferred = redis_bytes
-                                        self.db.commit()
-                                        logger.info(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes (was {download.bytes_transferred - redis_bytes} bytes in DB)")
-                                    else:
-                                        logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
-                                else:
-                                    logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
-                            except concurrent.futures.TimeoutError:
-                                logger.warning(f"Timeout syncing from Redis for archive {download_id}, using DB value ({bytes_transferred} bytes)")
-                        else:
-                            redis_status = loop.run_until_complete(RedisDownloadTracker.get_download_status(download_id))
-                            if redis_status:
-                                redis_bytes = redis_status.get('bytes_transferred', 0)
-                                logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
-                                if redis_bytes > bytes_transferred:
-                                    # Redis has more recent data, use it
-                                    bytes_transferred = redis_bytes
-                                    # Update database for consistency
-                                    download.bytes_transferred = redis_bytes
-                                    self.db.commit()
-                                    logger.info(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes (was {download.bytes_transferred - redis_bytes} bytes in DB)")
-                                else:
-                                    logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
-                            else:
-                                logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
-                    except RuntimeError:
-                        # No event loop - create one
-                        redis_status = asyncio.run(RedisDownloadTracker.get_download_status(download_id))
-                        if redis_status:
-                            redis_bytes = redis_status.get('bytes_transferred', 0)
-                            logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
-                            if redis_bytes > bytes_transferred:
-                                bytes_transferred = redis_bytes
-                                download.bytes_transferred = redis_bytes
-                                self.db.commit()
-                                logger.info(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes (was {download.bytes_transferred - redis_bytes} bytes in DB)")
-                            else:
-                                logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
-                        else:
-                            logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
-                except Exception as e:
-                    logger.warning(f"Could not sync from Redis for archive {download_id}: {e}, using DB value ({bytes_transferred} bytes)")
-                    # Continue with database value
+            try:
+                from app.services.redis_downloads import RedisDownloadTracker
+                redis_status = await RedisDownloadTracker.get_download_status(download_id)
+                if redis_status:
+                    redis_bytes = redis_status.get('bytes_transferred', 0)
+                    logger.info(f"Archive download {download_id}: Redis returned bytes_transferred={redis_bytes}, db had={bytes_transferred}")
+                    if redis_bytes > bytes_transferred:
+                        # Redis has more recent data, use it
+                        bytes_transferred = redis_bytes
+                        # Update database for consistency
+                        download.bytes_transferred = redis_bytes
+                        self.db.commit()
+                        logger.info(f"Synced bytes_transferred from Redis for archive {download_id}: {redis_bytes} bytes")
+                    else:
+                        logger.info(f"Archive download {download_id}: Using DB value ({bytes_transferred} bytes), Redis had {redis_bytes} bytes")
+                else:
+                    logger.info(f"Archive download {download_id}: Redis returned no status, using DB value ({bytes_transferred} bytes)")
+            except Exception as e:
+                logger.warning(f"Could not sync from Redis for archive {download_id}: {e}, using DB value ({bytes_transferred} bytes)")
             
             logger.info(f"Archive download {download_id}: Final bytes_transferred={bytes_transferred} bytes ({bytes_transferred / (1024*1024):.2f} MB)")
             
@@ -2707,7 +2629,7 @@ class DownloadService:
             logger.error(traceback.format_exc())
             return []
     
-    def remove_download(self, download_id: int) -> bool:
+    async def remove_download(self, download_id: int) -> bool:
         """Remove download from queue without updating statistics (e.g., when file doesn't exist)."""
         try:
             download = self.db.query(DownloadQueue).filter(
@@ -2720,60 +2642,35 @@ class DownloadService:
             
             # Check if this is a P2P download and notify remote peer
             try:
-                import asyncio
                 from app.services.redis_downloads import RedisDownloadTracker
                 from app.services.websocket_manager import get_websocket_manager
                 
-                async def notify_and_cleanup():
-                    # Get p2p_remote_token_id from Redis before removing
-                    p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
-                    
-                    if p2p_remote_token_id:
-                        logger.info(f"Download {download_id} cancelled: Notifying remote peer token_id={p2p_remote_token_id}")
-                        ws_manager = get_websocket_manager()
-                        notification_sent = await ws_manager.send_notification(
-                            p2p_remote_token_id,
-                            {
-                                "type": "p2p_download_cancelled",
-                                "download_id": download_id,
-                                "message": "Download was cancelled by the downloading client"
-                            }
-                        )
-                        if notification_sent:
-                            logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
-                        else:
-                            logger.warning(f"Failed to send cancellation notification to remote peer token_id={p2p_remote_token_id} (not connected)")
-                    
-                    # Remove from Redis
-                    await RedisDownloadTracker.remove_download(download_id)
+                # Get p2p_remote_token_id from Redis before removing
+                p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
                 
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(notify_and_cleanup())
+                if p2p_remote_token_id:
+                    logger.info(f"Download {download_id} cancelled: Notifying remote peer token_id={p2p_remote_token_id}")
+                    ws_manager = get_websocket_manager()
+                    notification_sent = await ws_manager.send_notification(
+                        p2p_remote_token_id,
+                        {
+                            "type": "p2p_download_cancelled",
+                            "download_id": download_id,
+                            "message": "Download was cancelled by the downloading client"
+                        }
+                    )
+                    if notification_sent:
+                        logger.info(f"Sent cancellation notification to remote peer token_id={p2p_remote_token_id} for download_id={download_id}")
                     else:
-                        loop.run_until_complete(notify_and_cleanup())
-                except RuntimeError:
-                    asyncio.run(notify_and_cleanup())
+                        logger.warning(f"Failed to send cancellation notification to remote peer token_id={p2p_remote_token_id} (not connected)")
+                
+                # Remove from Redis
+                await RedisDownloadTracker.remove_download(download_id)
             except Exception as e:
                 logger.warning(f"Error notifying remote peer or removing from Redis: {e}")
-                # Try to remove from Redis anyway
-                try:
-                    import asyncio
-                    from app.services.redis_downloads import RedisDownloadTracker
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            asyncio.create_task(RedisDownloadTracker.remove_download(download_id))
-                        else:
-                            loop.run_until_complete(RedisDownloadTracker.remove_download(download_id))
-                    except RuntimeError:
-                        asyncio.run(RedisDownloadTracker.remove_download(download_id))
-                except Exception as e2:
-                    logger.debug(f"Failed to remove download from Redis: {e2}")
             
             # Archive the download before deletion
-            self.archive_download(download_id, 'cancelled')
+            await self.archive_download(download_id, 'cancelled')
             
             # Delete the download without updating statistics
             self.db.delete(download)
@@ -2907,26 +2804,8 @@ class DownloadService:
             
             logger.info(f"Complete download {download_id}: p2p_remote_token_id={p2p_remote_token_id} (type={type(p2p_remote_token_id).__name__ if p2p_remote_token_id is not None else 'None'})")
             
-            # Sync bytes_transferred from Redis BEFORE archiving (we're in async context, so await works)
-            # This avoids the async deadlock in archive_download when called from sync context
-            try:
-                from app.services.redis_downloads import RedisDownloadTracker
-                redis_status = await RedisDownloadTracker.get_download_status(download_id)
-                if redis_status:
-                    redis_bytes = redis_status.get('bytes_transferred', 0)
-                    db_bytes = download.bytes_transferred or 0
-                    logger.info(f"Complete download {download_id}: Redis bytes_transferred={redis_bytes}, DB had={db_bytes}")
-                    if redis_bytes > db_bytes:
-                        download.bytes_transferred = redis_bytes
-                        self.db.commit()
-                        logger.info(f"Synced bytes_transferred from Redis for download {download_id}: {redis_bytes} bytes")
-                else:
-                    logger.info(f"Complete download {download_id}: No Redis status found, using DB value ({download.bytes_transferred or 0} bytes)")
-            except Exception as e:
-                logger.warning(f"Complete download {download_id}: Failed to sync from Redis: {e}")
-            
-            # Archive the download (Redis sync already done above, skip it in archive_download to avoid deadlock)
-            archive_success, downloaded_bytes = self.archive_download(download_id, 'completed', skip_redis_sync=True)
+            # Archive the download (will sync bytes_transferred from Redis)
+            archive_success, downloaded_bytes = await self.archive_download(download_id, 'completed')
             if not archive_success:
                 logger.warning(f"Failed to archive download {download_id}, but continuing with completion")
             
@@ -3164,7 +3043,7 @@ class DownloadService:
             logger.error(f"Download {download_id} (game: {game_id}) failed with error: {error_message}")
             
             # Archive the download with error status before deletion
-            self.archive_download(download_id, 'error')
+            await self.archive_download(download_id, 'error')
             
             # Remove from Redis before deletion
             try:

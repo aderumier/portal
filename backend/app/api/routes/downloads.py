@@ -963,7 +963,7 @@ async def remove_from_queue(
     import urllib.parse
     game_id = urllib.parse.unquote(urllib.parse.unquote(game_id))
     
-    success = download_service.remove_from_queue(user_id, game_id)
+    success = await download_service.remove_from_queue(user_id, game_id)
     
     if not success:
         raise HTTPException(
@@ -980,7 +980,7 @@ async def clear_queue(
 ):
     """Clear the download queue for current user."""
     user_id = current_user['id']
-    success = download_service.clear_queue(user_id)
+    success = await download_service.clear_queue(user_id)
     
     if not success:
         raise HTTPException(
@@ -1331,7 +1331,7 @@ async def request_download(
     # If queue_type is not specified, search all queues for downloads with this token_id
     # The backend will search both fast and slow queues and return the first available download
     client_version = request.client_version
-    download_info = download_service.get_next_download(queue_type, service_id, token_id=token_id, platform=platform, client_version=client_version)
+    download_info = await download_service.get_next_download(queue_type, service_id, token_id=token_id, platform=platform, client_version=client_version)
     
     # Store active download in Redis for fast status checks (after get_next_download returns)
     download_id = download_info.get('download_id') if download_info else None
@@ -1708,7 +1708,7 @@ async def remove_download(
             detail="Invalid download ID"
         )
     
-    success = download_service.remove_download(download_id)
+    success = await download_service.remove_download(download_id)
     
     if not success:
         raise HTTPException(
