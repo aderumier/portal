@@ -134,6 +134,11 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                     self.send_error(404, "Request not found")
                     return
                 
+                # Store socket reference for cancellation support
+                with _reverse_connection_lock:
+                    if request_id in _reverse_connection_requests:
+                        _reverse_connection_requests[request_id]['socket'] = self.request
+                
                 dest_path = request_info['dest_path']
                 expected_size = request_info.get('expected_size')
                 resume_from = request_info.get('resume_from', 0)
@@ -925,3 +930,66 @@ def unregister_reverse_connection_request(request_id):
     """
     with _reverse_connection_lock:
         _reverse_connection_requests.pop(request_id, None)
+
+def cancel_reverse_download(request_id):
+    """Cancel an active reverse download by closing its socket.
+    
+    This forces an immediate interruption of the blocking read in the handler,
+    instead of waiting for the socket timeout.
+    
+    Args:
+        request_id: Unique request identifier
+        
+    Returns:
+        True if socket was found and closed, False otherwise
+    """
+    with _reverse_connection_lock:
+        request_info = _reverse_connection_requests.get(request_id)
+        if request_info:
+            sock = request_info.get('socket')
+            if sock:
+                try:
+                    logger.info(f"Cancelling reverse download {request_id} by closing socket")
+                    sock.shutdown(socket.SHUT_RDWR)
+                except Exception as e:
+                    logger.debug(f"Socket shutdown error (may already be closed): {e}")
+                try:
+                    sock.close()
+                except Exception as e:
+                    logger.debug(f"Socket close error: {e}")
+                return True
+            else:
+                logger.debug(f"No socket stored for reverse download {request_id}")
+    return False
+
+def cancel_reverse_download_by_download_id(download_id):
+    """Cancel an active reverse download by download_id.
+    
+    Finds the request_id associated with the download_id and closes its socket.
+    
+    Args:
+        download_id: Download ID
+        
+    Returns:
+        True if socket was found and closed, False otherwise
+    """
+    with _reverse_connection_lock:
+        for request_id, request_info in _reverse_connection_requests.items():
+            if request_info.get('download_id') == download_id:
+                sock = request_info.get('socket')
+                if sock:
+                    try:
+                        logger.info(f"Cancelling reverse download for download_id={download_id} (request_id={request_id}) by closing socket")
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except Exception as e:
+                        logger.debug(f"Socket shutdown error (may already be closed): {e}")
+                    try:
+                        sock.close()
+                    except Exception as e:
+                        logger.debug(f"Socket close error: {e}")
+                    return True
+                else:
+                    logger.debug(f"No socket stored for reverse download download_id={download_id}")
+                    return False
+    logger.debug(f"No reverse download found for download_id={download_id}")
+    return False

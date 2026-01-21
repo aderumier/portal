@@ -3392,7 +3392,7 @@ def _report_reverse_connection_result(request_id, target_token_id, success, erro
     except Exception as e:
         logger.warning(f"Failed to report reverse connection result: {e}")
 
-def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, download_id=None, bytes_transferred_ref=None):
+def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, download_id=None, bytes_transferred_ref=None, paused_ref=None):
     """Try to download a file via reverse P2P connection.
     
     Starts a temporary listener and requests the source peer to push the file.
@@ -3407,12 +3407,13 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
         expected_checksum: Expected checksum data (optional, for verification)
         download_id: Download ID for tracking (optional)
         bytes_transferred_ref: Optional list to track bytes transferred
+        paused_ref: Optional list to check if download should be paused
     
     Returns:
         True if download succeeded and checksum verification passed, False otherwise
     """
     try:
-        from p2p_client import get_p2p_server, get_local_ip, register_reverse_connection_request, unregister_reverse_connection_request
+        from p2p_client import get_p2p_server, get_local_ip, register_reverse_connection_request, unregister_reverse_connection_request, cancel_reverse_download
         import uuid
         import time
         
@@ -3501,6 +3502,13 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
             transfer_start_time = time.time()  # Set when we start waiting for the transfer
             per_chunk_timeout = 60  # Timeout if no chunk received within 60 seconds
             while not success_ref[0] and not failed_ref[0]:
+                # Check if download is paused - if so, cancel the reverse connection
+                if paused_ref and paused_ref[0]:
+                    logger.info(f"Reverse P2P download paused for request_id={request_id}, cancelling connection")
+                    cancel_reverse_download(request_id)
+                    unregister_reverse_connection_request(request_id)
+                    return False
+                
                 # Check per-chunk timeout: if no data received recently, timeout
                 time_since_last_activity = time.time() - last_activity_ref[0]
                 if time_since_last_activity > per_chunk_timeout:
@@ -3999,7 +4007,8 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                         expected_size=expected_size,
                         expected_checksum=expected_checksum,
                         download_id=download_id,
-                        bytes_transferred_ref=bytes_transferred_ref
+                        bytes_transferred_ref=bytes_transferred_ref,
+                        paused_ref=paused_ref
                     )
                     
                     if reverse_result:
@@ -4093,7 +4102,8 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                         expected_size=expected_size,
                         expected_checksum=expected_checksum,
                         download_id=download_id,
-                        bytes_transferred_ref=bytes_transferred_ref
+                        bytes_transferred_ref=bytes_transferred_ref,
+                        paused_ref=paused_ref
                     )
                     
                     if reverse_result:
