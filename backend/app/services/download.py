@@ -2773,15 +2773,16 @@ class DownloadService:
             logger.error(f"Error reading download log for {download_id}: {e}")
             return None
     
-    async def complete_download(self, download_id: int, p2p_remote_token_id: Optional[int] = None) -> bool:
+    async def complete_download(self, download_id: int) -> bool:
         """Remove download from queue and update user download statistics.
         
         After completion, checks if there are more items in user_queue for the same token_id
         and promotes one if no active downloads remain, then sends WebSocket notification.
         
+        p2p_remote_token_id is read directly from Redis (where client stored it at P2P start).
+        
         Args:
             download_id: ID of the download to complete
-            p2p_remote_token_id: Optional remote peer's token_id for P2P downloads (peer serving the file)
         """
         try:
             from app.database import User, ApiToken
@@ -2802,19 +2803,14 @@ class DownloadService:
             token_id = download.token_id
             catalog_version = download.catalog_version
             
-            logger.info(f"Complete download {download_id}: p2p_remote_token_id={p2p_remote_token_id} (type={type(p2p_remote_token_id).__name__ if p2p_remote_token_id is not None else 'None'})")
-            
-            # If p2p_remote_token_id not passed by client, try to get it from Redis
-            # (client stores it at the start of P2P download)
-            if p2p_remote_token_id is None:
-                try:
-                    from app.services.redis_downloads import RedisDownloadTracker
-                    redis_p2p_token = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
-                    if redis_p2p_token:
-                        p2p_remote_token_id = redis_p2p_token
-                        logger.info(f"Complete download {download_id}: Retrieved p2p_remote_token_id={p2p_remote_token_id} from Redis")
-                except Exception as e:
-                    logger.warning(f"Complete download {download_id}: Failed to get p2p_remote_token_id from Redis: {e}")
+            # Get p2p_remote_token_id from Redis (client stores it at the start of P2P download)
+            try:
+                from app.services.redis_downloads import RedisDownloadTracker
+                p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download_id)
+                logger.info(f"Complete download {download_id}: p2p_remote_token_id={p2p_remote_token_id} from Redis")
+            except Exception as e:
+                logger.warning(f"Complete download {download_id}: Failed to get p2p_remote_token_id from Redis: {e}")
+                p2p_remote_token_id = None
             
             # Archive the download (will sync bytes_transferred from Redis)
             archive_success, downloaded_bytes = await self.archive_download(download_id, 'completed')

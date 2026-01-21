@@ -1598,7 +1598,6 @@ async def mark_completed(
     """Mark a download as completed (used by download service)."""
     download_id = request.download_id
     log_content = request.log_content
-    p2p_remote_token_id = request.p2p_remote_token_id
     
     if download_id <= 0:
         raise HTTPException(
@@ -1610,7 +1609,7 @@ async def mark_completed(
     if log_content:
         download_service.store_download_log(download_id, log_content)
     
-    success = await download_service.complete_download(download_id, p2p_remote_token_id=p2p_remote_token_id)
+    success = await download_service.complete_download(download_id)
     
     if not success:
         raise HTTPException(
