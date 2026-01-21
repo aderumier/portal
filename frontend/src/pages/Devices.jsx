@@ -63,7 +63,7 @@ const Devices = () => {
 
     try {
       setSavingPorts(prev => ({ ...prev, [tokenId]: true }))
-      await client.put(`/api/users/tokens/${tokenId}/custom-port`, {
+      const response = await client.put(`/api/users/tokens/${tokenId}/custom-port`, {
         custom_public_port: portValue
       })
       
@@ -73,6 +73,16 @@ const Devices = () => {
         delete newState[tokenId]
         return newState
       })
+      
+      // Show port test result if the port was tested
+      const { port_tested, p2p_port_accessible, external_ip } = response.data
+      if (port_tested) {
+        if (p2p_port_accessible) {
+          alert(`Port ${portValue} is accessible from ${external_ip}`)
+        } else {
+          alert(`Port ${portValue} is NOT accessible from ${external_ip}. Please check your firewall/router configuration.`)
+        }
+      }
       
       // Reload devices to show updated port
       await loadDevices()
@@ -284,9 +294,9 @@ const Devices = () => {
                       onClick={() => handleSavePort(device.token_id)}
                       className="save-port-btn"
                       disabled={savingPorts[device.token_id] || editingPorts[device.token_id] === undefined}
-                      title="Save custom port"
+                      title="Save custom port and test connectivity"
                     >
-                      {savingPorts[device.token_id] ? 'Saving...' : 'Save'}
+                      {savingPorts[device.token_id] ? 'Saving & Testing...' : 'Save & Test'}
                     </button>
                     {device.custom_public_port && (
                       <button

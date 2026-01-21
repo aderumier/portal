@@ -112,7 +112,7 @@ async def update_custom_port(
     current_user: dict = Depends(require_guild_member),
     db: Session = Depends(get_db)
 ):
-    """Update custom public port for a token. Port testing is skipped for custom ports."""
+    """Update custom public port for a token. Tests the port if device is connected."""
     user_id = current_user['id']
     custom_port = request.custom_public_port
     
@@ -145,18 +145,45 @@ async def update_custom_port(
             detail="Token not found or doesn't belong to user"
         )
     
-    # Update custom port (port testing is skipped for custom ports)
-    if custom_port is not None:
-        logger.info(f"Setting custom public port {custom_port} for token_id {token_id} (port testing skipped)")
-    
+    # Update custom port
     token.custom_public_port = custom_port
     db.commit()
     
     logger.info(f"Updated custom public port for token_id {token_id} (user {user_id}): {custom_port}")
     
+    # If a custom port is set, test the port if device is connected
+    p2p_port_accessible = None
+    external_ip = None
+    port_tested = False
+    
+    if custom_port is not None:
+        try:
+            from app.services.p2p_inventory import P2PInventoryService
+            p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
+            
+            if p2p_info:
+                external_ip = p2p_info.get('external_ip')
+                
+                if external_ip:
+                    # Test the custom port
+                    logger.info(f"Testing custom port {custom_port} for token_id {token_id}: testing {external_ip}:{custom_port}")
+                    p2p_port_accessible = await _test_tcp_port(external_ip, custom_port, timeout=2.0)
+                    port_tested = True
+                    logger.info(f"Custom port test completed for token_id {token_id}: {external_ip}:{custom_port} - {'accessible' if p2p_port_accessible else 'not accessible'}")
+                    
+                    # Update WebSocket connection info with port accessibility result
+                    from app.services.websocket_manager import get_websocket_manager
+                    ws_manager = get_websocket_manager()
+                    await ws_manager.update_connection_info_port_check(token_id, p2p_port_accessible)
+        except Exception as e:
+            logger.warning(f"Error testing custom port for token_id {token_id}: {e}")
+    
     return {
         "success": True,
-        "custom_public_port": custom_port
+        "custom_public_port": custom_port,
+        "port_tested": port_tested,
+        "p2p_port_accessible": p2p_port_accessible,
+        "external_ip": external_ip
     }
 
 @router.get("/bandwidth-limit")
