@@ -4,7 +4,7 @@ import logging
 import threading
 import hashlib
 import socket
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, unquote
 from pathlib import Path
 import json
@@ -26,6 +26,10 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
     """Factory function to create P2P request handler with roms_path and optional API credentials."""
     class P2PRequestHandler(BaseHTTPRequestHandler):
         """HTTP request handler for P2P file serving."""
+        
+        # Socket timeout for each request (seconds)
+        # This prevents blocking forever if connection dies mid-transfer
+        timeout = 60
         
         def _verify_download_id(self, download_id, system, rom_path):
             """Verify download_id exists in Redis via backend API.
@@ -277,6 +281,16 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                 
                 logger.info(f"Reverse connection: Received {bytes_written} bytes and saved to {dest_path}")
                 
+            except socket.timeout as e:
+                logger.warning(f"Reverse connection timed out (socket timeout): {e}")
+                try:
+                    self.send_error(408, "Request timeout")
+                except Exception:
+                    pass
+            except ConnectionResetError as e:
+                logger.warning(f"Reverse connection reset by peer: {e}")
+            except BrokenPipeError as e:
+                logger.warning(f"Reverse connection broken pipe: {e}")
             except Exception as e:
                 logger.error(f"Error handling reverse connection request: {e}", exc_info=True)
                 try:
@@ -530,7 +544,11 @@ class P2PServer:
                 logger.debug("Could not import API_URL/API_TOKEN for P2P verification")
             
             HandlerClass = create_p2p_handler(self.roms_path, api_url=api_url, api_token=api_token)
-            self.server = HTTPServer(('', self.port), HandlerClass)
+            # Use ThreadingHTTPServer to handle multiple concurrent requests
+            # This prevents a stuck handler from blocking all other requests
+            self.server = ThreadingHTTPServer(('', self.port), HandlerClass)
+            # Set socket timeout to detect dead connections faster
+            self.server.socket.settimeout(60)
             self._running = True
             
             # Start server in a separate thread
