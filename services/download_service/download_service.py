@@ -3610,6 +3610,38 @@ def try_reverse_p2p_download(source_token_id, system, rom_path, dest_path, resum
         logger.error(f"Unexpected error during reverse P2P download: {e}", exc_info=True)
         return False
 
+def store_p2p_remote_token_in_redis(download_id: int, p2p_remote_token_id: int):
+    """Store p2p_remote_token_id in Redis at the start of a P2P download.
+    
+    This enables:
+    1. Cancellation notifications to the uploader
+    2. Displaying active uploads on the uploader's Downloads page
+    
+    Args:
+        download_id: Download ID
+        p2p_remote_token_id: Token ID of the peer serving the file
+    """
+    try:
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        response = http_session.post(
+            f"{API_URL}/api/download/p2p/store-remote-token",
+            json={'download_id': download_id, 'p2p_remote_token_id': p2p_remote_token_id},
+            headers=headers,
+            timeout=5
+        )
+        if response.status_code == 200:
+            logger.info(f"Stored p2p_remote_token_id={p2p_remote_token_id} in Redis for download_id={download_id}")
+            return True
+        else:
+            logger.warning(f"Failed to store p2p_remote_token_id in Redis: {response.status_code}")
+            return False
+    except Exception as e:
+        logger.warning(f"Error storing p2p_remote_token_id in Redis: {e}")
+        return False
+
 def download_file_via_p2p(peer_url, system, rom_path, dest_path, resume_from=0, expected_size=None, expected_checksum=None, paused_ref=None, download_id=None, bytes_transferred_ref=None, chunk_size=1024*1024, connect_timeout=5, read_timeout=300):
     """Download a file from a peer via HTTP.
     
@@ -3990,6 +4022,11 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
             # Check if peer's port is known to be inaccessible - skip direct download and try reverse connection
             peer_port_accessible = peer.get('p2p_port_accessible', True)  # Default to True for backwards compatibility
             source_token_id = peer.get('token_id')
+            
+            # Store p2p_remote_token_id in Redis at the start of P2P download
+            # This enables cancellation notifications and active uploads display
+            if download_id and source_token_id:
+                store_p2p_remote_token_in_redis(download_id, source_token_id)
             
             if peer_port_accessible is False:
                 # Peer's port is known to be closed - skip direct download attempt
@@ -4533,28 +4570,10 @@ def download_game(download_info):
                         logger.error(f"Error downloading media or updating gamelist.xml (download still successful): {e}", exc_info=True)
                     
                     # Store p2p_remote_token_id in download_info for mark_completed
+                    # Note: p2p_remote_token_id is already stored in Redis at the start of P2P download
                     if p2p_remote_token_id is not None:
                         download_info['p2p_remote_token_id'] = p2p_remote_token_id
-                        logger.info(f"P2P download successful: Stored p2p_remote_token_id={p2p_remote_token_id} in download_info for download_id={download_id}")
-                        
-                        # Store p2p_remote_token_id in Redis for cancellation notification
-                        try:
-                            headers = {
-                                'Authorization': f'Bearer {API_TOKEN}',
-                                'Content-Type': 'application/json'
-                            }
-                            response = http_session.post(
-                                f"{API_URL}/api/download/p2p/store-remote-token",
-                                json={'download_id': download_id, 'p2p_remote_token_id': p2p_remote_token_id},
-                                headers=headers,
-                                timeout=5
-                            )
-                            if response.status_code == 200:
-                                logger.info(f"Stored p2p_remote_token_id={p2p_remote_token_id} in Redis for download_id={download_id}")
-                            else:
-                                logger.warning(f"Failed to store p2p_remote_token_id in Redis: {response.status_code}")
-                        except Exception as e:
-                            logger.warning(f"Error storing p2p_remote_token_id in Redis: {e}")
+                        logger.info(f"P2P download successful: p2p_remote_token_id={p2p_remote_token_id} for download_id={download_id}")
                     else:
                         logger.warning(f"P2P download successful but p2p_remote_token_id is None for download_id={download_id} (p2p_result was {p2p_result})")
                     return True
