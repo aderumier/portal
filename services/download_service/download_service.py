@@ -5436,7 +5436,8 @@ async def handle_download_notification(queue_type):
             # Run download_game in thread pool since it's synchronous
             success = await loop.run_in_executor(None, download_game, download_info)
             if success:
-                await loop.run_in_executor(None, mark_completed, download_info['download_id'])
+                # Pass download_info to include p2p_remote_token_id for P2P stats
+                await loop.run_in_executor(None, lambda: mark_completed(download_info['download_id'], download_info))
             else:
                 logger.error(f"Failed to download {download_info.get('game_id', 'Unknown')}")
         else:
