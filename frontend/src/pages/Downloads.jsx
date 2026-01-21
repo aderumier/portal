@@ -10,6 +10,7 @@ const Downloads = () => {
   const [maxBandwidthLimit, setMaxBandwidthLimit] = useState(null)
   const [bandwidthInput, setBandwidthInput] = useState('')
   const [savingBandwidth, setSavingBandwidth] = useState(false)
+  const [removingGameId, setRemovingGameId] = useState(null)
 
   // Define formatMbits before it's used in useEffect
   const formatMbits = useCallback((bytes) => {
@@ -108,6 +109,8 @@ const Downloads = () => {
   }
 
   const handleRemove = async (gameId) => {
+    if (removingGameId) return // Prevent multiple clicks
+    setRemovingGameId(gameId)
     try {
       const encodedGameId = encodeURIComponent(encodeURIComponent(gameId))
       await client.delete(`/api/download/queue/${encodedGameId}`)
@@ -115,6 +118,8 @@ const Downloads = () => {
     } catch (error) {
       console.error('Error removing game:', error)
       alert('Failed to remove game from queue')
+    } finally {
+      setRemovingGameId(null)
     }
   }
 
@@ -301,11 +306,12 @@ const Downloads = () => {
                         </button>
                       ) : null}
                       <button
-                        className="remove-download-btn"
+                        className={`remove-download-btn ${removingGameId === item.game_id ? 'removing' : ''}`}
                         onClick={() => handleRemove(item.game_id)}
                         title="Remove from queue"
+                        disabled={removingGameId !== null}
                       >
-                        Remove
+                        {removingGameId === item.game_id ? 'Removing...' : 'Remove'}
                       </button>
                     </div>
                   </td>
