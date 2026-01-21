@@ -5,6 +5,7 @@ import './Downloads.css'
 
 const Downloads = () => {
   const [queue, setQueue] = useState([])
+  const [uploads, setUploads] = useState([])
   const [initialLoading, setInitialLoading] = useState(true)
   const [bandwidthLimit, setBandwidthLimit] = useState(null)
   const [maxBandwidthLimit, setMaxBandwidthLimit] = useState(null)
@@ -97,8 +98,13 @@ const Downloads = () => {
       if (isInitialLoad) {
         setInitialLoading(true)
       }
-      const response = await client.get('/api/download/queue')
-      setQueue(response.data || [])
+      // Load both downloads and uploads in parallel
+      const [queueResponse, uploadsResponse] = await Promise.all([
+        client.get('/api/download/queue'),
+        client.get('/api/download/uploads')
+      ])
+      setQueue(queueResponse.data || [])
+      setUploads(uploadsResponse.data?.uploads || [])
     } catch (error) {
       console.error('Error loading queue:', error)
     } finally {
@@ -324,6 +330,84 @@ const Downloads = () => {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Active P2P Uploads Section */}
+      {uploads.length > 0 && (
+        <div className="uploads-section">
+          <h2 className="uploads-header">Active P2P Uploads</h2>
+          <div className="downloads-table-container">
+            <table className="downloads-table uploads-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Game</th>
+                  <th>System</th>
+                  <th>Version</th>
+                  <th>Uploading To</th>
+                  <th>Progress</th>
+                </tr>
+              </thead>
+              <tbody>
+                {uploads.map((item, index) => (
+                  <tr key={`upload-${item.id}`} className="upload-row">
+                    <td className="queue-number">{index + 1}</td>
+                    <td className="game-info-cell">
+                      {item.image && (
+                        <img
+                          className="table-game-image"
+                          src={getMediaUrl(item.image)}
+                          alt={item.game_name || 'Game'}
+                          loading="lazy"
+                        />
+                      )}
+                      <span className="game-name">{item.game_name || 'Unknown Game'}</span>
+                    </td>
+                    <td className="system-cell">
+                      <span className="system-tag">{item.system_name || 'Unknown System'}</span>
+                    </td>
+                    <td className="version-cell">
+                      <span className="version-tag">{item.catalog_version || 'WIP'}</span>
+                    </td>
+                    <td className="target-cell">
+                      <div className="upload-target-info">
+                        <span className="target-token" title={`Token: ${item.target_token_name || 'Unknown'}`}>
+                          {item.target_token_name || 'Unknown Device'}
+                        </span>
+                        {item.target_username && (
+                          <span className="target-user">({item.target_username})</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="progress-cell">
+                      <div className="table-progress">
+                        <div className="progress-bar upload-progress-bar">
+                          <div 
+                            className="progress-fill upload-progress-fill" 
+                            style={{ width: `${item.progress_percent || 0}%` }}
+                          ></div>
+                        </div>
+                        <div className="progress-info">
+                          {item.progress_percent !== undefined && (
+                            <span className="progress-text">{item.progress_percent}%</span>
+                          )}
+                          {item.file_size && (
+                            <span className="progress-size">
+                              {formatBytes(item.bytes_transferred || 0)} / {formatBytes(item.file_size)}
+                            </span>
+                          )}
+                          {item.bandwidth_used > 0 && (
+                            <span className="progress-bandwidth upload-bandwidth">{formatBytesPerSecond(item.bandwidth_used)}</span>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

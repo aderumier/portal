@@ -243,6 +243,68 @@
   border: 1px solid rgba(40, 167, 69, 0.3);
 }
 
+/* Active P2P Uploads Section */
+.uploads-section {
+  margin-top: 2rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+}
+
+.uploads-header {
+  margin: 0 0 1rem 0;
+  color: var(--text-primary, #e0e0e0);
+  font-size: 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.uploads-header::before {
+  content: '↑';
+  color: #28a745;
+  font-weight: bold;
+}
+
+.uploads-table .upload-row {
+  background-color: rgba(40, 167, 69, 0.05);
+}
+
+.uploads-table .upload-row:hover {
+  background-color: rgba(40, 167, 69, 0.1);
+}
+
+.upload-progress-bar {
+  background-color: rgba(40, 167, 69, 0.2) !important;
+}
+
+.upload-progress-fill {
+  background: linear-gradient(90deg, #28a745 0%, #34ce57 100%) !important;
+}
+
+.upload-bandwidth {
+  color: #28a745 !important;
+}
+
+.target-cell {
+  min-width: 180px;
+}
+
+.upload-target-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.target-token {
+  font-weight: 500;
+  color: var(--text-primary, #e0e0e0);
+}
+
+.target-user {
+  font-size: 0.85rem;
+  color: var(--text-secondary, #999);
+}
+
 .no-progress {
   color: var(--text-secondary, #999);
   font-style: italic;

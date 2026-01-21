@@ -1098,6 +1098,114 @@ class DownloadService:
             logger.error(traceback.format_exc())
             return []
     
+    async def get_active_uploads(self, user_id: str) -> List[Dict]:
+        """Get active P2P uploads for a user (downloads where user's tokens are the p2p_remote_token_id).
+        
+        This shows what the user is currently uploading to other peers.
+        """
+        try:
+            from app.database import ApiToken, User
+            from app.services.redis_downloads import RedisDownloadTracker
+            
+            # Get all token IDs for this user
+            user_tokens = self.db.query(ApiToken).filter(
+                ApiToken.user_id == user_id
+            ).all()
+            
+            if not user_tokens:
+                return []
+            
+            user_token_ids = {token.id for token in user_tokens}
+            user_token_names = {token.id: token.name for token in user_tokens}
+            
+            # Find active downloads where p2p_remote_token_id matches one of user's tokens
+            # We need to scan all active downloads (status='downloading')
+            active_downloads = self.db.query(DownloadQueue).filter(
+                DownloadQueue.status == 'downloading'
+            ).all()
+            
+            uploads = []
+            for download in active_downloads:
+                # Get p2p_remote_token_id from Redis
+                p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download.id)
+                
+                if p2p_remote_token_id and p2p_remote_token_id in user_token_ids:
+                    # This download is using one of user's tokens as source - it's an upload for this user
+                    
+                    # Get download progress from Redis
+                    redis_status = await RedisDownloadTracker.get_download_status(download.id)
+                    bytes_transferred = 0
+                    bandwidth_used = 0
+                    
+                    if redis_status:
+                        bytes_transferred = redis_status.get('bytes_transferred', 0)
+                        bandwidth_used = redis_status.get('bytes_per_second', 0)
+                    
+                    # Get game info
+                    catalog_version = download.catalog_version
+                    catalog_type = 'releases' if catalog_version else 'wip'
+                    lookup_game_id = download.game_id
+                    if catalog_type == 'releases' and catalog_version:
+                        import re
+                        escaped_version = re.escape(catalog_version)
+                        pattern = re.compile(r'\.zfs/snapshot/' + escaped_version + r'/(.*)')
+                        match = pattern.match(download.game_id)
+                        if match:
+                            lookup_game_id = match.group(1)
+                    
+                    game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+                    if game:
+                        # Calculate progress
+                        file_size = download.file_size
+                        progress_percent = 0
+                        if file_size and file_size > 0:
+                            progress_percent = min(100, int((bytes_transferred / file_size) * 100))
+                        
+                        # Get downloader's token name
+                        downloader_token_name = None
+                        if download.token_id:
+                            downloader_token = self.db.query(ApiToken).filter(
+                                ApiToken.id == download.token_id
+                            ).first()
+                            if downloader_token:
+                                downloader_token_name = downloader_token.name
+                        
+                        # Get downloader's username
+                        downloader_username = None
+                        downloader_user = self.db.query(User).filter(
+                            User.user_id == download.user_id
+                        ).first()
+                        if downloader_user:
+                            downloader_username = downloader_user.username
+                        
+                        upload_item = {
+                            'id': download.id,
+                            'download_id': download.id,
+                            'type': 'upload',  # Mark as upload
+                            'game_id': download.game_id,
+                            'game_name': game['name'],
+                            'image': self._normalize_media_path_for_frontend(game.get('image', ''), game.get('system', '')),
+                            'system_name': self.game_service.get_system_name(game.get('system', '')),
+                            'progress_percent': progress_percent,
+                            'bytes_transferred': bytes_transferred,
+                            'file_size': file_size,
+                            'bandwidth_used': bandwidth_used,
+                            'catalog_version': catalog_version,
+                            'source_token_id': p2p_remote_token_id,
+                            'source_token_name': user_token_names.get(p2p_remote_token_id, 'Unknown'),
+                            'target_token_name': downloader_token_name,
+                            'target_username': downloader_username,
+                            'started_at': download.started_at.isoformat() if download.started_at else None
+                        }
+                        uploads.append(upload_item)
+            
+            return uploads
+        except Exception as e:
+            logger.error(f"Error getting active uploads: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
     def get_all_active_downloads(self) -> Dict:
         """Get all active downloads from all queues (admin only)."""
         try:
