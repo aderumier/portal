@@ -3110,10 +3110,10 @@ class ReverseUploadCancelled(Exception):
     pass
 
 def cancel_reverse_upload(download_id: int):
-    """Mark a reverse upload as cancelled so it will abort."""
+    """Mark a P2P upload as cancelled so it will abort (used for reverse P2P uploads)."""
     with _cancelled_reverse_uploads_lock:
         _cancelled_reverse_uploads.add(download_id)
-        logger.info(f"Marked reverse upload for download_id={download_id} as cancelled")
+        logger.info(f"Marked P2P upload for download_id={download_id} as cancelled (will abort reverse P2P if active)")
 
 def is_reverse_upload_cancelled(download_id: int) -> bool:
     """Check if a reverse upload should be cancelled."""
@@ -5311,12 +5311,14 @@ async def websocket_client():
                                             mark_reverse_connection_failed(request_id, error_msg)
                                     
                                     elif message_type == "p2p_download_cancelled":
-                                        # Remote client cancelled their download - stop any active upload for this download_id
+                                        # Remote client cancelled their download - stop any active reverse P2P upload for this download_id
+                                        # Note: For normal P2P, the upload stops when the connection is closed (no action needed here)
                                         cancelled_download_id = data.get("download_id")
                                         cancel_message = data.get("message", "Download cancelled")
                                         
                                         if cancelled_download_id:
                                             logger.info(f"Received p2p_download_cancelled notification for download_id={cancelled_download_id}: {cancel_message}")
+                                            # This only affects reverse P2P uploads - normal P2P uploads stop when connection closes
                                             cancel_reverse_upload(cancelled_download_id)
                                         else:
                                             logger.warning(f"Received p2p_download_cancelled but no download_id provided")
