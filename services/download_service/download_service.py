@@ -4028,6 +4028,14 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                                     logger.debug(f"Final progress report failed: {e}")
                         return source_token_id
                     else:
+                        # Check if it failed due to pause - if so, stop entirely
+                        if paused_ref and paused_ref[0]:
+                            logger.info(f"Reverse P2P connection stopped due to pause - not retrying")
+                            if progress_thread_running:
+                                progress_thread_running = False
+                                if progress_thread:
+                                    progress_thread.join(timeout=1)
+                            return False
                         logger.warning(f"Reverse P2P connection failed for peer {source_token_id}, trying next peer")
                 elif client_p2p_port_accessible is False:
                     logger.warning(f"Peer port not accessible and Client A port also not accessible, cannot do P2P with this peer, trying next peer")
@@ -4088,6 +4096,16 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                         pass
                 continue
             else:
+                # Direct download failed - check if it was due to pause
+                if paused_ref and paused_ref[0]:
+                    logger.info(f"P2P download from {peer_url} stopped due to pause - not retrying")
+                    # Stop progress reporting thread
+                    if progress_thread_running:
+                        progress_thread_running = False
+                        if progress_thread:
+                            progress_thread.join(timeout=1)
+                    return False
+                
                 # Direct download failed - peer_port_accessible was True (or unknown) but connection still failed
                 # This could be a network issue, temporary failure, or the port check was wrong
                 # Try reverse connection as fallback if client's port is accessible
@@ -4123,6 +4141,14 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
                                     logger.debug(f"Final progress report failed: {e}")
                         return source_token_id
                     else:
+                        # Check if it failed due to pause - if so, stop entirely
+                        if paused_ref and paused_ref[0]:
+                            logger.info(f"Reverse P2P connection (fallback) stopped due to pause - not retrying")
+                            if progress_thread_running:
+                                progress_thread_running = False
+                                if progress_thread:
+                                    progress_thread.join(timeout=1)
+                            return False
                         logger.warning(f"Reverse P2P connection also failed for peer {source_token_id}, trying next peer")
                 else:
                     logger.warning(f"P2P download failed from {peer_url} (connection error), trying next peer")
