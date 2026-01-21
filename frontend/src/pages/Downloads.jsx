@@ -345,6 +345,7 @@ const Downloads = () => {
                   <th>Game</th>
                   <th>System</th>
                   <th>Version</th>
+                  <th>Token</th>
                   <th>Uploading To</th>
                   <th>Progress</th>
                 </tr>
@@ -369,6 +370,11 @@ const Downloads = () => {
                     </td>
                     <td className="version-cell">
                       <span className="version-tag">{item.catalog_version || 'WIP'}</span>
+                    </td>
+                    <td className="token-cell">
+                      <span className="token-tag" title={`Source Token: ${item.source_token_name || 'Unknown'}`}>
+                        {item.source_token_name || 'Unknown'}
+                      </span>
                     </td>
                     <td className="target-cell">
                       <div className="upload-target-info">
