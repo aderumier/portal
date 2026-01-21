@@ -339,8 +339,8 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
                 'source_file': source_filename
             }
     
-    # Check for msu-md and nes-msu systems: return all files from the ROM file's directory
-    if system and system.lower() in ('msu-md', 'nes-msu'):
+    # Check for msu-md, nes-msu, and snes-msu1 systems: return all files from the ROM file's directory
+    if system and system.lower() in ('msu-md', 'nes-msu', 'snes-msu1'):
         source_dir = os.path.dirname(file_path)
         if os.path.exists(source_dir) and os.path.isdir(source_dir):
             try:
