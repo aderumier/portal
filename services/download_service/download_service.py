@@ -3254,6 +3254,12 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         def file_chunk_generator():
             """Generator that yields file data in 1MB chunks for streaming upload."""
             nonlocal error_message
+            import time
+            bytes_sent = 0
+            start_time = time.time()
+            last_log_time = start_time
+            log_interval = 5.0  # Log progress every 5 seconds
+            
             with open(file_path, 'rb') as f:
                 if resume_from > 0:
                     f.seek(resume_from)
@@ -3272,6 +3278,17 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
                     if not chunk:
                         break
                     remaining -= len(chunk)
+                    bytes_sent += len(chunk)
+                    
+                    # Log progress periodically
+                    current_time = time.time()
+                    if current_time - last_log_time >= log_interval:
+                        elapsed = current_time - start_time
+                        speed_mbps = (bytes_sent * 8) / (elapsed * 1000000) if elapsed > 0 else 0
+                        progress_pct = (bytes_sent / bytes_to_send * 100) if bytes_to_send > 0 else 0
+                        logger.info(f"Reverse P2P upload progress: {bytes_sent / (1024*1024):.1f}/{bytes_to_send / (1024*1024):.1f} MB ({progress_pct:.1f}%), speed={speed_mbps:.2f} Mbits/s, target={target_ip}:{target_port}")
+                        last_log_time = current_time
+                    
                     yield chunk
         
         # Send file via PUT request with streaming (chunked encoding)
