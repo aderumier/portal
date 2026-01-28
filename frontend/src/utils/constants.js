@@ -10,16 +10,23 @@ const isLocalhost = envApiUrl.includes('localhost:8000') || envApiUrl.includes('
 // In development, use VITE_API_URL if set, otherwise use relative URLs
 export const API_URL = (isProduction && isLocalhost) ? '' : envApiUrl
 
+// Media cache busting: set from catalog systems/refresh response; appended as ?v= to media URLs
+let mediaVersion = null
+
+export const setMediaVersion = (version) => {
+  mediaVersion = version == null ? null : Number(version)
+}
+
 /**
  * Get the media URL for a given media path.
  * In development, this uses the Vite proxy (/media).
  * In production, this uses the full API URL.
+ * Appends ?v= when mediaVersion is set (cache busting after catalog refresh).
  */
 export const getMediaUrl = (mediaPath) => {
   if (!mediaPath) return null
-  // Use relative URL to leverage Vite proxy in development
-  // In production, this will need to be configured based on deployment
-  return `/media/${mediaPath}`
+  const base = `/media/${mediaPath}`
+  return mediaVersion != null ? `${base}?v=${mediaVersion}` : base
 }
 
 /**
@@ -62,10 +69,9 @@ export const getThumbnailUrl = (mediaPath, width, height) => {
   // In development (port 3000), use regular media URLs (Vite proxy doesn't support image_filter)
   if (isNginxServing()) {
     // URL format: /media/thumbnail/WIDTHxHEIGHT/system/media/thumbnails/image.png
-    return `/media/thumbnail/${width}x${height}/${mediaPath}`
-  } else {
-    // Fallback to regular media URL in development
-    return getMediaUrl(mediaPath)
+    const base = `/media/thumbnail/${width}x${height}/${mediaPath}`
+    return mediaVersion != null ? `${base}?v=${mediaVersion}` : base
   }
+  return getMediaUrl(mediaPath)
 }
 

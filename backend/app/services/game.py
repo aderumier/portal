@@ -2298,7 +2298,8 @@ class GameService:
         return {
             "success": True,
             "systems_count": len(self.systems_list),
-            "total_games": sum(s['gameCount'] for s in self.systems_list)
+            "total_games": sum(s['gameCount'] for s in self.systems_list),
+            "media_version": int(self._catalog_timestamp),
         }
     
     def search_indexed_games(self, query: str, limit: int = 50, catalog_type: str = 'wip') -> List[Dict]:

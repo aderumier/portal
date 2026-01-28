@@ -244,7 +244,6 @@ class RedisDownloadTracker:
             
             data = json.loads(data_str)
             p2p_remote_token_id = data.get('p2p_remote_token_id')
-            logger.info(f"Retrieved p2p_remote_token_id={p2p_remote_token_id} from Redis for download_id={download_id} (data keys: {list(data.keys())})")
             return p2p_remote_token_id
         except Exception as e:
             logger.error(f"Error getting P2P remote token ID from Redis for download_id={download_id}: {e}", exc_info=True)

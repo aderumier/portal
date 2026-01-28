@@ -86,7 +86,8 @@ async def get_systems(
             'version': version  # Add version to response
         })
     
-    response_data = {"systems": systems}
+    media_version = int(game_service._catalog_timestamp) if game_service._catalog_timestamp else 0
+    response_data = {"systems": systems, "media_version": media_version}
     
     # Return response with ETag header for future 304 checks
     response = ORJSONResponse(content=response_data)

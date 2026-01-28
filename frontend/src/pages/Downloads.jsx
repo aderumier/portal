@@ -98,13 +98,10 @@ const Downloads = () => {
       if (isInitialLoad) {
         setInitialLoading(true)
       }
-      // Load both downloads and uploads in parallel
-      const [queueResponse, uploadsResponse] = await Promise.all([
-        client.get('/api/download/queue'),
-        client.get('/api/download/uploads')
-      ])
-      setQueue(queueResponse.data || [])
-      setUploads(uploadsResponse.data?.uploads || [])
+      // Load downloads and uploads from merged endpoint
+      const response = await client.get('/api/download/queue')
+      setQueue(response.data?.queue || [])
+      setUploads(response.data?.uploads || [])
     } catch (error) {
       console.error('Error loading queue:', error)
     } finally {

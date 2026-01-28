@@ -1,15 +1,24 @@
 import client from './client'
+import { setMediaVersion } from '../utils/constants'
 
 export const refreshCatalog = async () => {
   const response = await client.post('/api/catalog/refresh')
-  return response.data
+  const data = response.data
+  if (data != null && data.media_version != null) {
+    setMediaVersion(data.media_version)
+  }
+  return data
 }
 
 export const getSystems = async (catalogType = 'releases') => {
   const response = await client.get('/api/catalog/systems', {
     params: { catalog_type: catalogType }
   })
-  return response.data
+  const data = response.data
+  if (data != null && data.media_version != null) {
+    setMediaVersion(data.media_version)
+  }
+  return data
 }
 
 export const getGames = async (system, page = 1, limit = 12, search = '', catalogType = 'releases') => {

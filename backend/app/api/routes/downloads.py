@@ -808,20 +808,12 @@ async def get_queue(
     current_user: dict = Depends(require_download_role),
     download_service: DownloadService = Depends(get_download_service)
 ):
-    """Get download queue for current user."""
+    """Get download queue and active uploads for current user."""
     user_id = current_user['id']
     queue = await download_service.get_queue(user_id)
-    return queue
-
-@router.get("/uploads")
-async def get_active_uploads(
-    current_user: dict = Depends(require_download_role),
-    download_service: DownloadService = Depends(get_download_service)
-):
-    """Get active P2P uploads for current user (files being uploaded to other peers)."""
-    user_id = current_user['id']
     uploads = await download_service.get_active_uploads(user_id)
-    return {"uploads": uploads}
+    return {"queue": queue, "uploads": uploads}
+
 
 @router.get("/history")
 async def get_download_history(
