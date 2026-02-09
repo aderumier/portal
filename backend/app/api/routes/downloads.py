@@ -988,6 +988,28 @@ async def clear_queue(
     
     return {"success": True}
 
+@router.delete("/queue/admin/{user_id}/{game_id:path}")
+async def admin_remove_from_queue(
+    user_id: str,
+    game_id: str,
+    current_user: dict = Depends(require_admin_role),
+    download_service: DownloadService = Depends(get_download_service)
+):
+    """Remove a game from a specific user's download queue (admin only)."""
+    # URL decode the game ID (may be double-encoded)
+    import urllib.parse
+    game_id = urllib.parse.unquote(urllib.parse.unquote(game_id))
+    
+    success = await download_service.remove_from_queue(user_id, game_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Game not found in queue"
+        )
+    
+    return {"success": True}
+
 @router.get("/config")
 async def get_download_config(
     current_user: dict = Depends(require_auth_user)

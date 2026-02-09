@@ -32,6 +32,23 @@ const DownloadQueues = () => {
     }
   }
 
+  const handleRemoveFromQueue = async (userId, gameId) => {
+    if (!window.confirm('Are you sure you want to remove this game from the queue?')) {
+      return
+    }
+
+    try {
+      // URL encode the game ID
+      const encodedGameId = encodeURIComponent(gameId)
+      await client.delete(`/api/download/queue/admin/${userId}/${encodedGameId}`)
+      // Refresh queues
+      loadQueues()
+    } catch (err) {
+      console.error('Error removing from queue:', err)
+      alert('Failed to remove from queue')
+    }
+  }
+
   const formatBytes = (bytes) => {
     if (!bytes || bytes === 0) return '0 B'
     const k = 1024
@@ -52,7 +69,7 @@ const DownloadQueues = () => {
     const start = new Date(startedAt)
     const now = new Date()
     const diff = Math.floor((now - start) / 1000) // seconds
-    
+
     if (diff < 60) return `${diff}s`
     if (diff < 3600) return `${Math.floor(diff / 60)}m ${diff % 60}s`
     const hours = Math.floor(diff / 3600)
@@ -89,7 +106,7 @@ const DownloadQueues = () => {
   return (
     <div className="download-queues-page">
       <h1>Download Queues</h1>
-      
+
       <div className="queues-stats">
         <div className="stat-card">
           <div className="stat-value">{queues?.total_active || 0}</div>
@@ -111,104 +128,7 @@ const DownloadQueues = () => {
 
       <div className="queues-container">
         {/* User Queue Section */}
-        {(queues?.user_queue_fast?.length > 0 || queues?.user_queue_slow?.length > 0) && (
-          <div className="queue-section user-queue-section">
-            <h2 className="queue-title user-queue">
-              User Queue ({queues?.total_user_queue || 0})
-            </h2>
-            <p className="queue-description">Games waiting to be promoted to download queues when download service connects</p>
-            
-            {queues?.user_queue_fast?.length > 0 && (
-              <div className="user-queue-subsection">
-                <h3 className="sub-queue-title">Fast Queue ({queues.user_queue_fast.length})</h3>
-                <div className="downloads-list">
-                  {queues.user_queue_fast.map((download) => (
-                    <div key={download.id} className="download-item user-queue-item">
-                      <div className="download-item-image">
-                        {download.image ? (
-                          <img src={getMediaUrl(download.image)} alt={download.game_name} />
-                        ) : (
-                          <div className="no-image">No Image</div>
-                        )}
-                      </div>
-                      <div className="download-item-info">
-                        <div className="download-item-header">
-                          <h3>{download.game_name}</h3>
-                          <span className="status-badge status-user_queue">User Queue</span>
-                        </div>
-                        <div className="download-item-details">
-                          <div className="detail-row">
-                            <span className="detail-label">System:</span>
-                            <span className="detail-value">{download.system_name || download.system}</span>
-                          </div>
-                          <div className="detail-row">
-                            <span className="detail-label">Version:</span>
-                            <span className="detail-value">{download.catalog_version || 'WIP'}</span>
-                          </div>
-                          {download.client_version && (
-                            <div className="detail-row">
-                              <span className="detail-label">Client:</span>
-                              <span className="detail-value">{download.client_version}</span>
-                            </div>
-                          )}
-                          <div className="detail-row">
-                            <span className="detail-label">User:</span>
-                            <span className="detail-value">{download.username || download.user_id}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-            {queues?.user_queue_slow?.length > 0 && (
-              <div className="user-queue-subsection">
-                <h3 className="sub-queue-title">Slow Queue ({queues.user_queue_slow.length})</h3>
-                <div className="downloads-list">
-                  {queues.user_queue_slow.map((download) => (
-                    <div key={download.id} className="download-item user-queue-item">
-                      <div className="download-item-image">
-                        {download.image ? (
-                          <img src={getMediaUrl(download.image)} alt={download.game_name} />
-                        ) : (
-                          <div className="no-image">No Image</div>
-                        )}
-                      </div>
-                      <div className="download-item-info">
-                        <div className="download-item-header">
-                          <h3>{download.game_name}</h3>
-                          <span className="status-badge status-user_queue">User Queue</span>
-                        </div>
-                        <div className="download-item-details">
-                          <div className="detail-row">
-                            <span className="detail-label">System:</span>
-                            <span className="detail-value">{download.system_name || download.system}</span>
-                          </div>
-                          <div className="detail-row">
-                            <span className="detail-label">Version:</span>
-                            <span className="detail-value">{download.catalog_version || 'WIP'}</span>
-                          </div>
-                          {download.client_version && (
-                            <div className="detail-row">
-                              <span className="detail-label">Client:</span>
-                              <span className="detail-value">{download.client_version}</span>
-                            </div>
-                          )}
-                          <div className="detail-row">
-                            <span className="detail-label">User:</span>
-                            <span className="detail-value">{download.username || download.user_id}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+
 
         {/* Active Downloads Section */}
         <div className="queue-section">
@@ -264,7 +184,7 @@ const DownloadQueues = () => {
                     {download.active_download && download.file_size && (
                       <div className="download-progress">
                         <div className="progress-bar-container">
-                          <div 
+                          <div
                             className="progress-bar"
                             style={{ width: `${download.progress_percent}%` }}
                           />
@@ -343,7 +263,7 @@ const DownloadQueues = () => {
                     {download.active_download && download.file_size && (
                       <div className="download-progress">
                         <div className="progress-bar-container">
-                          <div 
+                          <div
                             className="progress-bar"
                             style={{ width: `${download.progress_percent}%` }}
                           />
@@ -367,6 +287,66 @@ const DownloadQueues = () => {
               ))}
             </div>
           )}
+        </div>
+
+        {/* User Queue Table Section - Moved to bottom */}
+        <div className="queue-section user-queue-section">
+          <h2 className="queue-title user-queue">
+            User Queues ({queues?.total_user_queue || 0})
+          </h2>
+          <p className="queue-description">Downloads waiting in user queues</p>
+
+          <div className="user-queue-table-container">
+            <table className="user-queue-table">
+              <thead>
+                <tr>
+                  <th>Game</th>
+                  <th>System</th>
+                  <th>Version</th>
+                  <th>User</th>
+                  <th>Type</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...(queues?.user_queue_fast || []), ...(queues?.user_queue_slow || [])].length === 0 ? (
+                  <tr>
+                    <td colSpan="6" className="no-data">No items in user queues</td>
+                  </tr>
+                ) : (
+                  [...(queues?.user_queue_fast || []), ...(queues?.user_queue_slow || [])].map((download) => (
+                    <tr key={download.id}>
+                      <td className="game-cell">
+                        <div className="game-info">
+                          {download.image && (
+                            <img src={getMediaUrl(download.image)} alt={download.game_name} className="mini-thumb" />
+                          )}
+                          <span>{download.game_name}</span>
+                        </div>
+                      </td>
+                      <td>{download.system_name || download.system}</td>
+                      <td>{download.catalog_version || 'WIP'}</td>
+                      <td>{download.username || download.user_id}</td>
+                      <td>
+                        <span className={`queue-badge ${queues?.user_queue_fast?.some(d => d.id === download.id) ? 'fast' : 'slow'}`}>
+                          {queues?.user_queue_fast?.some(d => d.id === download.id) ? 'Fast' : 'Slow'}
+                        </span>
+                      </td>
+                      <td>
+                        <button
+                          className="remove-btn small"
+                          onClick={() => handleRemoveFromQueue(download.user_id, download.game_id)}
+                          title="Remove from queue"
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

@@ -338,3 +338,116 @@
   }
 }
 
+/* User Queue Table Styles */
+.user-queue-table-container {
+  overflow-x: auto;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.user-queue-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.user-queue-table th,
+.user-queue-table td {
+  padding: 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.user-queue-table th {
+  background: var(--bg-card);
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-size: 0.85rem;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.user-queue-table td {
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  vertical-align: middle;
+}
+
+.user-queue-table tr:last-child td {
+  border-bottom: none;
+}
+
+.user-queue-table tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.game-cell {
+  min-width: 250px;
+}
+
+.game-info {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.mini-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+
+.queue-badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: inline-block;
+}
+
+.queue-badge.fast {
+  background: rgba(74, 222, 128, 0.1);
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.2);
+}
+
+.queue-badge.slow {
+  background: rgba(251, 191, 36, 0.1);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.2);
+}
+
+.remove-btn {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.remove-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: #ef4444;
+}
+
+.remove-btn.small {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.no-data {
+  text-align: center !important;
+  color: var(--text-secondary) !important;
+  font-style: italic;
+  padding: 3rem !important;
+}
+

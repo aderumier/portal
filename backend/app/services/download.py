@@ -1246,13 +1246,15 @@ class DownloadService:
             slow_queue = []
             
             for item in all_downloads:
+                game = {}
+                lookup_game_id = item.game_id
+                catalog_version = item.catalog_version
+                
                 try:
                     # Get catalog_version from queue item and derive catalog_type
-                    catalog_version = item.catalog_version
                     catalog_type = 'releases' if catalog_version else 'wip'
                     
                     # Remove snapshot path prefix to get original game_id for lookup
-                    lookup_game_id = item.game_id
                     if catalog_type == 'releases' and catalog_version:
                         # Extract original game_id after snapshot path
                         # game_id format: ".zfs/snapshot/v2-RGS_bbc/game.rom"
@@ -1270,16 +1272,37 @@ class DownloadService:
                     
                     # Get system_id - must be stored in queue item
                     system_id = item.system_id
-                    if not system_id:
-                        logger.warning(f"System ID missing for game: {lookup_game_id}, skipping")
-                        continue
-                    game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
+                    
+                    # If system_id is missing, try to infer from game_id
+                    if not system_id and '/' in lookup_game_id:
+                        parts = lookup_game_id.split('/')
+                        if len(parts) > 1:
+                            # Assume first part is system_id (e.g. "snes/game.zip")
+                            possible_system_id = parts[0]
+                            # Try to verify if this is a valid system or if we can find the game with it
+                            if self.game_service.get_system(possible_system_id):
+                                system_id = possible_system_id
+                                logger.info(f"Inferred system_id '{system_id}' from game_id '{lookup_game_id}'")
+                    
+                    if system_id:
+                        game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
+                        
                     if not game:
                         logger.warning(f"Game not found: lookup_game_id={lookup_game_id}, catalog_type={catalog_type}, catalog_version={catalog_version}, original game_id={item.game_id}")
-                        continue
+                        # Provide fallback data
+                        game = {
+                            'name': lookup_game_id,  # Use ID as name fallback
+                            'system': system_id or 'unknown',
+                            'image': None
+                        }
                 except Exception as e:
                     logger.error(f"Error processing download item {item.id}: {e}", exc_info=True)
-                    continue
+                    # Use fallback data even on error
+                    game = {
+                        'name': item.game_id,
+                        'system': item.system_id or 'unknown',
+                        'image': None
+                    }
                 
                 # Calculate progress percentage
                 progress_percent = 0
@@ -1291,9 +1314,9 @@ class DownloadService:
                     'user_id': item.user_id,
                     'username': username_cache.get(item.user_id, item.user_id),
                     'game_id': item.game_id,
-                    'game_name': game.get('name', ''),
-                    'system': game.get('system', ''),
-                    'system_name': self.game_service.get_system_name(game.get('system', '')),
+                    'game_name': game.get('name', item.game_id),
+                    'system': game.get('system', system_id or item.system_id or ''),
+                    'system_name': self.game_service.get_system_name(game.get('system', system_id or item.system_id or '')),
                     'image': self._normalize_media_path_for_frontend(game.get('image', ''), game.get('system', '')),
                     'status': item.status,
                     'queue_type': item.queue_type,
