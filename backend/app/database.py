@@ -70,6 +70,7 @@ class DownloadQueue(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, nullable=False, index=True)
     game_id = Column(String, nullable=False)
+    system_id = Column(String, nullable=True, index=True)  # System identifier (e.g., 'nes', 'snes') - nullable for backward compatibility
     status = Column(String, default='user_queue')
     created_at = Column(DateTime, server_default=func.now())
     

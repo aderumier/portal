@@ -6,16 +6,18 @@ export const useDownloadWithToken = () => {
   const { catalogType } = useCatalog()
   const [showTokenSelector, setShowTokenSelector] = useState(false)
   const [pendingGameId, setPendingGameId] = useState(null)
+  const [pendingSystemId, setPendingSystemId] = useState(null)
   const [pendingCatalogType, setPendingCatalogType] = useState(null)
 
-  const addToQueue = async (gameId, tokenName = null, catalog_type = null) => {
+  const addToQueue = async (gameId, systemId, tokenName = null, catalog_type = null) => {
     // Use provided catalog_type or fall back to context catalogType
     const effectiveCatalogType = catalog_type || catalogType || 'releases'
-    
+
     try {
       // First, try to add without token_name (backend will handle single token or require selection)
       const response = await client.post('/api/download/queue', {
         game_id: gameId,
+        system_id: systemId,
         token_name: tokenName,
         catalog_type: effectiveCatalogType
       })
@@ -24,15 +26,16 @@ export const useDownloadWithToken = () => {
       // Check if backend requires token selection
       // Axios normalizes headers to lowercase, but check both cases
       const headers = error.response?.headers || {}
-      const requiresSelection = 
+      const requiresSelection =
         headers['x-requires-token-selection'] === 'true' ||
         headers['X-Requires-Token-Selection'] === 'true' ||
         error.response?.data?.detail?.includes('Multiple tokens found')
-      
+
       if (error.response?.status === 400 && requiresSelection) {
         // User has multiple tokens, need to show selector
         // Don't throw error, just return and show selector
         setPendingGameId(gameId)
+        setPendingSystemId(systemId)
         setPendingCatalogType(effectiveCatalogType)
         setShowTokenSelector(true)
         return { success: false, requiresSelection: true }
@@ -44,15 +47,17 @@ export const useDownloadWithToken = () => {
 
   const handleTokenSelected = async (selectedTokenName) => {
     if (!pendingGameId) return
-    
+
     try {
       const response = await client.post('/api/download/queue', {
         game_id: pendingGameId,
+        system_id: pendingSystemId,
         token_name: selectedTokenName,
         catalog_type: pendingCatalogType || catalogType || 'releases'
       })
       setShowTokenSelector(false)
       setPendingGameId(null)
+      setPendingSystemId(null)
       alert('Game added to download queue!')
       return { success: true, data: response.data }
     } catch (error) {
@@ -65,6 +70,7 @@ export const useDownloadWithToken = () => {
   const cancelTokenSelection = () => {
     setShowTokenSelector(false)
     setPendingGameId(null)
+    setPendingSystemId(null)
     setPendingCatalogType(null)
   }
 

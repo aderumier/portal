@@ -113,28 +113,28 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
   const loadAllGames = useCallback(async () => {
     // Create a unique key for this load request (include catalogType)
     const loadKey = `${systemId}_${searchQuery || 'no-search'}_${catalogType}`
-    
+
     // Prevent duplicate calls (especially in React StrictMode)
     if (isLoadingRef.current && lastLoadKeyRef.current === loadKey) {
       return
     }
-    
+
     try {
       isLoadingRef.current = true
       lastLoadKeyRef.current = loadKey
       setLoading(true)
       setError(null)
       setDisplayedGamesCount(24) // Reset displayed count
-      
+
       // Fetch all games in one call with a very high limit
       const response = await getGames(systemId, 1, 10000, searchQuery || '', catalogType)
       const games = response.games || []
-      
+
       // Get systemName from the first game (all games have the same systemName)
       if (games.length > 0 && games[0].systemName) {
         setSystemName(games[0].systemName)
       }
-      
+
       // Fetch system info to get version if not provided as prop
       if (!propSystemVersion) {
         try {
@@ -147,12 +147,12 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
           console.error('Error fetching system version:', err)
         }
       }
-      
+
       // Update subdirectory counts from backend
       if (response.subdirectory_counts) {
         setSubdirectoryCounts(response.subdirectory_counts)
       }
-      
+
       setAllGames(games)
     } catch (err) {
       console.error('Error loading games:', err)
@@ -166,23 +166,23 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
 
   // Scroll to the viewed game after games are loaded and filtered
   const isRestoringScrollRef = useRef(false)
-  
+
   useEffect(() => {
     if (!loading && allGames.length > 0 && !scrollRestoredRef.current) {
       const viewedGameKey = getStorageKey('viewedGame')
       const viewedGameId = localStorage.getItem(viewedGameKey)
-      
+
       if (viewedGameId) {
         // Check if the viewed game is in the loaded games
         const gameExists = allGames.some(game => game.id === viewedGameId)
-        
+
         if (gameExists) {
           // Make sure the game is displayed (increase displayed count if needed)
           // Increase displayed count to ensure the game is visible after filtering
           if (displayedGamesCount < 100) {
             setDisplayedGamesCount(100) // Show more games to ensure the target is visible
           }
-          
+
           // Game is loaded, wait for DOM to be fully rendered
           isRestoringScrollRef.current = true
           requestAnimationFrame(() => {
@@ -194,12 +194,12 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                 const headerOffset = 180 // Account for sticky header and filters
                 const elementPosition = gameElement.getBoundingClientRect().top
                 const offsetPosition = elementPosition + window.pageYOffset - headerOffset
-                
+
                 window.scrollTo({
                   top: offsetPosition,
                   behavior: 'smooth'
                 })
-                
+
                 // Clear the viewed game from storage after scrolling
                 localStorage.removeItem(viewedGameKey)
               }
@@ -229,7 +229,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
     const oldSearchQuery = prevSearchQueryRef.current
     const systemChanged = oldSystemId !== systemId
     const searchChanged = oldSearchQuery !== searchQuery
-    
+
     // On initial mount, don't reset filters (they'll be restored from sessionStorage)
     if (isInitialMountRef.current) {
       isInitialMountRef.current = false
@@ -242,7 +242,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       loadAllGames()
       return
     }
-    
+
     prevSystemIdRef.current = systemId
     prevSearchQueryRef.current = searchQuery
 
@@ -250,7 +250,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
     setDisplayedGamesCount(24)
     scrollRestoredRef.current = false // Reset scroll restoration flag
     isRestoringScrollRef.current = false // Reset scroll restoration state
-    
+
     // Only reset filters if system or search actually changed
     // (not when just remounting after coming back from game detail)
     if (systemChanged || searchChanged) {
@@ -264,7 +264,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       const oldFiltersKey = `systemGames_filters_${oldSystemId}_${oldSearchQuery || 'no-search'}`
       localStorage.removeItem(oldFiltersKey)
     }
-    
+
     loadAllGames()
   }, [systemId, searchQuery, loadAllGames])
 
@@ -287,7 +287,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
   // Filter games based on selected subdirectory and letter
   const filteredGames = React.useMemo(() => {
     let filtered = allGames
-    
+
     // Apply playcount filter/sort FIRST (before letter/subdirectory filters)
     // This ensures we get all games with stats, then filter by letter/subdirectory
     if (sortByPlaycount) {
@@ -298,7 +298,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
         const parsed = parseInt(game.playcount, 10)
         return isNaN(parsed) ? 0 : parsed
       }
-      
+
       filtered = filtered
         .filter(game => {
           const playcount = getPlaycount(game)
@@ -310,7 +310,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
           return playcountB - playcountA // Descending order
         })
     }
-    
+
     // Apply playtime filter/sort FIRST (before letter/subdirectory filters)
     if (sortByPlaytime) {
       // Helper function to safely parse gametime
@@ -320,7 +320,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
         const parsed = parseInt(game.gametime, 10)
         return isNaN(parsed) ? 0 : parsed
       }
-      
+
       filtered = filtered
         .filter(game => {
           const gametime = getGametime(game)
@@ -332,7 +332,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
           return gametimeB - gametimeA // Descending order
         })
     }
-    
+
     // Now apply subdirectory filter AFTER playcount/playtime
     if (selectedSubdirectory !== null) {
       // Special value "(root)" means show only root directory games
@@ -348,7 +348,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
         })
       }
     }
-    
+
     // Apply letter filter AFTER playcount/playtime
     if (selectedLetter !== null) {
       filtered = filtered.filter(game => {
@@ -362,12 +362,12 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
         }
       })
     }
-    
+
     // Apply favorite filter AFTER playcount/playtime
     if (showFavoritesOnly) {
       filtered = filtered.filter(game => game.favorite === 'true')
     }
-    
+
     // Apply name filter (case-insensitive contains match)
     if (nameFilter && nameFilter.trim()) {
       const filterLower = nameFilter.toLowerCase().trim()
@@ -376,7 +376,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
         return gameName.includes(filterLower)
       })
     }
-    
+
     return filtered
   }, [allGames, selectedSubdirectory, selectedLetter, showFavoritesOnly, sortByPlaycount, sortByPlaytime, nameFilter, getGameSubdirectory])
 
@@ -416,7 +416,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
     const parsed = parseInt(game.playcount, 10)
     return isNaN(parsed) ? 0 : parsed
   }
-  
+
   const getGametime = (game) => {
     if (game.gametime == null) return 0
     if (typeof game.gametime === 'number') return game.gametime
@@ -429,11 +429,11 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
     if (viewMode !== 'table') {
       return filteredGames
     }
-    
+
     // Sort by table sort column
     const sorted = [...filteredGames].sort((a, b) => {
       let compareResult = 0
-      
+
       if (tableSortColumn === 'name') {
         const nameA = (a.name || '').toLowerCase()
         const nameB = (b.name || '').toLowerCase()
@@ -470,10 +470,10 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
         const gametimeB = getGametime(b)
         compareResult = gametimeA - gametimeB
       }
-      
+
       return tableSortDirection === 'desc' ? -compareResult : compareResult
     })
-    
+
     return sorted
   }, [filteredGames, viewMode, tableSortColumn, tableSortDirection])
 
@@ -535,15 +535,15 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       .filter(key => (subdirectoryCounts[key] || 0) > 1) // Only show categories with more than 1 game
       .sort()
   }, [subdirectoryCounts])
-  
+
   // Generate letters # and A-Z for filter
   const letters = React.useMemo(() => {
     return ['#', ...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i))] // #, A-Z
   }, [])
 
-  const handleDownload = async (gameId) => {
+  const handleDownload = async (game) => {
     try {
-      const result = await addToQueue(gameId)
+      const result = await addToQueue(game.id, game.system)
       if (result && result.success) {
         alert('Game added to download queue!')
       }
@@ -552,7 +552,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       console.error('Error adding to download queue:', error)
       // Only show alert if it's not a token selection requirement (that's handled by the hook)
       const requiresSelection = error.response?.headers?.['x-requires-token-selection'] === 'true' ||
-                                error.response?.headers?.['X-Requires-Token-Selection'] === 'true'
+        error.response?.headers?.['X-Requires-Token-Selection'] === 'true'
       if (!requiresSelection) {
         const errorMsg = error.response?.data?.detail || 'Failed to add game to download queue. Please try again.'
         alert(errorMsg)
@@ -564,7 +564,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
     // Save the game ID so we can scroll to it when coming back
     const viewedGameKey = getStorageKey('viewedGame')
     localStorage.setItem(viewedGameKey, game.id)
-    
+
     let gameId = game.id.replace(/^\.\//, '')
     if (gameId.startsWith(`${game.system}/`)) {
       gameId = gameId.substring(game.system.length + 1)
@@ -596,9 +596,9 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
           >
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
               {showFavoritesOnly ? (
-                <path d="M10 15L4.5 18L5.5 11.5L1 7L7.5 6.25L10 0L12.5 6.25L19 7L14.5 11.5L15.5 18L10 15Z" fill="currentColor"/>
+                <path d="M10 15L4.5 18L5.5 11.5L1 7L7.5 6.25L10 0L12.5 6.25L19 7L14.5 11.5L15.5 18L10 15Z" fill="currentColor" />
               ) : (
-                <path d="M10 15L4.5 18L5.5 11.5L1 7L7.5 6.25L10 0L12.5 6.25L19 7L14.5 11.5L15.5 18L10 15Z" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+                <path d="M10 15L4.5 18L5.5 11.5L1 7L7.5 6.25L10 0L12.5 6.25L19 7L14.5 11.5L15.5 18L10 15Z" stroke="currentColor" strokeWidth="1.5" fill="none" />
               )}
             </svg>
           </button>
@@ -652,10 +652,10 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
             aria-label="Grid View"
           >
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="2" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-              <rect x="12" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-              <rect x="2" y="12" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-              <rect x="12" y="12" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+              <rect x="2" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+              <rect x="12" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+              <rect x="2" y="12" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+              <rect x="12" y="12" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
             </svg>
           </button>
           <button
@@ -665,8 +665,8 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
             aria-label="Table View"
           >
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M2 4H18M2 8H18M2 12H18M2 16H18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              <path d="M2 4V16M6 4V16M10 4V16M14 4V16M18 4V16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M2 4H18M2 8H18M2 12H18M2 16H18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M2 4V16M6 4V16M10 4V16M14 4V16M18 4V16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </button>
         </div>
@@ -725,7 +725,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
           ))}
         </div>
       </div>
-      
+
       {allGames.length === 0 ? (
         <div className="no-games">No games found</div>
       ) : (
@@ -743,9 +743,9 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                     }
                   }}
                 >
-                  <GameCard 
-                    game={game} 
-                    onDownload={handleDownload}
+                  <GameCard
+                    game={game}
+                    onDownload={() => handleDownload(game)}
                     onGameClick={handleGameClick}
                     showSystemName={false}
                   />
@@ -758,36 +758,36 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                 <thead>
                   <tr>
                     <th>Image</th>
-                    <th 
-                      className="sortable" 
+                    <th
+                      className="sortable"
                       onClick={() => handleTableSort('name')}
                       style={{ cursor: 'pointer' }}
                     >
                       Game Name {tableSortColumn === 'name' && (tableSortDirection === 'asc' ? '↑' : '↓')}
                     </th>
-                    <th 
-                      className="sortable" 
+                    <th
+                      className="sortable"
                       onClick={() => handleTableSort('publisher')}
                       style={{ cursor: 'pointer' }}
                     >
                       Publisher {tableSortColumn === 'publisher' && (tableSortDirection === 'asc' ? '↑' : '↓')}
                     </th>
-                    <th 
-                      className="sortable" 
+                    <th
+                      className="sortable"
                       onClick={() => handleTableSort('releaseDate')}
                       style={{ cursor: 'pointer' }}
                     >
                       Year {tableSortColumn === 'releaseDate' && (tableSortDirection === 'asc' ? '↑' : '↓')}
                     </th>
-                    <th 
-                      className="sortable" 
+                    <th
+                      className="sortable"
                       onClick={() => handleTableSort('playcount')}
                       style={{ cursor: 'pointer' }}
                     >
                       Plays {tableSortColumn === 'playcount' && (tableSortDirection === 'asc' ? '↑' : '↓')}
                     </th>
-                    <th 
-                      className="sortable" 
+                    <th
+                      className="sortable"
                       onClick={() => handleTableSort('gametime')}
                       style={{ cursor: 'pointer' }}
                     >
@@ -804,7 +804,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                     if (gameId.startsWith(`${game.system}/`)) {
                       gameId = gameId.substring(game.system.length + 1)
                     }
-                    
+
                     return (
                       <tr
                         key={game.id}
@@ -819,8 +819,8 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                         className="game-table-row"
                       >
                         <td className="game-image-cell">
-                          <img 
-                            src={imageUrl} 
+                          <img
+                            src={imageUrl}
                             alt={game.name}
                             className="table-game-image"
                             loading="lazy"
@@ -847,7 +847,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                               className="download-btn"
                               onClick={(e) => {
                                 e.stopPropagation()
-                                handleDownload(game.id)
+                                handleDownload(game)
                               }}
                             >
                               Download
@@ -861,7 +861,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
               </table>
             </div>
           )}
-          
+
           {hasMoreGames && (
             <div ref={loadingRef} className="load-more-trigger">
               <p>Loading more games...</p>

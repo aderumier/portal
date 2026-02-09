@@ -252,8 +252,8 @@ async def get_game_details(
     
     logger.info(f"Getting game details - system: {system}, game_id: {game_id}, decoded: {decoded_game_id}, catalog_type: {catalog_type}")
     
-    # get_game_by_id expects just the rompath (relative to system directory)
-    game = game_service.get_game_by_id(decoded_game_id, catalog_type)
+    # get_game_by_id expects just the rompath (relative to system directory) and system_id
+    game = game_service.get_game_by_id(decoded_game_id, system, catalog_type)
     
     if not game:
         from fastapi import HTTPException, status

@@ -67,6 +67,7 @@ async def test_tcp_port(host: str, port: int, timeout: float = 2.0) -> bool:
 
 class AddToQueueRequest(BaseModel):
     game_id: str
+    system_id: str  # System identifier - required to prevent ambiguity
     token_name: Optional[str] = None  # Token name to associate with the download
     catalog_type: Optional[str] = 'releases'  # 'wip' or 'releases' - determines which catalog to use and whether to include snapshot path
 
@@ -205,9 +206,19 @@ async def discover_download_files(
     resolved_game_id = queue_item.game_id
     system = ''  # Initialize system to avoid UnboundLocalError
     try:
-        game = download_service.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+        # Get system_id from queue item
+        system_id = queue_item.system_id
+        if not system_id:
+            logger.warning(f"System ID missing for download {download_id}, cannot resolve game files")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="System ID missing for download"
+            )
+
+        game = download_service.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
         
-        # If not found and lookup_game_id contains '/', try removing potential system directory prefix
+        # If not found and lookup_game_id contains '/', try removing potential system directory prefix is NOT needed anymore 
+        # because we require system_id now. But we can keep the logic if we want to be safe, BUT using system_id.
         if not game and '/' in lookup_game_id and not lookup_game_id.startswith('.'):
             # Try removing first directory component (might be system directory)
             parts = lookup_game_id.split('/', 1)
@@ -216,7 +227,7 @@ async def discover_download_files(
                 # Only try if it looks like a valid game ID (has extension or unified key pattern)
                 if '.' in potential_game_id or '(' in potential_game_id:
                     logger.debug(f"Game not found with '{lookup_game_id}', trying without system prefix: '{potential_game_id}'")
-                    game = download_service.game_service.get_game_by_id(potential_game_id, catalog_type=catalog_type)
+                    game = download_service.game_service.get_game_by_id(potential_game_id, system_id, catalog_type=catalog_type)
                     if game:
                         lookup_game_id = potential_game_id
         
@@ -889,50 +900,45 @@ async def add_to_queue(
     # Check if user has fastdownload role
     user_has_fastdownload = current_user.get('is_fastdownload', False)
     
+    # Get system_id from request
+    system_id = request.system_id
+    
     # For Releases catalog, prepend snapshot directory path to game_id and get version
     catalog_type = request.catalog_type or 'releases'
     catalog_version = None
     original_game_id = game_id  # Store original for potential error messages
     
     if catalog_type == 'releases':
-        # Get game to determine system and snapshot path
+        # Get game to determine snapshot path and validate it exists
         game_service = get_game_service()
-        game = game_service.get_game_by_id(game_id, catalog_type='releases')
+        game = game_service.get_game_by_id(game_id, system_id, catalog_type='releases')
         if not game:
-            logger.warning(f"Game not found in Releases catalog: {game_id}")
+            logger.warning(f"Game not found in Releases catalog: {game_id} (system: {system_id})")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Game not found in Releases catalog: {game_id}"
+                detail=f"Game not found in Releases catalog: {game_id} (system: {system_id})"
             )
-        system_id = game.get('system', '')
-        if system_id:
-            # Get version string from system_versions
-            catalog_version = game_service.system_versions.get(system_id)
-            snapshot_dir_path = game_service.system_snapshot_paths.get(system_id)
-            if snapshot_dir_path:
-                # Prepend snapshot path to game_id
-                # game_id is like "game.zip" or "subdir/game.zip"
-                # Result should be ".zfs/snapshot/v10.5/game.zip" or ".zfs/snapshot/v10.5/subdir/game.zip"
-                # snapshot_dir_path already has the leading dot (e.g., ".zfs/snapshot/v10.5/")
-                snapshot_path = snapshot_dir_path
-                if not snapshot_path.endswith('/'):
-                    snapshot_path += '/'
-                game_id = f"{snapshot_path}{game_id}"
-                logger.info(f"Prepended snapshot path to game_id: {game_id}, version: {catalog_version}")
-            else:
-                logger.warning(f"No snapshot path found for system {system_id} in Releases catalog")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"No snapshot path found for system {system_id}"
-                )
+        # Get version string from system_versions
+        catalog_version = game_service.system_versions.get(system_id)
+        snapshot_dir_path = game_service.system_snapshot_paths.get(system_id)
+        if snapshot_dir_path:
+            # Prepend snapshot path to game_id
+            # game_id is like "game.zip" or "subdir/game.zip"
+            # Result should be ".zfs/snapshot/v10.5/game.zip" or ".zfs/snapshot/v10.5/subdir/game.zip"
+            # snapshot_dir_path already has the leading dot (e.g., ".zfs/snapshot/v10.5/")
+            snapshot_path = snapshot_dir_path
+            if not snapshot_path.endswith('/'):
+                snapshot_path += '/'
+            game_id = f"{snapshot_path}{game_id}"
+            logger.info(f"Prepended snapshot path to game_id: {game_id}, version: {catalog_version}")
         else:
-            logger.warning(f"No system ID found for game: {game_id}")
+            logger.warning(f"No snapshot path found for system {system_id} in Releases catalog")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"No system ID found for game: {game_id}"
+                detail=f"No snapshot path found for system {system_id}"
             )
     
-    success = await download_service.add_to_queue(user_id, game_id, user_has_fastdownload, token_id=token_id, catalog_version=catalog_version)
+    success = await download_service.add_to_queue(user_id, game_id, system_id, user_has_fastdownload, token_id=token_id, catalog_version=catalog_version)
     
     if not success:
         raise HTTPException(
@@ -1863,9 +1869,18 @@ async def get_download_game_details(
             else:
                 lookup_game_id = after_snapshot
     
+    
     # Get game details with original paths from gamelist.xml (not normalized for frontend)
     # normalize_paths=False ensures we get original paths as stored in catalog
-    game = download_service.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type, normalize_paths=False)
+    system_id = download.system_id
+    if not system_id:
+        logger.warning(f"System ID missing for download {download_id}, cannot retrieve game details")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="System ID missing for download"
+        )
+        
+    game = download_service.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type, normalize_paths=False)
     
     if not game:
         raise HTTPException(
@@ -1944,7 +1959,16 @@ async def download_file(
                             else:
                                 lookup_game_id = after_snapshot
                     
-                    game = download_service.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+                    # Get system_id from queue item
+                    system_id = queue_item.system_id
+                    if not system_id:
+                        logger.warning(f"System ID missing for download {download_id}, cannot retrieve file")
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="System ID missing for download"
+                        )
+                        
+                    game = download_service.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
                     if game:
                         if not system:
                             system = game.get('system', '')
@@ -2020,21 +2044,9 @@ async def download_file(
         
         # Derive system from queue_item if not provided
         if not system:
-            catalog_version = queue_item.catalog_version
-            catalog_type = 'releases' if catalog_version else 'wip'
-            lookup_game_id = queue_item.game_id
-            if catalog_type == 'releases' and '.zfs/snapshot' in queue_item.game_id:
-                parts = queue_item.game_id.split('.zfs/snapshot/', 1)
-                if len(parts) > 1:
-                    after_snapshot = parts[1]
-                    if '/' in after_snapshot:
-                        lookup_game_id = '/'.join(after_snapshot.split('/')[1:])
-                    else:
-                        lookup_game_id = after_snapshot
-            
-            game = download_service.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
-            if game:
-                system = game.get('system', '')
+            system = queue_item.system_id
+            if not system:
+                logger.warning(f"System ID missing for queue item {queue_item.id}, cannot derive system")
         
         if not queue_item:
             # Download was removed from queue - return 410 Gone to signal the download service to stop
@@ -2151,7 +2163,7 @@ async def download_file(
                         # This should match what's in download_info['batocera_system']
                         target_system = system
                         try:
-                            game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+                            game = download_service.game_service.get_game_by_id(queue_item.game_id, queue_item.system_id, catalog_type=catalog_type)
                             if game:
                                 # Use the same logic as get_next_download to determine target_system
                                 game_system = game.get('system', '')
@@ -2184,7 +2196,7 @@ async def download_file(
                 
                 target_system = system
                 try:
-                    game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+                    game = download_service.game_service.get_game_by_id(queue_item.game_id, queue_item.system_id, catalog_type=catalog_type)
                     if game:
                         game_system = game.get('system', '')
                         if game_system:
@@ -2311,7 +2323,7 @@ async def download_file(
                                         # This should match what's in download_info['batocera_system']
                                         target_system = system
                                         try:
-                                            game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+                                            game = download_service.game_service.get_game_by_id(queue_item.game_id, queue_item.system_id, catalog_type=catalog_type)
                                             if game:
                                                 # Use the same logic as get_next_download to determine target_system
                                                 game_system = game.get('system', '')
@@ -2378,7 +2390,7 @@ async def download_file(
                                         # This should match what's in download_info['batocera_system']
                                         target_system = system
                                         try:
-                                            game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+                                            game = download_service.game_service.get_game_by_id(queue_item.game_id, queue_item.system_id, catalog_type=catalog_type)
                                             if game:
                                                 # Use the same logic as get_next_download to determine target_system
                                                 game_system = game.get('system', '')
@@ -2444,7 +2456,7 @@ async def download_file(
                                         # This should match what's in download_info['batocera_system']
                                         target_system = system
                                         try:
-                                            game = download_service.game_service.get_game_by_id(queue_item.game_id, catalog_type=catalog_type)
+                                            game = download_service.game_service.get_game_by_id(queue_item.game_id, queue_item.system_id, catalog_type=catalog_type)
                                             if game:
                                                 # Use the same logic as get_next_download to determine target_system
                                                 game_system = game.get('system', '')

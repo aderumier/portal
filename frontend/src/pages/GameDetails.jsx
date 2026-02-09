@@ -27,19 +27,19 @@ const GameDetails = () => {
 
   const loadGameDetails = useCallback(async () => {
     const currentLoadKey = `${system}-${gameId}-${catalogType}`
-    
+
     // Prevent duplicate calls: if we're already loading or have loaded the same game, skip
     if (lastLoadKeyRef.current === currentLoadKey) {
       if (isLoadingRef.current || hasLoadedRef.current) {
         return
       }
     }
-    
+
     // Mark as loading immediately to prevent concurrent calls
     isLoadingRef.current = true
     lastLoadKeyRef.current = currentLoadKey
     hasLoadedRef.current = false
-    
+
     try {
       setLoading(true)
       setError(null)
@@ -48,7 +48,7 @@ const GameDetails = () => {
       const gameData = await getGameDetails(system, gameId, catalogType)
       setGame(gameData)
       hasLoadedRef.current = true
-      
+
       // Set initial selected media (prefer boxart, then thumbnail, then image)
       if (gameData.boxart) {
         setSelectedMedia({ type: 'boxart', url: getMediaUrl(gameData.boxart) })
@@ -84,7 +84,7 @@ const GameDetails = () => {
 
   const handleDownload = async () => {
     try {
-      const result = await addToQueue(game.id)
+      const result = await addToQueue(game.id, game.system)
       if (result && result.success) {
         alert('Game added to download queue!')
       }
@@ -93,7 +93,7 @@ const GameDetails = () => {
       console.error('Error adding to download queue:', error)
       // Only show alert if it's not a token selection requirement (that's handled by the hook)
       const requiresSelection = error.response?.headers?.['x-requires-token-selection'] === 'true' ||
-                                error.response?.headers?.['X-Requires-Token-Selection'] === 'true'
+        error.response?.headers?.['X-Requires-Token-Selection'] === 'true'
       if (!requiresSelection) {
         const errorMsg = error.response?.data?.detail || 'Failed to add game to download queue. Please try again.'
         alert(errorMsg)
@@ -115,10 +115,10 @@ const GameDetails = () => {
 
   const getMediaItems = () => {
     if (!game) return []
-    
+
     // Fields to exclude from display
     const excludedFields = ['mix', 'wheel', 'screenshot', 'video']
-    
+
     const mediaTypes = [
       { key: 'boxart', label: 'Box Art' },
       { key: 'boxback', label: 'Box Back' },
@@ -132,7 +132,7 @@ const GameDetails = () => {
       { key: 'spine', label: 'Spine' },
       // Excluded: screenshot, wheel, mix, video
     ]
-    
+
     // Filter out excluded fields
     return mediaTypes
       .filter(type => !excludedFields.includes(type.key))
@@ -184,8 +184,8 @@ const GameDetails = () => {
           <div className="game-details-media">
             {selectedMedia ? (
               <div className="main-media">
-                <img 
-                  src={selectedMedia.url} 
+                <img
+                  src={selectedMedia.url}
                   alt={game.name}
                   className="main-media-image"
                 />
@@ -201,7 +201,7 @@ const GameDetails = () => {
                 {mediaItems.map((media) => {
                   // Only fanart and marquee can be uploaded (for admins), and only in WIP catalog
                   const canUpload = isAdmin && catalogType !== 'releases' && (media.type === 'fanart' || media.type === 'marquee')
-                  
+
                   if (media.hasMedia && !canUpload) {
                     // Regular media thumbnail (no upload)
                     return (
@@ -266,17 +266,17 @@ const GameDetails = () => {
 
           <div className="game-details-info">
             <h1 className="game-title">{game.name}</h1>
-            
+
             {game.marquee && (
               <div className="game-marquee-logo">
-                <img 
-                  src={getMediaUrl(game.marquee)} 
+                <img
+                  src={getMediaUrl(game.marquee)}
                   alt={`${game.name} marquee`}
                   className="marquee-image"
                 />
               </div>
             )}
-            
+
             <div className="game-meta-grid">
               {game.developer && (
                 <div className="meta-item">

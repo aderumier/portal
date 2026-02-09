@@ -32,15 +32,15 @@ const Search = () => {
       setLoading(true)
       // Use the indexed search endpoint
       const response = await searchGamesAPI(searchQuery, pageNum, 12, catalogType)
-      
+
       const newGames = response.results || []
-      
+
       if (append) {
         setGames(prev => [...prev, ...newGames])
       } else {
         setGames(newGames)
       }
-      
+
       setHasMore(response.hasMore || false)
     } catch (error) {
       console.error('Error searching games:', error)
@@ -129,9 +129,9 @@ const Search = () => {
     }
   }, [hasMore, loading, page, query, searchGames])
 
-  const handleDownload = async (gameId) => {
+  const handleDownload = async (game) => {
     try {
-      const result = await addToQueue(gameId)
+      const result = await addToQueue(game.id, game.system)
       if (result && result.success) {
         alert('Game added to download queue!')
       }
@@ -140,7 +140,7 @@ const Search = () => {
       console.error('Error adding to download queue:', error)
       // Only show alert if it's not a token selection requirement (that's handled by the hook)
       const requiresSelection = error.response?.headers?.['x-requires-token-selection'] === 'true' ||
-                                error.response?.headers?.['X-Requires-Token-Selection'] === 'true'
+        error.response?.headers?.['X-Requires-Token-Selection'] === 'true'
       if (!requiresSelection) {
         const errorMsg = error.response?.data?.detail || 'Failed to add game to download queue. Please try again.'
         alert(errorMsg)
@@ -169,14 +169,14 @@ const Search = () => {
         <>
           <div className="games-grid">
             {games.map((game) => (
-              <GameCard 
-                key={`${game.system}-${game.id}`} 
-                game={game} 
-                onDownload={handleDownload}
+              <GameCard
+                key={`${game.system}-${game.id}`}
+                game={game}
+                onDownload={() => handleDownload(game)}
               />
             ))}
           </div>
-          
+
           {hasMore && (
             <div ref={loadingRef} className="load-more-trigger">
               {loading && <p>Loading more results...</p>}

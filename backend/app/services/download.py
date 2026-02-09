@@ -637,7 +637,7 @@ class DownloadService:
             return game_id
         
         # Get the game from catalog to use stored original paths (use lookup_game_id without snapshot)
-        game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+        game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
         if not game:
             logger.warning(f"Game not found in catalog for unified key '{lookup_game_id}' (catalog_type: {catalog_type}), cannot resolve")
             return game_id
@@ -661,10 +661,12 @@ class DownloadService:
         logger.debug(f"Resolved unified ROM key '{game_id}' using stored path '{resolved_path}' (platform: {platform_lower})")
         return resolved_path
     
-    async def add_to_queue(self, user_id: str, game_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None, catalog_version: Optional[str] = None) -> bool:
+
+    
+    async def add_to_queue(self, user_id: str, game_id: str, system_id: str, user_has_fastdownload: bool = False, token_id: Optional[int] = None, catalog_version: Optional[str] = None) -> bool:
         """Add a game to the user's FIFO queue."""
         try:
-            logger.info(f"Adding to user queue - Game ID: {game_id}, User ID: {user_id}, catalog_version: {catalog_version}")
+            logger.info(f"Adding to user queue - Game ID: {game_id}, System ID: {system_id}, User ID: {user_id}, catalog_version: {catalog_version}")
             
             # Clean up the game path by removing ./ prefix only if it's actually "./"
             # But preserve leading dot in snapshot paths like ".zfs/snapshot/..."
@@ -700,9 +702,9 @@ class DownloadService:
                 else:
                     logger.warning(f"Could not extract original game_id from: {game_id} (catalog_version: {catalog_version})")
             
-            game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+            game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
             if not game:
-                logger.warning(f"Game not found: {lookup_game_id} (catalog_type: {catalog_type}, catalog_version: {catalog_version}, original game_id: {game_id})")
+                logger.warning(f"Game not found: {lookup_game_id} in system {system_id} (catalog_type: {catalog_type}, catalog_version: {catalog_version}, original game_id: {game_id})")
                 return False
             
             logger.info(f"Game found, adding to user queue: {game['name']}")
@@ -944,6 +946,7 @@ class DownloadService:
             queue_item = DownloadQueue(
                 user_id=user_id,
                 game_id=game_id,
+                system_id=system_id,  # Store system identifier to prevent ambiguity
                 status='user_queue',  # User queue status
                 queue_type=queue_type,  # Store queue type for when promoted
                 file_size=file_size,
@@ -1014,7 +1017,14 @@ class DownloadService:
                     if match:
                         lookup_game_id = match.group(1)
                 
-                game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+                
+                # Get system_id - must be stored in queue item
+                system_id = item.system_id
+                if not system_id:
+                    logger.warning(f"System ID missing for game in queue: {lookup_game_id}, skipping")
+                    continue
+                    
+                game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
                 if game:
                     # For active downloads, get data from Redis only (no SQLite fallback)
                     bytes_transferred = item.bytes_transferred
@@ -1153,7 +1163,13 @@ class DownloadService:
                         if match:
                             lookup_game_id = match.group(1)
                     
-                    game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+                    
+                    # Get system_id - must be stored in queue item
+                    system_id = download.system_id
+                    if not system_id:
+                        logger.warning(f"System ID missing for game: {lookup_game_id}, cannot retrieve active download info")
+                        continue
+                    game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
                     if game:
                         # Calculate progress
                         file_size = download.file_size
@@ -1251,7 +1267,13 @@ class DownloadService:
                             logger.warning(f"Could not extract lookup_game_id from: {item.game_id} (catalog_version: {catalog_version})")
                     
                     logger.debug(f"Looking up game: lookup_game_id={lookup_game_id}, catalog_type={catalog_type}, catalog_version={catalog_version}")
-                    game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+                    
+                    # Get system_id - must be stored in queue item
+                    system_id = item.system_id
+                    if not system_id:
+                        logger.warning(f"System ID missing for game: {lookup_game_id}, skipping")
+                        continue
+                    game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
                     if not game:
                         logger.warning(f"Game not found: lookup_game_id={lookup_game_id}, catalog_type={catalog_type}, catalog_version={catalog_version}, original game_id={item.game_id}")
                         continue
@@ -1578,7 +1600,13 @@ class DownloadService:
                     else:
                         lookup_game_id = after_snapshot
             
-            game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+            
+            # Get system_id - must be stored in queue item
+            system_id = item.system_id
+            if not system_id:
+                logger.warning(f"System ID missing for game: {lookup_game_id}, cannot process download")
+                return None
+            game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
             if game:
                 enriched_item = item.copy()
                 enriched_item['game_name'] = game['name']
@@ -1728,7 +1756,13 @@ class DownloadService:
                         else:
                             lookup_game_id = after_snapshot
                 
-                game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+                
+                # Get system_id - must be stored in queue item
+                system_id = resumable_download.system_id
+                if not system_id:
+                    logger.warning(f"System ID missing for resumable download: {lookup_game_id}")
+                    return None
+                game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
                 if not game:
                     logger.warning(f"Game not found: {lookup_game_id} (catalog_type: {catalog_type}, version: {catalog_version})")
                     # Archive and remove from queue since game doesn't exist
@@ -1992,9 +2026,17 @@ class DownloadService:
                         lookup_game_id = '/'.join(after_snapshot.split('/')[1:])
                     else:
                         lookup_game_id = after_snapshot
-            
+                        
             # Get game info
-            game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+            game = None
+            # Get detailed game info using system_id (required)
+            system_id = pending_download.system_id
+            game = None
+            if system_id:
+                game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
+            else:
+                logger.warning(f"System ID missing for download {pending_download.id}, cannot process")
+
             if not game:
                 logger.warning(f"Game not found: {lookup_game_id} (catalog_type: {catalog_type}, version: {catalog_version})")
                 # Archive and remove from queue since game doesn't exist
@@ -2344,7 +2386,16 @@ class DownloadService:
                     else:
                         lookup_game_id = after_snapshot
             
-            game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
+            
+            # Get system_id - must be stored in queue item
+            system_id = download.system_id
+            if not system_id:
+                logger.warning(f"System ID missing for download {download_id}, cannot retrieve full game details for archive")
+                game = None
+                # If system_id is not found, game will be None, and the subsequent logic will handle it.
+                game = None
+            else:
+                game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
             logger.debug(f"Initial game lookup for '{lookup_game_id}' (catalog_type: {catalog_type}): {'found' if game else 'not found'}")
             
             # If the game_id is already a unified key, we're done - use it as-is
@@ -2381,21 +2432,22 @@ class DownloadService:
                 logger.debug(f"Searching for unified key matching pattern: {unified_pattern.pattern}")
                 
                 found_unified_key = None
-                found_system = None
-                for system_id, games in catalog_dict.items():
+                found_unified_key = None
+                
+                # Only search in the known system
+                system_id = download.system_id
+                if system_id and system_id in catalog_dict:
+                    games = catalog_dict[system_id]
                     for rompath in games.keys():
                         if unified_pattern.match(rompath):
                             # Found the unified key!
                             found_unified_key = rompath
-                            found_system = system_id
                             logger.info(f"Found unified key '{rompath}' in system '{system_id}' for resolved path '{lookup_game_id}'")
                             break
-                    if found_unified_key:
-                        break
                 
                 if found_unified_key:
-                    # Look up the game using the unified key
-                    game = self.game_service.get_game_by_id(found_unified_key, catalog_type=catalog_type)
+                    # Look up the game using the unified key and known system
+                    game = self.game_service.get_game_by_id(found_unified_key, system_id, catalog_type=catalog_type)
                     if game:
                         # Use this unified key for archive
                         if catalog_type == 'releases' and catalog_version:
@@ -2531,7 +2583,8 @@ class DownloadService:
                         lookup_game_id = match.group(1)
                 
                 # Get game information if available
-                game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type) if lookup_game_id else None
+                system_id = item.system
+                game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type) if (lookup_game_id and system_id) else None
                 
                 history_item = {
                     'id': item.id,
@@ -2593,7 +2646,8 @@ class DownloadService:
                         lookup_game_id = match.group(1)
                 
                 # Get game information if available
-                game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type) if lookup_game_id else None
+                system_id = item.system
+                game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type) if (lookup_game_id and system_id) else None
                 
                 history_item = {
                     'id': item.id,
@@ -2947,30 +3001,35 @@ class DownloadService:
                         lookup_game_id = match.group(1)
                 
                 # Get game to extract system
-                game = self.game_service.get_game_by_id(lookup_game_id, catalog_type=catalog_type)
-                if game:
-                    system = game.get('system', '')
-                    if system:
-                        # Extract rom_path from game_id
-                        # Remove snapshot path if present
-                        rom_path = self._remove_snapshot_path_from_game_id(game_id, catalog_version)
-                        # Remove system prefix if present (game_id might be "system/rom.rom" or "./rom.rom")
-                        if rom_path.startswith(f"{system}/"):
-                            rom_path = rom_path[len(system) + 1:]
-                        # Remove leading "./" if present
-                        rom_path = rom_path.lstrip('./')
-                        
-                        # Register token_id in p2p_index
-                        inventory = {system: [rom_path]}
-                        success = await P2PInventoryService.update_inventory(token_id, inventory)
-                        if success:
-                            logger.info(f"Registered token_id {token_id} in p2p_index for {system}/{rom_path}")
+                # Use stored system_id
+                system_id = download.system_id
+                if system_id:
+                    game = self.game_service.get_game_by_id(lookup_game_id, system_id, catalog_type=catalog_type)
+                    if game:
+                        system = game.get('system', '')
+                        if system:
+                            # Extract rom_path from game_id
+                            # Remove snapshot path if present
+                            rom_path = self._remove_snapshot_path_from_game_id(game_id, catalog_version)
+                            # Remove system prefix if present (game_id might be "system/rom.rom" or "./rom.rom")
+                            if rom_path.startswith(f"{system}/"):
+                                rom_path = rom_path[len(system) + 1:]
+                            # Remove leading "./" if present
+                            rom_path = rom_path.lstrip('./')
+                            
+                            # Register token_id in p2p_index
+                            inventory = {system: [rom_path]}
+                            success = await P2PInventoryService.update_inventory(token_id, inventory)
+                            if success:
+                                logger.info(f"Registered token_id {token_id} in p2p_index for {system}/{rom_path}")
+                            else:
+                                logger.warning(f"Failed to register token_id {token_id} in p2p_index for {system}/{rom_path}")
                         else:
-                            logger.warning(f"Failed to register token_id {token_id} in p2p_index for {system}/{rom_path}")
+                            logger.warning(f"Game found but system is empty for game_id: {lookup_game_id}")
                     else:
-                        logger.warning(f"Game found but system is empty for game_id: {lookup_game_id}")
+                        logger.warning(f"Game not found for game_id: {lookup_game_id}, cannot register in p2p_index")
                 else:
-                    logger.warning(f"Game not found for game_id: {lookup_game_id}, cannot register in p2p_index")
+                    logger.warning(f"Could not find system for game: {lookup_game_id}")
             except Exception as e:
                 logger.error(f"Error registering token_id in p2p_index: {e}", exc_info=True)
                 # Don't fail the download completion if p2p_index registration fails

@@ -59,6 +59,7 @@ def migrate_database():
         ("token_id", "INTEGER NOT NULL DEFAULT 0"),  # Will be updated to actual token IDs
         ("catalog_version", "TEXT"),  # Version string (e.g., "v2-RGS_bbc") for Releases catalog, NULL for WIP
         ("client_version", "TEXT"),  # Download client version (e.g., "0.1")
+        ("system_id", "TEXT"),  # System identifier (e.g., 'nes', 'snes')
     ]
     
     # Add missing columns
@@ -80,6 +81,7 @@ def migrate_database():
         ("idx_download_queue_active_download", "download_queue(active_download)"),
         ("idx_download_queue_token_id", "download_queue(token_id)"),
         ("idx_download_queue_catalog_version", "download_queue(catalog_version)"),
+        ("idx_download_queue_system_id", "download_queue(system_id)"),
     ]
     
     for idx_name, idx_def in indexes_to_create:

@@ -1076,18 +1076,19 @@ class GameService:
         """Get display name for a system ID."""
         return self.system_names.get(system_id.lower(), system_id.capitalize())
     
-    def get_game_by_id(self, game_id: str, catalog_type: str = 'wip', normalize_paths: bool = True) -> Optional[Dict]:
-        """Get a specific game by its ID (path from gamelist.xml).
+    def get_game_by_id(self, game_id: str, system_id: str, catalog_type: str = 'wip', normalize_paths: bool = True) -> Optional[Dict]:
+        """Get a specific game by its ID (path from gamelist.xml) within a specific system.
         
         The game_id is the path as stored in gamelist.xml, which is relative to the system directory.
         Full path is always: GAMES_PATH/<systemid>/<rompath>
         
         Args:
             game_id: Game path from gamelist.xml
+            system_id: System identifier (required) - which system to look in
             catalog_type: 'wip' or 'releases' (default: 'wip')
             normalize_paths: If True, normalize media paths for frontend display. If False, preserve original paths from gamelist.xml (default: True)
         """
-        logger.info(f"Getting game by ID: {game_id}, catalog_type: {catalog_type}")
+        logger.info(f"Getting game by ID: {game_id}, system_id: {system_id}, catalog_type: {catalog_type}")
         
         # Clean up the game ID (remove leading ./ if present)
         clean_game_id = game_id.lstrip('./')
@@ -1105,33 +1106,25 @@ class GameService:
         else:
             catalog = self.catalog_wip
         
-        # Search all systems in catalog for a game with matching path
-        # The path in gamelist.xml is relative to the system directory
-        system_id = None
-        found_game_data = None
-        
-        for loaded_system_id in catalog.keys():
-            system_catalog = catalog[loaded_system_id]
-            
-            # Check if game exists in this system's catalog
-            # Try both with and without ./ prefix
-            if clean_game_id in system_catalog:
-                system_id = loaded_system_id
-                found_game_data = system_catalog[clean_game_id]
-                logger.info(f"Game found in system {system_id} with path: {clean_game_id}")
-                break
-            elif f'./{clean_game_id}' in system_catalog:
-                system_id = loaded_system_id
-                found_game_data = system_catalog[f'./{clean_game_id}']
-                logger.info(f"Game found in system {system_id} with path: ./{clean_game_id}")
-                break
-        
-        if not found_game_data:
-            logger.warning(f"Game not found in any system with path: {clean_game_id} (catalog_type: {catalog_type})")
+        # Check if system exists in catalog
+        if system_id not in catalog:
+            logger.warning(f"System not found in catalog: {system_id} (catalog_type: {catalog_type})")
             return None
         
-        if not system_id or system_id not in catalog:
-            logger.warning(f"System ID not determined or catalog not found: {system_id}")
+        system_catalog = catalog[system_id]
+        found_game_data = None
+        
+        # Try to find game in the specified system's catalog
+        # Try both with and without ./ prefix
+        if clean_game_id in system_catalog:
+            found_game_data = system_catalog[clean_game_id]
+            logger.info(f"Game found in system {system_id} with path: {clean_game_id}")
+        elif f'./{clean_game_id}' in system_catalog:
+            found_game_data = system_catalog[f'./{clean_game_id}']
+            logger.info(f"Game found in system {system_id} with path: ./{clean_game_id}")
+        
+        if not found_game_data:
+            logger.warning(f"Game not found in system {system_id} with path: {clean_game_id} (catalog_type: {catalog_type})")
             return None
         
         try:
