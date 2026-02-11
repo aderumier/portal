@@ -379,6 +379,25 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
                 'base_path_type': 'file',
                 'source_file': source_filename
             }
+            
+    # Check for .wsquashfs files
+    if file_lower.endswith('.wsquashfs'):
+        # Check if a corresponding .keys file exists
+        # Get filename without extension and append .keys
+        # We use splitext repeatedly in case of double extension or just use the base name
+        game_base_name = os.path.splitext(source_filename)[0]
+        keys_filename = f"{game_base_name}.keys"
+        keys_path = os.path.join(os.path.dirname(file_path), keys_filename)
+        
+        if os.path.isfile(keys_path):
+            logger.info(f"Found corresponding .keys file for {source_filename}: {keys_filename}")
+            return {
+                'files': [source_filename, keys_filename],
+                'base_path_type': 'file',
+                'source_file': source_filename
+            }
+            
+
     
     return None
 
