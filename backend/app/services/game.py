@@ -11,8 +11,10 @@ from pathlib import Path
 import tarfile
 import tempfile
 import shutil
+from sqlalchemy import func
 from app.config import settings
 from app.services.game_utils import normalize_game_name
+from app.database import SessionLocal, DownloadArchive
 
 logger = logging.getLogger(__name__)
 
@@ -1672,7 +1674,8 @@ class GameService:
             'systemName': system_name_temp,
             'favorite': game_data.get('favorite', ''),
             'publisher': game_data.get('publisher', ''),
-            'releasedate': game_data.get('releasedate', '')
+            'releasedate': game_data.get('releasedate', ''),
+            'download_count': game_data.get('download_count', 0)
         }
     
     def _save_catalog_to_cache(self) -> None:
@@ -2137,6 +2140,50 @@ class GameService:
         
         return aggregated_stats
     
+    def _aggregate_download_counts(self) -> Dict[str, Dict[str, int]]:
+        """Aggregate download counts from download_archive table.
+        
+        Returns:
+            Dictionary: {system_id: {rompath: count}}
+        """
+        aggregated_stats = {}  # {system_id: {rompath: count}}
+        
+        try:
+            db = SessionLocal()
+            try:
+                # Query download counts by system and rompath
+                # Filter for successful downloads only
+                results = db.query(
+                    DownloadArchive.system,
+                    DownloadArchive.rompath,
+                    func.count(DownloadArchive.id).label('count')
+                ).filter(
+                    DownloadArchive.download_status == 'completed'
+                ).group_by(
+                    DownloadArchive.system,
+                    DownloadArchive.rompath
+                ).all()
+                
+                for system_id, rompath, count in results:
+                    if not system_id or not rompath:
+                        continue
+                        
+                    if system_id not in aggregated_stats:
+                        aggregated_stats[system_id] = {}
+                    
+                    aggregated_stats[system_id][rompath] = count
+                    
+                total_downloads = sum(sum(sys_stats.values()) for sys_stats in aggregated_stats.values())
+                logger.info(f"Aggregated download counts: {total_downloads} total downloads across {len(aggregated_stats)} systems")
+                
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error(f"Error aggregating download counts: {e}")
+            
+        return aggregated_stats
+
     def refresh_catalog(self) -> dict:
         """Refresh catalog cache and search index by clearing cache and reloading everything."""
         logger.info("Refreshing catalog cache and search index (WIP and Releases)...")
@@ -2269,6 +2316,36 @@ class GameService:
             logger.info(f"  {catalog_type} catalog merge complete: {merged_count} games merged, {skipped_system_count} systems skipped, {skipped_game_count} games not matched")
         
         logger.info("Finished merging playcount and gametime stats into catalogs")
+        
+        # Aggregate download counts from download_archive
+        logger.info("Aggregating download counts from archive...")
+        download_counts = self._aggregate_download_counts()
+        
+        if download_counts:
+            logger.info(f"Merging download counts for {len(download_counts)} systems")
+            for catalog in [self.catalog_wip, self.catalog_releases]:
+                for system_id, rom_counts in download_counts.items():
+                    if system_id not in catalog:
+                        continue
+                        
+                    for rompath, count in rom_counts.items():
+                        # Try exact match first
+                        if rompath in catalog[system_id]:
+                            catalog[system_id][rompath]['download_count'] = count
+                        else:
+                            # Try with ./ prefix
+                            alt_path = f"./{rompath}" if not rompath.startswith("./") else rompath.lstrip("./")
+                            if alt_path in catalog[system_id]:
+                                catalog[system_id][alt_path]['download_count'] = count
+                            else:
+                                # Try normalized match
+                                normalized = rompath.lstrip("./")
+                                for cat_rompath, game_data in catalog[system_id].items():
+                                    if cat_rompath.lstrip("./") == normalized:
+                                        game_data['download_count'] = count
+                                        break
+        
+        logger.info("Finished merging download counts into catalogs")
         
         # Update catalog timestamp to invalidate ETags and force clients to refresh
         # This ensures clients get the updated catalog with stats after refresh
@@ -2424,4 +2501,66 @@ class GameService:
         # Extract games and limit results
         unique_results = [game for relevance, game in scored_results]
         return unique_results[:limit]
+        
+    def get_top_games(self, limit: int = 100, catalog_type: str = 'releases', sort_by: str = 'download_count') -> List[Dict]:
+        """Get top games sorted by criteria.
+        
+        Args:
+            limit: Maximum number of games to return
+            catalog_type: 'wip' or 'releases'
+            sort_by: 'download_count', 'playcount', or 'gametime'
+            
+        Returns:
+            List of game dictionaries sorted by criteria
+        """
+        # Ensure catalog is loaded
+        if not self._gamelists_loaded:
+            self.preload_all_gamelists()
+            
+        # Select appropriate catalog
+        if catalog_type == 'wip':
+            catalog = self.catalog_wip
+        elif catalog_type == 'releases':
+            catalog = self.catalog_releases
+        else:
+            catalog = self.catalog_releases
+            
+        all_games = []
+        
+        # Helper to safely get numeric value
+        def get_value(data, key):
+            val = data.get(key, 0)
+            if isinstance(val, str):
+                try:
+                    return int(val)
+                except (ValueError, TypeError):
+                    return 0
+            return val if isinstance(val, (int, float)) else 0
+
+        # Iterate over all systems and games
+        for system_id, system_games in catalog.items():
+            for rompath, game_data in system_games.items():
+                val = get_value(game_data, sort_by)
+                if val > 0:
+                    all_games.append((system_id, rompath, game_data))
+                    
+        # Sort by criteria (descending)
+        all_games.sort(key=lambda x: get_value(x[2], sort_by), reverse=True)
+        
+        # Take top N
+        top_games = all_games[:limit]
+        
+        # Build responses
+        results = []
+        for system_id, rompath, game_data in top_games:
+            game_response = self._build_game_response(system_id, rompath, game_data, catalog_type)
+            # Ensure all stats are included
+            game_response['download_count'] = game_data.get('download_count', 0)
+            if 'playcount' in game_data:
+                game_response['playcount'] = game_data['playcount']
+            if 'gametime' in game_data:
+                game_response['gametime'] = game_data['gametime']
+            results.append(game_response)
+            
+        return results
 

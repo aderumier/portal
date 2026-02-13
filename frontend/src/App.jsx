@@ -24,37 +24,43 @@ import SystemsConfiguration from './pages/SystemsConfiguration'
 import ConnectedClients from './pages/ConnectedClients'
 import BugReports from './pages/BugReports'
 import Debug from './pages/Debug'
+import TopDownloads from './pages/TopDownloads'
+import TopPlaycount from './pages/TopPlaycount'
+import TopPlaytime from './pages/TopPlaytime'
 
 function App() {
   return (
     <AuthProvider>
       <CatalogProvider>
         <Router>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/unauthorized" element={<Unauthorized />} />
-          <Route path="/" element={<Layout />}>
-            <Route index element={<Home />} />
-            <Route path="systems" element={<ProtectedRoute><Systems /></ProtectedRoute>} />
-            <Route path="system/:id" element={<ProtectedRoute><System /></ProtectedRoute>} />
-            <Route path="game/:system/:gameId" element={<ProtectedRoute><GameDetails /></ProtectedRoute>} />
-            <Route path="search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
-            <Route path="downloads" element={<ProtectedRoute requireDownload><Downloads /></ProtectedRoute>} />
-            <Route path="downloads/history" element={<ProtectedRoute requireDownload><DownloadHistory /></ProtectedRoute>} />
-            <Route path="downloads/devices" element={<ProtectedRoute requireDownload><Devices /></ProtectedRoute>} />
-            <Route path="account" element={<ProtectedRoute><Account /></ProtectedRoute>} />
-            <Route path="downloads/history/all" element={<ProtectedRoute requireAdmin><GlobalDownloadHistory /></ProtectedRoute>} />
-            <Route path="users-stats" element={<ProtectedRoute requireAdmin><UsersStats /></ProtectedRoute>} />
-            <Route path="clients-stats" element={<ProtectedRoute requireAdmin><ClientsStats /></ProtectedRoute>} />
-            <Route path="media-validation" element={<ProtectedRoute requireAdmin><MediaValidation /></ProtectedRoute>} />
-            <Route path="bugreports" element={<ProtectedRoute requireAdmin><BugReports /></ProtectedRoute>} />
-            <Route path="download-queues" element={<ProtectedRoute requireAdmin><DownloadQueues /></ProtectedRoute>} />
-            <Route path="connected-clients" element={<ProtectedRoute requireAdmin><ConnectedClients /></ProtectedRoute>} />
-            <Route path="systems-configuration" element={<ProtectedRoute requireAdmin><SystemsConfiguration /></ProtectedRoute>} />
-            <Route path="debug" element={<ProtectedRoute requireAdmin><Debug /></ProtectedRoute>} />
-          </Route>
-        </Routes>
-      </Router>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/unauthorized" element={<Unauthorized />} />
+            <Route path="/" element={<Layout />}>
+              <Route index element={<Home />} />
+              <Route path="systems" element={<ProtectedRoute><Systems /></ProtectedRoute>} />
+              <Route path="system/:id" element={<ProtectedRoute><System /></ProtectedRoute>} />
+              <Route path="game/:system/:gameId" element={<ProtectedRoute><GameDetails /></ProtectedRoute>} />
+              <Route path="playlist/top-downloads" element={<ProtectedRoute><TopDownloads /></ProtectedRoute>} />
+              <Route path="playlist/top-playcount" element={<ProtectedRoute><TopPlaycount /></ProtectedRoute>} />
+              <Route path="playlist/top-playtime" element={<ProtectedRoute><TopPlaytime /></ProtectedRoute>} />
+              <Route path="search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
+              <Route path="downloads" element={<ProtectedRoute requireDownload><Downloads /></ProtectedRoute>} />
+              <Route path="downloads/history" element={<ProtectedRoute requireDownload><DownloadHistory /></ProtectedRoute>} />
+              <Route path="downloads/devices" element={<ProtectedRoute requireDownload><Devices /></ProtectedRoute>} />
+              <Route path="account" element={<ProtectedRoute><Account /></ProtectedRoute>} />
+              <Route path="downloads/history/all" element={<ProtectedRoute requireAdmin><GlobalDownloadHistory /></ProtectedRoute>} />
+              <Route path="users-stats" element={<ProtectedRoute requireAdmin><UsersStats /></ProtectedRoute>} />
+              <Route path="clients-stats" element={<ProtectedRoute requireAdmin><ClientsStats /></ProtectedRoute>} />
+              <Route path="media-validation" element={<ProtectedRoute requireAdmin><MediaValidation /></ProtectedRoute>} />
+              <Route path="bugreports" element={<ProtectedRoute requireAdmin><BugReports /></ProtectedRoute>} />
+              <Route path="download-queues" element={<ProtectedRoute requireAdmin><DownloadQueues /></ProtectedRoute>} />
+              <Route path="connected-clients" element={<ProtectedRoute requireAdmin><ConnectedClients /></ProtectedRoute>} />
+              <Route path="systems-configuration" element={<ProtectedRoute requireAdmin><SystemsConfiguration /></ProtectedRoute>} />
+              <Route path="debug" element={<ProtectedRoute requireAdmin><Debug /></ProtectedRoute>} />
+            </Route>
+          </Routes>
+        </Router>
       </CatalogProvider>
     </AuthProvider>
   )

@@ -49,10 +49,9 @@ export const getGameDetails = async (system, gameId, catalogType = 'releases') =
   return response.data
 }
 
-
-
-
-
-
-
-
+export const getTopDownloads = async (limit = 100, catalogType = 'releases', sortBy = 'download_count') => {
+  const response = await client.get('/api/catalog/games/top/downloads', {
+    params: { limit, catalog_type: catalogType, sort_by: sortBy }
+  })
+  return response.data
+}

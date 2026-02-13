@@ -307,3 +307,14 @@ async def set_catalog_preference(
     """Set user's catalog type preference in session."""
     request.session['catalog_type'] = catalog_type
     return {"catalog_type": catalog_type, "message": "Preference updated"}
+
+@router.get("/games/top/downloads")
+async def get_top_downloads(
+    limit: int = Query(100, ge=1, le=1000),
+    catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
+    sort_by: Optional[str] = Query('download_count', regex='^(download_count|playcount|gametime)$'),
+    current_user: dict = Depends(require_guild_member),
+    game_service: GameService = Depends(get_game_service)
+):
+    """Get top games sorted by criteria (default: downloads)."""
+    return game_service.get_top_games(limit=limit, catalog_type=catalog_type, sort_by=sort_by)

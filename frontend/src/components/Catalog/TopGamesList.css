@@ -1,0 +1,122 @@
+.top-games-page {
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.top-games-page h1 {
+    margin-bottom: 2rem;
+    color: var(--text-primary);
+}
+
+.games-table-container {
+    overflow-x: auto;
+    background-color: var(--bg-secondary);
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.games-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 800px;
+}
+
+.games-table th {
+    padding: 1rem;
+    text-align: left;
+    border-bottom: 2px solid var(--border-color);
+    color: var(--text-secondary);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.games-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+
+.games-table th.sortable:hover {
+    color: var(--text-primary);
+}
+
+.games-table td {
+    padding: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: middle;
+    color: var(--text-primary);
+}
+
+.game-row {
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.game-row:hover {
+    background-color: var(--bg-hover);
+}
+
+.rank-col {
+    width: 50px;
+    text-align: center;
+    font-weight: bold;
+    color: var(--text-secondary);
+}
+
+.game-image-cell {
+    width: 100px;
+}
+
+.game-list-thumbnail {
+    width: 80px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 4px;
+}
+
+.no-image-placeholder {
+    width: 80px;
+    height: 60px;
+    background-color: var(--bg-tertiary);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.game-name-cell {
+    font-weight: 500;
+}
+
+.stat-cell {
+    font-family: monospace;
+    font-size: 1.1rem;
+}
+
+.download-btn {
+    padding: 0.5rem 1rem;
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.download-btn:hover {
+    background-color: var(--primary-hover);
+}
+
+.loading,
+.error {
+    text-align: center;
+    padding: 3rem;
+    font-size: 1.2rem;
+    color: var(--text-secondary);
+}
+
+.error {
+    color: var(--error-color);
+}
