@@ -27,6 +27,7 @@ import Debug from './pages/Debug'
 import TopDownloads from './pages/TopDownloads'
 import TopPlaycount from './pages/TopPlaycount'
 import TopPlaytime from './pages/TopPlaytime'
+import TopSystemsList from './pages/TopSystemsList'
 
 function App() {
   return (
@@ -44,6 +45,7 @@ function App() {
               <Route path="playlist/top-downloads" element={<ProtectedRoute><TopDownloads /></ProtectedRoute>} />
               <Route path="playlist/top-playcount" element={<ProtectedRoute><TopPlaycount /></ProtectedRoute>} />
               <Route path="playlist/top-playtime" element={<ProtectedRoute><TopPlaytime /></ProtectedRoute>} />
+              <Route path="playlist/top-systems" element={<ProtectedRoute requireAdmin><TopSystemsList /></ProtectedRoute>} />
               <Route path="search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
               <Route path="downloads" element={<ProtectedRoute requireDownload><Downloads /></ProtectedRoute>} />
               <Route path="downloads/history" element={<ProtectedRoute requireDownload><DownloadHistory /></ProtectedRoute>} />

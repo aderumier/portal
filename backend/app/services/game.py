@@ -2564,3 +2564,74 @@ class GameService:
             
         return results
 
+    def get_top_systems(self, limit: int = 100, catalog_type: str = 'releases', sort_by: str = 'download_count') -> List[Dict]:
+        """Get top systems sorted by criteria (aggregated from games).
+        
+        Args:
+            limit: Maximum number of systems to return
+            catalog_type: 'wip' or 'releases'
+            sort_by: 'download_count', 'playcount', or 'gametime'
+            
+        Returns:
+            List of system dictionaries with aggregated stats
+        """
+        # Ensure catalog is loaded
+        if not self._gamelists_loaded:
+            self.preload_all_gamelists()
+            
+        # Select appropriate catalog
+        if catalog_type == 'wip':
+            catalog = self.catalog_wip
+        elif catalog_type == 'releases':
+            catalog = self.catalog_releases
+        else:
+            catalog = self.catalog_releases
+            
+        system_stats = {}
+        
+        # Helper to safely get numeric value
+        def get_value(data, key):
+            val = data.get(key, 0)
+            if isinstance(val, str):
+                try:
+                    return int(val)
+                except (ValueError, TypeError):
+                    return 0
+            return val if isinstance(val, (int, float)) else 0
+
+        # Iterate over all systems and games
+        for system_id, system_games in catalog.items():
+            total_val = 0
+            for rompath, game_data in system_games.items():
+                val = get_value(game_data, sort_by)
+                total_val += val
+            
+            if total_val > 0:
+                system_stats[system_id] = total_val
+                
+        # Sort by total value (descending)
+        sorted_systems = sorted(system_stats.items(), key=lambda x: x[1], reverse=True)
+        
+        # Take top N
+        top_systems = sorted_systems[:limit]
+        
+        # Build results
+        results = []
+        for system_id, total_val in top_systems:
+            # Get system info
+            system_info = next((s for s in self.systems_list if s['id'] == system_id), None)
+            
+            if system_info:
+                result = {
+                    'id': system_id,
+                    'name': system_info['name'],
+                    'gameCount': system_info['gameCount'],
+                    'hardware': system_info['hardware'],
+                    'manufacturer': system_info['manufacturer'],
+                    'release': system_info['release'],
+                    sort_by: total_val
+                }
+                results.append(result)
+            
+        return results
+

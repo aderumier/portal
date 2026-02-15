@@ -318,3 +318,14 @@ async def get_top_downloads(
 ):
     """Get top games sorted by criteria (default: downloads)."""
     return game_service.get_top_games(limit=limit, catalog_type=catalog_type, sort_by=sort_by)
+
+@router.get("/systems/top/downloads")
+async def get_top_systems_downloads(
+    limit: int = Query(100, ge=1, le=1000),
+    catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
+    sort_by: Optional[str] = Query('download_count', regex='^(download_count|playcount|gametime)$'),
+    current_user: dict = Depends(require_admin_role),
+    game_service: GameService = Depends(get_game_service)
+):
+    """Get top systems sorted by aggregated downloads (admin only)."""
+    return game_service.get_top_systems(limit=limit, catalog_type=catalog_type, sort_by=sort_by)

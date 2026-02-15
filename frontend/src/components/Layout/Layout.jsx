@@ -108,6 +108,7 @@ const Layout = () => {
                   </button>
                   {accountMenuOpen && (
                     <div className="account-menu-dropdown">
+
                       <Link
                         to="/account"
                         className="account-menu-item"
@@ -158,6 +159,13 @@ const Layout = () => {
                             onClick={() => setAccountMenuOpen(false)}
                           >
                             Global History
+                          </Link>
+                          <Link
+                            to="/playlist/top-systems"
+                            className="account-menu-item"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Top Systems Download
                           </Link>
                           <Link
                             to="/connected-clients"
