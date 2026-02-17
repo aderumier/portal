@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  download-service:
+    build: .
+    image: batocera-download-service:debian13
+    restart: unless-stopped
+    environment:
+      - API_TOKEN=${API_TOKEN}
+      - API_URL=${API_URL:-https://rgs-retro.ddns.net}
+      - SERVICE_ID=docker-client-1
+    volumes:
+      - /userdata/roms:/userdata/roms
+      - /home/aderumier/cursorscraper/saves:/userdata/saves
+      - ./config.ini:/app/config.ini
+    ports:
+      - "8765:8765" # P2P inbound port

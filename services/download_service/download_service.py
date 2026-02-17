@@ -883,11 +883,14 @@ SERVICE_ID = config.get('SERVICE_ID') or os.getenv('SERVICE_ID', socket.gethostn
 # P2P server configuration
 P2P_PORT = int(config.get('P2P_PORT') or os.getenv('P2P_PORT', '8765'))
 
-# Read API_TOKEN from API_TOKEN.txt file in the service root directory
-# Use SERVICE_DIR which is set based on platform above
+# Read API_TOKEN from environment variable or API_TOKEN.txt file
+# Priority: Environment Variable > File
+API_TOKEN = os.getenv('API_TOKEN')
 api_token_path = SERVICE_DIR / 'API_TOKEN.txt'
-API_TOKEN = None
-if api_token_path.exists():
+
+if API_TOKEN:
+    logger.info(f"API_TOKEN loaded from environment variable (length: {len(API_TOKEN)} characters)")
+elif api_token_path.exists():
     try:
         with open(api_token_path, 'r', encoding='utf-8') as f:
             API_TOKEN = f.read().strip()
