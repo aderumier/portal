@@ -49,7 +49,9 @@ const CollectionsList = ({ collections }) => {
     }, [])
 
     const getCollectionImagePath = (collectionId) => {
-        return `/collection_logos/${collectionId}.png`
+        // Remove 'custom-' prefix from the image filename if it exists
+        const imageName = collectionId.replace(/^custom-/, '')
+        return `/collection_logos/${imageName}.png`
     }
 
     return (
