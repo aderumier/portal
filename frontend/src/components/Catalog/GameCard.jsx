@@ -4,25 +4,26 @@ import { useAuth } from '../../context/AuthContext'
 import { getMediaUrl } from '../../utils/constants'
 import './GameCard.css'
 
-const GameCard = ({ game, onDownload, onGameClick, showSystemName = true }) => {
+const GameCard = ({ game, onDownload, onGameClick, showSystemName = true, catalogType }) => {
   const navigate = useNavigate()
   const { isDownload, isFastDownload } = useAuth()
-  
-  // Backend now returns the selected image in the 'image' field (priority: thumbnail > boxart > extra1 > image)
-  const imageUrl = game.image ? getMediaUrl(game.image) : '/assets/images/no-image.png'
+
+  // Backend pre-computes catalog_image, but we check fallbacks just in case
+  const bestImage = game.catalog_image || game.thumbnail || game.boxart || game.image
+  const imageUrl = bestImage ? getMediaUrl(bestImage, catalogType) : '/assets/images/no-image.png'
 
   const handleCardClick = (e) => {
     // Don't navigate if clicking the download button
     if (e.target.closest('.download-btn')) {
       return
     }
-    
+
     // If onGameClick is provided, use it (for saving game ID)
     if (onGameClick) {
       onGameClick(game)
       return
     }
-    
+
     // Navigate to game details page
     // game.id is the path from gamelist.xml (e.g., "./game.zip" or "system/game.zip")
     // We need just the filename/path part without the system prefix
@@ -60,21 +61,21 @@ const GameCard = ({ game, onDownload, onGameClick, showSystemName = true }) => {
     const parsed = parseInt(game.playcount, 10)
     return isNaN(parsed) ? 0 : parsed
   }
-  
+
   const getGametime = () => {
     if (game.gametime == null) return 0
     if (typeof game.gametime === 'number') return game.gametime
     const parsed = parseInt(game.gametime, 10)
     return isNaN(parsed) ? 0 : parsed
   }
-  
+
   const playcount = getPlaycount()
   const gametime = getGametime()
   const formattedGametime = formatGametime(gametime)
 
   return (
-    <div 
-      className="game-card" 
+    <div
+      className="game-card"
       onClick={handleCardClick}
     >
       <div className="game-card-image">
@@ -99,8 +100,8 @@ const GameCard = ({ game, onDownload, onGameClick, showSystemName = true }) => {
         </div>
         {(isDownload || isFastDownload) && game?.download_enabled !== false && (
           <div className="game-card-actions">
-            <button 
-              className="download-btn" 
+            <button
+              className="download-btn"
               onClick={handleDownloadClick}
             >
               Download

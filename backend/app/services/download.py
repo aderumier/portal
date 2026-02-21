@@ -432,6 +432,40 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
             except Exception as e:
                 logger.error(f"Namco 2x6: Error scanning directory {directory_name}: {e}", exc_info=True)
 
+    # Check for mame and mame_lite systems with .zip extension
+    # For these systems, we check if there is a directory with the same name as the zip file
+    if system and system.lower() in ('mame', 'mame_lite') and file_lower.endswith('.zip'):
+        # Get directory name (filename without extension)
+        # file_path is /path/to/game.zip
+        # We want to check /path/to/game/
+        directory_name = os.path.splitext(source_filename)[0]
+        source_dir = os.path.dirname(file_path)
+        dir_full_path = os.path.join(source_dir, directory_name)
+        
+        if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+            try:
+                # Security check: ensure directory is within GAMES_PATH
+                from app.config import settings
+                if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                    files = []
+                    # Walk the directory to find all files
+                    for root, dirs, filenames in os.walk(dir_full_path):
+                        for filename in filenames:
+                            file_full_path = os.path.join(root, filename)
+                            # Get path relative to the ROM directory (source_dir)
+                            # e.g. game/subdir/file.bin
+                            rel_path = os.path.relpath(file_full_path, source_dir).replace('\\', '/')
+                            files.append(rel_path)
+                    
+                    logger.info(f"{system}: Found {len(files)} associated files in directory {directory_name}")
+                    
+                    return {
+                        'files': files,
+                        'base_path_type': 'file',
+                        'source_file': source_filename
+                    }
+            except Exception as e:
+                logger.error(f"{system}: Error scanning directory {directory_name}: {e}", exc_info=True)
     
     return None
 

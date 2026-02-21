@@ -748,6 +748,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                     onDownload={() => handleDownload(game)}
                     onGameClick={handleGameClick}
                     showSystemName={false}
+                    catalogType={catalogType}
                   />
                 </div>
               ))}
@@ -798,8 +799,9 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                 </thead>
                 <tbody>
                   {displayedGames.map((game) => {
-                    // Backend now returns the selected image in the 'image' field (priority: thumbnail > boxart > extra1 > image)
-                    const imageUrl = game.image ? getMediaUrl(game.image) : '/assets/images/no-image.png'
+                    // Backend pre-computes catalog_image, but check fallbacks just in case
+                    const bestImage = game.catalog_image || game.thumbnail || game.boxart || game.image
+                    const imageUrl = bestImage ? getMediaUrl(bestImage, catalogType) : '/assets/images/no-image.png'
                     let gameId = game.id.replace(/^\.\//, '')
                     if (gameId.startsWith(`${game.system}/`)) {
                       gameId = gameId.substring(game.system.length + 1)

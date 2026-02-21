@@ -82,6 +82,7 @@ const Layout = () => {
                   </button>
                   {playlistMenuOpen && (
                     <div className="playlist-menu-dropdown">
+                      <Link to="/playlist/collections" className="playlist-menu-item">Collections</Link>
                       <Link to="/playlist/top-downloads" className="playlist-menu-item">Top Download</Link>
                       <Link to="/playlist/top-playcount" className="playlist-menu-item">Top Playcount</Link>
                       <Link to="/playlist/top-playtime" className="playlist-menu-item">Top Playtime</Link>

@@ -28,6 +28,8 @@ import TopDownloads from './pages/TopDownloads'
 import TopPlaycount from './pages/TopPlaycount'
 import TopPlaytime from './pages/TopPlaytime'
 import TopSystemsList from './pages/TopSystemsList'
+import Collections from './pages/Collections'
+import Collection from './pages/Collection'
 
 function App() {
   return (
@@ -42,6 +44,8 @@ function App() {
               <Route path="systems" element={<ProtectedRoute><Systems /></ProtectedRoute>} />
               <Route path="system/:id" element={<ProtectedRoute><System /></ProtectedRoute>} />
               <Route path="game/:system/:gameId" element={<ProtectedRoute><GameDetails /></ProtectedRoute>} />
+              <Route path="playlist/collections" element={<ProtectedRoute><Collections /></ProtectedRoute>} />
+              <Route path="collection/:id" element={<ProtectedRoute><Collection /></ProtectedRoute>} />
               <Route path="playlist/top-downloads" element={<ProtectedRoute><TopDownloads /></ProtectedRoute>} />
               <Route path="playlist/top-playcount" element={<ProtectedRoute><TopPlaycount /></ProtectedRoute>} />
               <Route path="playlist/top-playtime" element={<ProtectedRoute><TopPlaytime /></ProtectedRoute>} />
