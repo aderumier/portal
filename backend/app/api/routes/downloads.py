@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Track consecutive invalid token attempts per IP for WebSocket connections
+# Key: client IP string, Value: consecutive failure count
+_invalid_token_attempts: dict[str, int] = {}
+_INVALID_TOKEN_MAX_ATTEMPTS = 3
+
 async def test_tcp_port(host: str, port: int, timeout: float = 2.0) -> bool:
     """Test TCP port accessibility by attempting a connection.
     
@@ -1076,10 +1081,25 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
         # Validate token
         token_info = await token_service.validate_token(token_string, client_ip)
         if not token_info:
-            logger.warning(f"WebSocket connection rejected: invalid token from {client_ip}")
-            await websocket.close(code=4001, reason="Invalid token")
+            _invalid_token_attempts[client_ip] = _invalid_token_attempts.get(client_ip, 0) + 1
+            attempt_count = _invalid_token_attempts[client_ip]
+            if attempt_count >= _INVALID_TOKEN_MAX_ATTEMPTS:
+                logger.warning(
+                    f"WebSocket connection rejected: invalid token from {client_ip} "
+                    f"({attempt_count} consecutive failures) - sending stop signal"
+                )
+                await websocket.close(code=4003, reason="Too many invalid token attempts")
+            else:
+                logger.warning(
+                    f"WebSocket connection rejected: invalid token from {client_ip} "
+                    f"(attempt {attempt_count}/{_INVALID_TOKEN_MAX_ATTEMPTS})"
+                )
+                await websocket.close(code=4001, reason="Invalid token")
             return
         
+        # Successful auth - reset the invalid attempt counter for this IP
+        _invalid_token_attempts.pop(client_ip, None)
+
         token_id = token_info['token_id']
         user_id = token_info['user_id']
         

@@ -5399,6 +5399,15 @@ async def websocket_client():
                     logger.critical("Please stop the other instance before starting this one.")
                     logger.critical("=" * 80)
                     sys.exit(1)
+                elif close_code == 4003:
+                    logger.critical("=" * 80)
+                    logger.critical("FATAL ERROR: Too many consecutive invalid token attempts")
+                    logger.critical("=" * 80)
+                    logger.critical("The server has rejected this client after 3 consecutive authentication failures.")
+                    logger.critical("Please verify your API_TOKEN.txt file contains a valid token.")
+                    logger.critical("The download service will now stop.")
+                    logger.critical("=" * 80)
+                    sys.exit(1)
                 elif close_code == 1012:
                     # 1012 (service restart) is expected when server restarts - not an error, just reconnect
                     logger.info(f"WebSocket connection closed by server (service restart, code 1012) - will reconnect")
