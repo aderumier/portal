@@ -128,8 +128,8 @@ const DownloadHistory = () => {
                 <tr key={item.id}>
                   <td className="game-cell">
                     {item.image && (
-                      <img 
-                        src={getMediaUrl(item.image)} 
+                      <img
+                        src={getMediaUrl(item.image)}
                         alt={item.game_name}
                         className="game-thumbnail"
                         onError={(e) => {
@@ -138,12 +138,7 @@ const DownloadHistory = () => {
                       />
                     )}
                     <div className="game-info">
-                      <Link 
-                        to={`/game/${item.system}/${encodeURIComponent(item.rompath)}`}
-                        className="game-link"
-                      >
-                        {item.game_name}
-                      </Link>
+                      <span className="game-name">{item.game_name}</span>
                     </div>
                   </td>
                   <td>{item.system_name || item.system}</td>
