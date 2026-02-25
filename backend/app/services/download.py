@@ -434,7 +434,7 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
 
     # Check for mame and mame_lite systems with .zip extension
     # For these systems, we check if there is a directory with the same name as the zip file
-    if system and system.lower() in ('mame', 'mame_lite') and file_lower.endswith('.zip'):
+    if system and system.lower() in ('mame', 'mame_lite', 'naomi', 'naomi2') and file_lower.endswith('.zip'):
         # Get directory name (filename without extension)
         # file_path is /path/to/game.zip
         # We want to check /path/to/game/
