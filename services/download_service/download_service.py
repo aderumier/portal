@@ -4467,7 +4467,7 @@ def download_game(download_info):
             bytes_transferred_this_session = [0]
             
             try:
-                logger.info(f"Attempting P2P download for {system}/{clean_original_path} from {len(p2p_peers)} peer(s)")
+                logger.info(f"Attempting P2P download for {target_system}/{clean_original_path} from {len(p2p_peers)} peer(s)")
                 
                 # Get checksum from server first
                 # Use server_rom_path which includes snapshot path for releases (server stores files in snapshot)
@@ -4487,7 +4487,7 @@ def download_game(download_info):
                     
                     p2p_result = try_p2p_download_from_list(
                         p2p_peers=p2p_peers,
-                        system=system,
+                        system=target_system,
                         rom_path=clean_original_path,
                         game_id=game_id,
                         dest_path=dest_path,
@@ -4505,7 +4505,7 @@ def download_game(download_info):
                     logger.info(f"P2P download result for download_id={download_id}: p2p_result={p2p_result} (type={type(p2p_result).__name__}), p2p_download_success={p2p_download_success}, p2p_remote_token_id={p2p_remote_token_id}")
                 
                 if p2p_download_success:
-                    logger.info(f"P2P download successful for {system}/{clean_original_path}")
+                    logger.info(f"P2P download successful for {target_system}/{clean_original_path}")
                     # Clean up pause_ref
                     if download_id in _active_download_pause_refs:
                         del _active_download_pause_refs[download_id]
@@ -4514,7 +4514,7 @@ def download_game(download_info):
                         file_response.close()
                         file_response = None
                 else:
-                    logger.info(f"P2P download failed, falling back to server download for {system}/{clean_original_path}")
+                    logger.info(f"P2P download failed, falling back to server download for {target_system}/{clean_original_path}")
                     # Clean up pause_ref (will be recreated for server download)
                     if download_id in _active_download_pause_refs:
                         del _active_download_pause_refs[download_id]
