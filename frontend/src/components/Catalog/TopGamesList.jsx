@@ -4,6 +4,7 @@ import { getTopDownloads } from '../../api/catalog'
 import { useCatalog } from '../../context/CatalogContext'
 import { useDownloadWithToken } from '../../hooks/useDownloadWithToken'
 import TokenSelectorDropdown from '../TokenSelector/TokenSelectorDropdown'
+import WarningModal from '../WarningModal/WarningModal'
 import { getMediaUrl } from '../../utils/constants'
 import { useAuth } from '../../context/AuthContext'
 import './TopGamesList.css'
@@ -16,7 +17,7 @@ const TopGamesList = ({ title, sortBy, valueLabel, formatValue }) => {
     const [sortColumn, setSortColumn] = useState(sortBy)
     const [sortDirection, setSortDirection] = useState('desc')
     const navigate = useNavigate()
-    const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector, pendingGameId } = useDownloadWithToken()
+    const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector, pendingGameId, showOldClientWarning, setShowOldClientWarning } = useDownloadWithToken()
     const { isDownload, isFastDownload } = useAuth()
 
     useEffect(() => {
@@ -107,6 +108,12 @@ const TopGamesList = ({ title, sortBy, valueLabel, formatValue }) => {
                 onClose={cancelTokenSelection}
                 onSelect={handleTokenSelected}
                 gameId={pendingGameId}
+            />
+            <WarningModal
+                isOpen={showOldClientWarning}
+                onClose={() => setShowOldClientWarning(false)}
+                title="Update Required"
+                message="Your client version is too old. Please update your client to download games."
             />
             <h1>{title}</h1>
 

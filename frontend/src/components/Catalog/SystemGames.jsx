@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import GameCard from './GameCard'
 import TokenSelectorDropdown from '../TokenSelector/TokenSelectorDropdown'
+import WarningModal from '../WarningModal/WarningModal'
 import { useDownloadWithToken } from '../../hooks/useDownloadWithToken'
 import { useAuth } from '../../context/AuthContext'
 import { useCatalog } from '../../context/CatalogContext'
@@ -34,7 +35,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
   const gameElementsRef = useRef({}) // Store refs to game elements by game ID
   const navigate = useNavigate()
   const location = useLocation()
-  const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
+  const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector, showOldClientWarning, setShowOldClientWarning } = useDownloadWithToken()
   const { isDownload, isFastDownload } = useAuth()
 
   // Get storage key for this system/search combination
@@ -585,6 +586,12 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
 
   return (
     <div className="system-games">
+      <WarningModal
+        isOpen={showOldClientWarning}
+        onClose={() => setShowOldClientWarning(false)}
+        title="Update Required"
+        message="Your client version is too old. Please update your client to download games."
+      />
       <div className="system-games-header">
         <div className="system-games-title-section">
           <h1>{systemName}</h1>

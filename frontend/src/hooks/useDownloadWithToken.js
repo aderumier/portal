@@ -8,6 +8,7 @@ export const useDownloadWithToken = () => {
   const [pendingGameId, setPendingGameId] = useState(null)
   const [pendingSystemId, setPendingSystemId] = useState(null)
   const [pendingCatalogType, setPendingCatalogType] = useState(null)
+  const [showOldClientWarning, setShowOldClientWarning] = useState(false)
 
   const addToQueue = async (gameId, systemId, tokenName = null, catalog_type = null) => {
     // Use provided catalog_type or fall back to context catalogType
@@ -40,6 +41,11 @@ export const useDownloadWithToken = () => {
         setShowTokenSelector(true)
         return { success: false, requiresSelection: true }
       }
+
+      if (error.response?.status === 400 && error.response?.data?.detail === 'too old client') {
+        setShowOldClientWarning(true)
+        return { success: false, handleExternally: true }
+      }
       // Other errors - throw to be handled by caller
       throw error
     }
@@ -61,6 +67,12 @@ export const useDownloadWithToken = () => {
       alert('Game added to download queue!')
       return { success: true, data: response.data }
     } catch (error) {
+      if (error.response?.status === 400 && error.response?.data?.detail === 'too old client') {
+        setShowTokenSelector(false)
+        setShowOldClientWarning(true)
+        throw error
+      }
+
       const errorMsg = error.response?.data?.detail || 'Failed to add game to download queue. Please try again.'
       alert(errorMsg)
       throw error
@@ -79,6 +91,8 @@ export const useDownloadWithToken = () => {
     handleTokenSelected,
     cancelTokenSelection,
     showTokenSelector,
+    showOldClientWarning,
+    setShowOldClientWarning,
     pendingGameId
   }
 }

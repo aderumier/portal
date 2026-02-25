@@ -12,6 +12,7 @@ from app.api.middleware.roles import require_admin_role
 import logging
 from typing import List, Dict, Optional
 import asyncio
+from packaging import version
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,70 @@ async def revoke_token(
         )
     
     return {"success": True}
+
+@router.get("/me/devices")
+async def get_my_devices(
+    current_user: dict = Depends(require_guild_member),
+    db: Session = Depends(get_db)
+):
+    """Get all connected WebSocket clients for the current user and check their version."""
+    user_id = current_user['id']
+    from app.services.websocket_manager import get_websocket_manager
+    from app.config import settings
+    
+    ws_manager = get_websocket_manager()
+    connections = await ws_manager.get_all_connections()
+    
+    # Get user's tokens to filter connections
+    token_service = ApiTokenService(db)
+    user_tokens = token_service.get_user_tokens(user_id)
+    user_token_ids = {t['id'] for t in user_tokens}
+    
+    # Filter connections for this user
+    user_connections = [c for c in connections if c.get('token_id') in user_token_ids]
+    
+    min_v_str = settings.MIN_CLIENT_VERSION
+    try:
+        min_v = version.parse(min_v_str)
+    except (ValueError, TypeError):
+        # Fallback if unparseable
+        min_v = version.parse('0.0.0')
+        
+    outdated_devices = []
+    up_to_date_devices = []
+    
+    for conn in user_connections:
+        client_v_str = conn.get('client_version', 'unknown')
+        device_info = {
+            "token_id": conn.get('token_id'),
+            "token_name": next((t['name'] for t in user_tokens if t['id'] == conn.get('token_id')), "Unknown"),
+            "client_version": client_v_str,
+            "platform": conn.get('platform', 'unknown'),
+            "ip": conn.get('ip', 'unknown'),
+            "connected_at": conn.get('connected_at')
+        }
+        
+        if client_v_str == 'unknown':
+            # Consider unknown versions as outdated, or up-to-date depending on preference
+            outdated_devices.append(device_info)
+            continue
+            
+        try:
+            client_v = version.parse(client_v_str)
+            if client_v < min_v:
+                outdated_devices.append(device_info)
+            else:
+                up_to_date_devices.append(device_info)
+        except (ValueError, TypeError):
+            # Unparseable version considered outdated
+            outdated_devices.append(device_info)
+            
+    return {
+        "min_client_version": min_v_str,
+        "outdated_devices": outdated_devices,
+        "up_to_date_devices": up_to_date_devices,
+        "total_connected": len(user_connections)
+    }
 
 @router.put("/tokens/{token_id}/custom-port")
 async def update_custom_port(

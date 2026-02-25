@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import GameCard from '../components/Catalog/GameCard'
 import TokenSelectorDropdown from '../components/TokenSelector/TokenSelectorDropdown'
+import WarningModal from '../components/WarningModal/WarningModal'
 import { useDownloadWithToken } from '../hooks/useDownloadWithToken'
 import { useCatalog } from '../context/CatalogContext'
 import { searchGames as searchGamesAPI } from '../api/catalog'
@@ -18,7 +19,7 @@ const Search = () => {
   const [page, setPage] = useState(1)
   const observerRef = useRef(null)
   const loadingRef = useRef(null)
-  const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
+  const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector, showOldClientWarning, setShowOldClientWarning } = useDownloadWithToken()
   const hasSearchedRef = useRef(false)
 
   const searchGames = useCallback(async (searchQuery, pageNum, append = false) => {
@@ -192,6 +193,12 @@ const Search = () => {
         isOpen={showTokenSelector}
         onClose={cancelTokenSelection}
         onSelect={handleTokenSelected}
+      />
+      <WarningModal
+        isOpen={showOldClientWarning}
+        onClose={() => setShowOldClientWarning(false)}
+        title="Update Required"
+        message="Your client version is too old. Please update your client to download games."
       />
     </div>
   )

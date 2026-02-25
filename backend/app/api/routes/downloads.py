@@ -24,6 +24,7 @@ from pathlib import Path
 import tarfile
 import io
 import struct
+from packaging import version
 
 logger = logging.getLogger(__name__)
 
@@ -901,6 +902,25 @@ async def add_to_queue(
                 detail=f"Token '{request.token_name}' not found or revoked"
             )
         token_id = matching_token['id']
+    
+    # Check minimum client version
+    from app.services.websocket_manager import get_websocket_manager
+    ws_manager = get_websocket_manager()
+    # Find the active connection for this token to get its client version
+    connections = await ws_manager.get_all_connections()
+    client_conn = next((c for c in connections if c.get('token_id') == token_id), None)
+    if client_conn and client_conn.get('client_version') != 'unknown':
+        try:
+            client_v = version.parse(client_conn['client_version'])
+            min_v = version.parse(settings.MIN_CLIENT_VERSION)
+            if client_v < min_v:
+                logger.warning(f"Client version {client_conn['client_version']} is below minimum {settings.MIN_CLIENT_VERSION} for token {token_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="too old client"
+                )
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Could not parse client version '{client_conn['client_version']}' or min version '{settings.MIN_CLIENT_VERSION}': {e}")
     
     # Check if user has fastdownload role
     user_has_fastdownload = current_user.get('is_fastdownload', False)

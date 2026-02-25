@@ -5,6 +5,7 @@ import { useCatalog } from '../context/CatalogContext'
 import { getMediaUrl } from '../utils/constants'
 import MediaUpload from '../components/Media/MediaUpload'
 import TokenSelectorDropdown from '../components/TokenSelector/TokenSelectorDropdown'
+import WarningModal from '../components/WarningModal/WarningModal'
 import BugReportModal from '../components/BugReport/BugReportModal'
 import { useDownloadWithToken } from '../hooks/useDownloadWithToken'
 import { getGameDetails } from '../api/catalog'
@@ -20,7 +21,7 @@ const GameDetails = () => {
   const [error, setError] = useState(null)
   const [selectedMedia, setSelectedMedia] = useState(null)
   const [showBugReportModal, setShowBugReportModal] = useState(false)
-  const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector } = useDownloadWithToken()
+  const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector, showOldClientWarning, setShowOldClientWarning } = useDownloadWithToken()
   const isLoadingRef = useRef(false)
   const lastLoadKeyRef = useRef(null)
   const hasLoadedRef = useRef(false)
@@ -350,6 +351,12 @@ const GameDetails = () => {
         onClose={cancelTokenSelection}
         onSelect={handleTokenSelected}
         gameId={game?.id}
+      />
+      <WarningModal
+        isOpen={showOldClientWarning}
+        onClose={() => setShowOldClientWarning(false)}
+        title="Update Required"
+        message="Your client version is too old. Please update your client to download games."
       />
       <BugReportModal
         isOpen={showBugReportModal}

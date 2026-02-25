@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import GameCard from './GameCard'
 import { useDownloadWithToken } from '../../hooks/useDownloadWithToken'
+import WarningModal from '../WarningModal/WarningModal'
 import { useAuth } from '../../context/AuthContext'
 import { useCatalog } from '../../context/CatalogContext'
 import { getCollectionGames } from '../../api/collections'
@@ -35,7 +36,7 @@ const CollectionGames = ({ collectionId, collectionName: propCollectionName, sea
     const navigate = useNavigate()
     const location = useLocation()
 
-    const { addToQueue } = useDownloadWithToken()
+    const { addToQueue, showOldClientWarning, setShowOldClientWarning } = useDownloadWithToken()
     const { isDownload, isFastDownload } = useAuth()
 
     // Get storage key
@@ -450,6 +451,12 @@ const CollectionGames = ({ collectionId, collectionName: propCollectionName, sea
 
     return (
         <div className="system-games">
+            <WarningModal
+                isOpen={showOldClientWarning}
+                onClose={() => setShowOldClientWarning(false)}
+                title="Update Required"
+                message="Your client version is too old. Please update your client to download games."
+            />
             <div className="system-games-header">
                 <div className="system-games-title-section">
                     <h1>{collectionName}</h1>

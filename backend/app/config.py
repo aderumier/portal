@@ -41,6 +41,9 @@ class Settings:
     REDIS_SESSION_KEY_PREFIX: str = os.getenv('REDIS_SESSION_KEY_PREFIX', 'session:')  # Prefix for session keys in Redis
     SESSION_MAX_AGE: int = int(os.getenv('SESSION_MAX_AGE', str(3600 * 24)))  # Session timeout in seconds (default: 24 hours)
     
+    # Client version settings
+    MIN_CLIENT_VERSION: str = os.getenv('MIN_CLIENT_VERSION', '0.1')
+    
     # Bandwidth management settings
     # GLOBAL_BANDWIDTH_LIMIT is in Mbits/s, converted to bytes/s internally
     # Default: 1000 Mbits/s = 125,000,000 bytes/s
