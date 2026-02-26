@@ -115,25 +115,25 @@ if platform.system() == 'Windows':
         log_file_path = os.path.abspath(os.getenv('LOG_FILE'))
     elif config.get('LOG_DIR'):
         log_dir = config.get('LOG_DIR')
-        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+        log_file_path = os.path.abspath(os.path.join(str(SERVICE_DIR), log_dir, 'rgs_download.log'))
     elif os.getenv('LOG_DIR'):
         log_dir = os.getenv('LOG_DIR')
-        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+        log_file_path = os.path.abspath(os.path.join(str(SERVICE_DIR), log_dir, 'rgs_download.log'))
     else:
         # Default Windows location
         appdata = os.getenv('APPDATA', os.path.expanduser('~'))
         log_dir = '../../../'
-        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+        log_file_path = os.path.abspath(os.path.join(str(SERVICE_DIR), log_dir, 'rgs_download.log'))
 else:
     # Linux/Batocera paths
     if os.getenv('LOG_FILE'):
         log_file_path = os.path.abspath(os.getenv('LOG_FILE'))
     elif config.get('LOG_DIR'):
         log_dir = config.get('LOG_DIR')
-        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+        log_file_path = os.path.abspath(os.path.join(str(SERVICE_DIR), log_dir, 'rgs_download.log'))
     elif os.getenv('LOG_DIR'):
         log_dir = os.getenv('LOG_DIR')
-        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
+        log_file_path = os.path.abspath(os.path.join(str(SERVICE_DIR), log_dir, 'rgs_download.log'))
     else:
         # Default Linux location...skipping...
         log_file_path = os.path.abspath(os.getenv('LOG_FILE', '/userdata/system/logs/rgs_download.log'))
@@ -872,8 +872,16 @@ else:
     DEFAULT_CONFIGDIR = '/userdata/system/configs'
 
 ROMS_PATH = config.get('ROMS_PATH') or os.getenv('ROMS_PATH', DEFAULT_ROMS_PATH)
+if ROMS_PATH and not os.path.isabs(ROMS_PATH):
+    ROMS_PATH = os.path.abspath(os.path.join(str(SERVICE_DIR), ROMS_PATH))
+
 SAVEDIR = config.get('SAVEDIR') or os.getenv('SAVEDIR', DEFAULT_SAVEDIR)
+if SAVEDIR and not os.path.isabs(SAVEDIR):
+    SAVEDIR = os.path.abspath(os.path.join(str(SERVICE_DIR), SAVEDIR))
+
 CONFIGDIR = config.get('CONFIGDIR') or os.getenv('CONFIGDIR', DEFAULT_CONFIGDIR) if DEFAULT_CONFIGDIR else None
+if CONFIGDIR and not os.path.isabs(CONFIGDIR):
+    CONFIGDIR = os.path.abspath(os.path.join(str(SERVICE_DIR), CONFIGDIR))
 
 # BANDWIDTH_UPDATE_INTERVAL will be fetched from backend on first request_download call
 # No fallback - must be set by backend
