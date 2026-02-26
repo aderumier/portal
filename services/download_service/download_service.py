@@ -979,9 +979,9 @@ def ensure_directories():
             Path(dirpath).mkdir(parents=True, exist_ok=True)
             logger.info(f"{name} directory ensured: {dirpath}")
         except OSError as e:
-            # On Windows services, mapped/network drives may cause OSError
-            # (WinError 1326) when stat() is called internally by exist_ok.
-            # Try without exist_ok and catch FileExistsError separately.
+            # On Windows services running as SYSTEM, drives may not be
+            # accessible (WinError 1326) when stat() is called internally
+            # by exist_ok. Try without exist_ok to avoid the stat() call.
             try:
                 Path(dirpath).mkdir(parents=True, exist_ok=False)
                 logger.info(f"{name} directory created: {dirpath}")
