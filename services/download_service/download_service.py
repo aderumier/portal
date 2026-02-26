@@ -974,13 +974,21 @@ logger.info("HTTP session with keep-alive enabled")
 
 def ensure_directories():
     """Ensure all required directories exist."""
-    Path(ROMS_PATH).mkdir(parents=True, exist_ok=True)
-    logger.info(f"ROMs directory ensured: {ROMS_PATH}")
-    Path(SAVEDIR).mkdir(parents=True, exist_ok=True)
-    logger.info(f"Saves directory ensured: {SAVEDIR}")
-    if CONFIGDIR:
-        Path(CONFIGDIR).mkdir(parents=True, exist_ok=True)
-        logger.info(f"Config directory ensured: {CONFIGDIR}")
+    for name, dirpath in [("ROMs", ROMS_PATH), ("Saves", SAVEDIR)] + ([("Config", CONFIGDIR)] if CONFIGDIR else []):
+        try:
+            Path(dirpath).mkdir(parents=True, exist_ok=True)
+            logger.info(f"{name} directory ensured: {dirpath}")
+        except OSError as e:
+            # On Windows services, mapped/network drives may cause OSError
+            # (WinError 1326) when stat() is called internally by exist_ok.
+            # Try without exist_ok and catch FileExistsError separately.
+            try:
+                Path(dirpath).mkdir(parents=True, exist_ok=False)
+                logger.info(f"{name} directory created: {dirpath}")
+            except FileExistsError:
+                logger.info(f"{name} directory already exists: {dirpath}")
+            except OSError:
+                logger.warning(f"Cannot verify or create {name} directory: {dirpath} ({e}). Assuming it exists.")
 
 def update_bandwidth_update_interval(new_interval):
     """Update the global BANDWIDTH_UPDATE_INTERVAL value.
