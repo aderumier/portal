@@ -46,7 +46,7 @@ const SystemsList = ({ systems }) => {
       if (viewMode === 'table' && sortColumn) {
         // Table view: use selected sort column
         let compareResult = 0
-        
+
         if (sortColumn === 'name') {
           compareResult = (a.name || '').localeCompare(b.name || '')
         } else if (sortColumn === 'manufacturer') {
@@ -67,8 +67,32 @@ const SystemsList = ({ systems }) => {
             else if (releaseB === 'Unknown') compareResult = -1
             else compareResult = releaseA.localeCompare(releaseB)
           }
+        } else if (sortColumn === 'gamelistDate') {
+          const dateA = a.gamelistDate || ''
+          const dateB = b.gamelistDate || ''
+
+          if (!dateA && !dateB) compareResult = 0
+          else if (!dateA) compareResult = 1 // Empty dates go last
+          else if (!dateB) compareResult = -1
+          else {
+            // Parse dd-mm-yyyy or similar formats for proper date sorting
+            // Convert to YYYYMMDD for easier comparison
+            const parseDateString = (str) => {
+              const parts = str.split(/[-/]/)
+              if (parts.length === 3) {
+                // Assuming DD-MM-YYYY
+                return `${parts[2]}${parts[1].padStart(2, '0')}${parts[0].padStart(2, '0')}`
+              }
+              return str
+            }
+
+            const strA = parseDateString(dateA)
+            const strB = parseDateString(dateB)
+
+            compareResult = strA.localeCompare(strB)
+          }
         }
-        
+
         // Apply sort direction
         return sortDirection === 'desc' ? -compareResult : compareResult
       } else {
@@ -132,7 +156,7 @@ const SystemsList = ({ systems }) => {
   })
 
   // Filter hardware categories based on selection
-  const filteredHardware = selectedHardware 
+  const filteredHardware = selectedHardware
     ? sortedHardware.filter(h => h === selectedHardware)
     : sortedHardware
 
@@ -154,6 +178,35 @@ const SystemsList = ({ systems }) => {
     return match ? match[1] : null
   }
 
+  // Format release date to dd-mm-yyyy
+  const formatReleaseDate = (dateString) => {
+    if (!dateString || dateString === 'Unknown') return dateString;
+
+    const str = String(dateString);
+
+    // Format YYYYMMDD... or YYYYMMDDTHHMMSS (EmulationStation format)
+    if (/^\d{8}/.test(str)) {
+      const year = str.substring(0, 4);
+      const month = str.substring(4, 6);
+      const day = str.substring(6, 8);
+      return `${day}-${month}-${year}`;
+    }
+
+    // Format YYYY-MM-DD
+    const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (isoMatch) {
+      return `${isoMatch[3]}-${isoMatch[2]}-${isoMatch[1]}`;
+    }
+
+    // Format DD/MM/YYYY or DD-MM-YYYY
+    const euroMatch = str.match(/^(\d{2})[/.-](\d{2})[/.-](\d{4})/);
+    if (euroMatch) {
+      return `${euroMatch[1]}-${euroMatch[2]}-${euroMatch[3]}`;
+    }
+
+    return str;
+  }
+
   return (
     <div className="systems-list">
       <div className="systems-header">
@@ -166,10 +219,10 @@ const SystemsList = ({ systems }) => {
             aria-label="Grid View"
           >
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="2" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-              <rect x="12" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-              <rect x="2" y="12" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-              <rect x="12" y="12" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+              <rect x="2" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+              <rect x="12" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+              <rect x="2" y="12" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+              <rect x="12" y="12" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
             </svg>
           </button>
           <button
@@ -179,8 +232,8 @@ const SystemsList = ({ systems }) => {
             aria-label="Table View"
           >
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M2 4H18M2 8H18M2 12H18M2 16H18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              <path d="M2 4V16M6 4V16M10 4V16M14 4V16M18 4V16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M2 4H18M2 8H18M2 12H18M2 16H18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M2 4V16M6 4V16M10 4V16M14 4V16M18 4V16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </button>
         </div>
@@ -215,14 +268,14 @@ const SystemsList = ({ systems }) => {
                 {groupedSystems[hardware].map((system) => {
                   const systemImage = getSystemImagePath(system.id)
                   return (
-                    <Link 
-                      key={system.id} 
+                    <Link
+                      key={system.id}
                       to={`/system/${system.id}`}
                       className="system-card"
                     >
                       <div className="system-card-image">
-                        <img 
-                          src={systemImage} 
+                        <img
+                          src={systemImage}
                           alt={system.name}
                           onError={(e) => {
                             // Fallback to a placeholder if image doesn't exist
@@ -234,6 +287,9 @@ const SystemsList = ({ systems }) => {
                         <h2>{system.name}</h2>
                         {catalogType === 'releases' && system.version && extractVersionNumber(system.version) && (
                           <p className="system-version-text">version {extractVersionNumber(system.version)}</p>
+                        )}
+                        {system.gamelistDate && (
+                          <p className="system-version-text">{system.gamelistDate}</p>
                         )}
                         <p>{system.gameCount} games</p>
                       </div>
@@ -254,28 +310,35 @@ const SystemsList = ({ systems }) => {
                   <thead>
                     <tr>
                       <th>Image</th>
-                      <th 
-                        className="sortable" 
+                      <th
+                        className="sortable"
                         onClick={() => handleSort('name')}
                         style={{ cursor: 'pointer' }}
                       >
                         System Name {sortColumn === 'name' && (sortDirection === 'asc' ? '↑' : '↓')}
                       </th>
-                      <th 
-                        className="sortable" 
+                      <th
+                        className="sortable"
                         onClick={() => handleSort('release')}
                         style={{ cursor: 'pointer' }}
                       >
                         Release {sortColumn === 'release' && (sortDirection === 'asc' ? '↑' : '↓')}
                       </th>
-                      <th 
-                        className="sortable" 
+                      <th
+                        className="sortable"
                         onClick={() => handleSort('manufacturer')}
                         style={{ cursor: 'pointer' }}
                       >
                         Manufacturer {sortColumn === 'manufacturer' && (sortDirection === 'asc' ? '↑' : '↓')}
                       </th>
                       <th>Games</th>
+                      <th
+                        className="sortable"
+                        onClick={() => handleSort('gamelistDate')}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        Last Update {sortColumn === 'gamelistDate' && (sortDirection === 'asc' ? '↑' : '↓')}
+                      </th>
                       <th>Actions</th>
                     </tr>
                   </thead>
@@ -285,8 +348,8 @@ const SystemsList = ({ systems }) => {
                       return (
                         <tr key={system.id}>
                           <td className="system-image-cell">
-                            <img 
-                              src={systemImage} 
+                            <img
+                              src={systemImage}
                               alt={system.name}
                               className="system-table-image"
                               onError={(e) => {
@@ -304,7 +367,7 @@ const SystemsList = ({ systems }) => {
                             )}
                           </td>
                           <td className="system-release-cell">
-                            {system.release || 'Unknown'}
+                            {system.release ? formatReleaseDate(system.release) : 'Unknown'}
                           </td>
                           <td className="system-manufacturer-cell">
                             {system.manufacturer || 'Unknown'}
@@ -312,8 +375,11 @@ const SystemsList = ({ systems }) => {
                           <td className="system-games-cell">
                             <span className="games-count">{system.gameCount} games</span>
                           </td>
+                          <td className="system-update-cell">
+                            {system.gamelistDate || 'Unknown'}
+                          </td>
                           <td className="system-actions-cell">
-                            <Link 
+                            <Link
                               to={`/system/${system.id}`}
                               className="view-system-btn"
                             >
