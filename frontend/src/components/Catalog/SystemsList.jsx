@@ -7,8 +7,14 @@ const SystemsList = ({ systems }) => {
   const { catalogType } = useCatalog()
   const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
   const [selectedHardware, setSelectedHardware] = useState(null) // null = all, or specific hardware type
-  const [sortColumn, setSortColumn] = useState('name') // 'name', 'manufacturer', 'release'
-  const [sortDirection, setSortDirection] = useState('asc') // 'asc' or 'desc'
+  const [sortColumn, setSortColumn] = useState(() => localStorage.getItem('systemsSortColumn') || 'name') // 'name', 'manufacturer', 'release'
+  const [sortDirection, setSortDirection] = useState(() => localStorage.getItem('systemsSortDirection') || 'asc') // 'asc' or 'desc'
+
+  // Persist sort preferences to localStorage
+  useEffect(() => {
+    localStorage.setItem('systemsSortColumn', sortColumn)
+    localStorage.setItem('systemsSortDirection', sortDirection)
+  }, [sortColumn, sortDirection])
 
   // Load view preference and hardware filter from localStorage
   useEffect(() => {
