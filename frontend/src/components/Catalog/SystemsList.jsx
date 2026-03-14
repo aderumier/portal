@@ -10,11 +10,16 @@ const SystemsList = ({ systems }) => {
   const [sortColumn, setSortColumn] = useState('name') // 'name', 'manufacturer', 'release'
   const [sortDirection, setSortDirection] = useState('asc') // 'asc' or 'desc'
 
-  // Load view preference from localStorage
+  // Load view preference and hardware filter from localStorage
   useEffect(() => {
     const savedView = localStorage.getItem('systemsViewMode')
     if (savedView === 'table' || savedView === 'grid') {
       setViewMode(savedView)
+    }
+
+    const savedHardware = localStorage.getItem('systemsHardwareFilter')
+    if (savedHardware !== null) {
+      setSelectedHardware(savedHardware === 'all' ? null : savedHardware)
     }
   }, [])
 
@@ -22,6 +27,12 @@ const SystemsList = ({ systems }) => {
   const handleViewChange = (mode) => {
     setViewMode(mode)
     localStorage.setItem('systemsViewMode', mode)
+  }
+
+  // Save hardware filter to localStorage
+  const handleHardwareChange = (hardware) => {
+    setSelectedHardware(hardware)
+    localStorage.setItem('systemsHardwareFilter', hardware === null ? 'all' : hardware)
   }
 
   // Group systems by hardware category (exclude library category)
@@ -243,7 +254,7 @@ const SystemsList = ({ systems }) => {
       <div className="hardware-filter-bar">
         <button
           className={`hardware-filter-btn ${selectedHardware === null ? 'active' : ''}`}
-          onClick={() => setSelectedHardware(null)}
+          onClick={() => handleHardwareChange(null)}
         >
           All
         </button>
@@ -251,7 +262,7 @@ const SystemsList = ({ systems }) => {
           <button
             key={hardware}
             className={`hardware-filter-btn ${selectedHardware === hardware ? 'active' : ''}`}
-            onClick={() => setSelectedHardware(hardware)}
+            onClick={() => handleHardwareChange(hardware)}
           >
             {formatHardwareName(hardware)}
             <span className="hardware-count">({groupedSystems[hardware].length})</span>
