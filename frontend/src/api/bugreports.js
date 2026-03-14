@@ -5,8 +5,11 @@ export const submitBugReport = async (data) => {
   return response.data
 }
 
-export const getBugReports = async (sortBy = null, sortOrder = 'desc') => {
+export const getBugReports = async (status = 'new', sortBy = null, sortOrder = 'desc') => {
   const params = {}
+  if (status && status !== 'all') {
+    params.status = status
+  }
   if (sortBy) {
     params.sort_by = sortBy
   }
@@ -24,6 +27,11 @@ export const getBugReport = async (id) => {
 
 export const updateBugReportStatus = async (id, status) => {
   const response = await client.patch(`/api/bugreports/${id}`, { status })
+  return response.data
+}
+
+export const addBugReportComment = async (id, comment) => {
+  const response = await client.post(`/api/bugreports/${id}/comments`, { comment })
   return response.data
 }
 

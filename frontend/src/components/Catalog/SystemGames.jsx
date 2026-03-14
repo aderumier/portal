@@ -127,6 +127,22 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       setError(null)
       setDisplayedGamesCount(24) // Reset displayed count
 
+      let currentSystemVersion = propSystemVersion
+
+      // Fetch system info to get version if not provided as prop
+      if (!currentSystemVersion) {
+        try {
+          const systemsResponse = await getSystems(catalogType)
+          const systemInfo = systemsResponse.systems?.find(s => s.id === systemId)
+          if (systemInfo?.version) {
+            currentSystemVersion = systemInfo.version
+            setSystemVersion(currentSystemVersion)
+          }
+        } catch (err) {
+          console.error('Error fetching system version:', err)
+        }
+      }
+
       // Fetch all games in one call with a very high limit
       const response = await getGames(systemId, 1, 10000, searchQuery || '', catalogType)
       const games = response.games || []
@@ -134,19 +150,6 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       // Get systemName from the first game (all games have the same systemName)
       if (games.length > 0 && games[0].systemName) {
         setSystemName(games[0].systemName)
-      }
-
-      // Fetch system info to get version if not provided as prop
-      if (!propSystemVersion) {
-        try {
-          const systemsResponse = await getSystems(catalogType)
-          const systemInfo = systemsResponse.systems?.find(s => s.id === systemId)
-          if (systemInfo?.version) {
-            setSystemVersion(systemInfo.version)
-          }
-        } catch (err) {
-          console.error('Error fetching system version:', err)
-        }
       }
 
       // Update subdirectory counts from backend

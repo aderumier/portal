@@ -95,6 +95,8 @@ class GameService:
         self._catalog_timestamp = None  # Timestamp when catalog was last loaded/refreshed for ETag generation
         self.system_versions = {}  # Stores latest version per system: {system_id: "v10.5"}
         self.system_snapshot_paths = {}  # Stores snapshot directory path per system: {system_id: ".zfs/snapshot/v10.5/"}
+        self.system_gamelist_date_wip = {}  # Cache: system_id -> gamelist.xml modification date (dd-mm-yyyy) for WIP
+        self.system_gamelist_date_releases = {}  # Cache: system_id -> gamelist.xml modification date (dd-mm-yyyy) for Releases
         
         # Track file modification times for auto-reload across workers
         self._catalog_file_mtime = None  # Modification time of catalog.pkl when last loaded
@@ -632,6 +634,8 @@ class GameService:
         self.subdirectory_counts_wip = {}
         self.subdirectory_counts_releases = {}
         self.system_versions = {}
+        self.system_gamelist_date_wip = {}
+        self.system_gamelist_date_releases = {}
         
         if not os.path.isdir(self.games_path):
             logger.warning(f"Games directory not found at: {self.games_path}")
@@ -674,6 +678,11 @@ class GameService:
                 game_count_wip = self._load_catalog_from_gamelist(dir_name, gamelist_path, 'wip')
                 logger.debug(f"Loaded WIP catalog for {dir_name}: {game_count_wip} games")
                 
+                # Extract gamelist modification date for WIP
+                from datetime import datetime
+                mtime_wip = os.path.getmtime(gamelist_path)
+                self.system_gamelist_date_wip[dir_name] = datetime.fromtimestamp(mtime_wip).strftime('%d-%m-%Y')
+                
                 # Merge games with extensions if both extensions are defined for this system
                 if dir_name in system_extensions:
                     ext_info = system_extensions[dir_name]
@@ -693,6 +702,12 @@ class GameService:
                         game_count_releases = self._load_catalog_from_gamelist(dir_name, versioned_gamelist_path, 'releases', snapshot_dir_path)
                         self.system_versions[dir_name] = version_str
                         self.system_snapshot_paths[dir_name] = snapshot_dir_path
+                        
+                        # Extract gamelist modification date for Releases
+                        from datetime import datetime
+                        mtime_releases = os.path.getmtime(versioned_gamelist_path)
+                        self.system_gamelist_date_releases[dir_name] = datetime.fromtimestamp(mtime_releases).strftime('%d-%m-%Y')
+                        
                         logger.info(f"Loaded Releases catalog for {dir_name} (version {version_str}, snapshot: {snapshot_dir_path}): {game_count_releases} games")
                         
                         # Merge games with extensions if both extensions are defined for this system
@@ -1325,27 +1340,6 @@ class GameService:
         data_dir = os.path.dirname(db_path)
         os.makedirs(data_dir, exist_ok=True)
         return os.path.join(data_dir, 'search_index.pkl')
-    
-    def _get_index_hash_file_path(self) -> str:
-        """Get the path to the index hash file (for cache invalidation)."""
-        # Use the same data directory as the database (project root/data/)
-        from app.config import settings
-        
-        # Get database path and extract the directory (same logic as database.py)
-        db_path = settings.DATABASE_URL.replace('sqlite:///', '')
-        if db_path.startswith('./'):
-            # Resolve relative path from the project root
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-            db_path = os.path.join(project_root, db_path[2:])
-        elif not os.path.isabs(db_path):
-            # Relative path, resolve from project root
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-            db_path = os.path.join(project_root, db_path)
-        
-        data_dir = os.path.dirname(db_path)
-        os.makedirs(data_dir, exist_ok=True)
-        return os.path.join(data_dir, 'search_index.hash')
-    
     def _get_catalog_file_path(self) -> str:
         """Get the path to the catalog pickle file."""
         from app.config import settings
@@ -1363,36 +1357,7 @@ class GameService:
         os.makedirs(data_dir, exist_ok=True)
         return os.path.join(data_dir, 'catalog.pkl')
     
-    def _calculate_games_hash(self) -> str:
-        """Calculate a hash of all gamelist.xml files to detect changes."""
-        # If systems_list is already loaded, use it; otherwise scan filesystem
-        if hasattr(self, 'systems_list') and self.systems_list:
-            systems = self.systems_list
-        else:
-            # Scan filesystem for systems
-            systems = []
-            if os.path.isdir(self.games_path):
-                for dir_name in os.listdir(self.games_path):
-                    if dir_name in ['.', '..'] or dir_name.endswith('_spirit') or dir_name == 'radio':
-                        continue
-                    dir_path = os.path.join(self.games_path, dir_name)
-                    if os.path.isdir(dir_path):
-                        systems.append({'id': dir_name})
-        
-        hash_data = []
-        
-        for system in systems:
-            system_id = system['id'] if isinstance(system, dict) else system
-            gamelist_path = os.path.join(self.games_path, system_id, 'gamelist.xml')
-            
-            if os.path.isfile(gamelist_path) and os.access(gamelist_path, os.R_OK):
-                # Use file modification time and size as hash input
-                stat = os.stat(gamelist_path)
-                hash_data.append(f"{system_id}:{stat.st_mtime}:{stat.st_size}")
-        
-        hash_string = '|'.join(sorted(hash_data))
-        return hashlib.md5(hash_string.encode()).hexdigest()
-    
+
     def _load_index_from_cache(self, catalog_type: str = 'wip') -> Optional[Dict]:
         """Load search index from pickle file if it exists and is valid.
         
@@ -1400,22 +1365,13 @@ class GameService:
             catalog_type: 'wip' or 'releases' (default: 'wip')
         """
         index_file = self._get_index_file_path()
-        hash_file = self._get_index_hash_file_path()
         
-        if not os.path.isfile(index_file) or not os.path.isfile(hash_file):
+        if not os.path.isfile(index_file):
             logger.info(f"No cached search index found ({catalog_type})")
             return None
         
         try:
-            # Check if hash matches current games state
-            current_hash = self._calculate_games_hash()
-            with open(hash_file, 'r') as f:
-                cached_hash = f.read().strip()
-            
-            if current_hash != cached_hash:
-                logger.info("Games have changed, invalidating cached index")
-                return None
-            
+            # Hash validation disabled to match catalog loading logic
             # Load indexes from pickle (may contain both wip and releases)
             with open(index_file, 'rb') as f:
                 index_data = pickle.load(f)
@@ -1458,7 +1414,6 @@ class GameService:
             catalog_type: 'wip' or 'releases' (default: 'wip')
         """
         index_file = self._get_index_file_path()
-        hash_file = self._get_index_hash_file_path()
         
         try:
             # Try to load existing indexes to merge with new one
@@ -1483,11 +1438,6 @@ class GameService:
             
             # Update tracked mtime after saving
             self._index_file_mtime = os.path.getmtime(index_file)
-            
-            # Save hash for cache validation
-            current_hash = self._calculate_games_hash()
-            with open(hash_file, 'w') as f:
-                f.write(current_hash)
             
             logger.info(f"Saved search index to cache ({catalog_type}): {index_file}")
             
@@ -1537,6 +1487,8 @@ class GameService:
             self.systems_list = catalog_data.get('systems_list', [])
             self.system_versions = catalog_data.get('system_versions', {})
             self.system_snapshot_paths = catalog_data.get('system_snapshot_paths', {})
+            self.system_gamelist_date_wip = catalog_data.get('system_gamelist_date_wip', {})
+            self.system_gamelist_date_releases = catalog_data.get('system_gamelist_date_releases', {})
             self._catalog_timestamp = catalog_data.get('_catalog_timestamp', time.time())
             
             # catalog_responses removed - responses built on-demand to save memory
@@ -1685,7 +1637,6 @@ class GameService:
         They are computed on-demand when loading from cache.
         """
         catalog_file = self._get_catalog_file_path()
-        hash_file = self._get_index_hash_file_path()
         
         try:
             catalog_data = {
@@ -1700,6 +1651,8 @@ class GameService:
                 'systems_list': self.systems_list,
                 'system_versions': self.system_versions,
                 'system_snapshot_paths': self.system_snapshot_paths,
+                'system_gamelist_date_wip': self.system_gamelist_date_wip,
+                'system_gamelist_date_releases': self.system_gamelist_date_releases,
                 '_catalog_timestamp': self._catalog_timestamp
             }
             
@@ -1709,11 +1662,6 @@ class GameService:
             
             # Update tracked mtime after saving
             self._catalog_file_mtime = os.path.getmtime(catalog_file)
-            
-            # Save hash for cache validation (reuse same hash as search index)
-            current_hash = self._calculate_games_hash()
-            with open(hash_file, 'w') as f:
-                f.write(current_hash)
             
             logger.info(f"Saved catalog to cache: {catalog_file}")
             

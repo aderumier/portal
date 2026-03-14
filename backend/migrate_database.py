@@ -352,6 +352,26 @@ def migrate_database():
     except sqlite3.OperationalError as e:
         print(f"  ⚠ Could not migrate bugreports table (table may not exist yet): {e}")
     
+    # Create bugreport_comments table if it doesn't exist
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bugreport_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bug_report_id INTEGER NOT NULL,
+            iduser TEXT NOT NULL,
+            comment TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    print("  ✓ Created/verified bugreport_comments table")
+    
+    # Create indexes for bugreport_comments
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_brc_bug_report_id ON bugreport_comments(bug_report_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_brc_iduser ON bugreport_comments(iduser)")
+        print("  ✓ Created/verified indexes for bugreport_comments")
+    except sqlite3.OperationalError as e:
+        print(f"  ✗ Error creating indexes for bugreport_comments: {e}")
+    
     conn.commit()
     conn.close()
     print("Migration completed!")

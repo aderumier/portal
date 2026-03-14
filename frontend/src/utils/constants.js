@@ -17,6 +17,8 @@ export const setMediaVersion = (version) => {
   mediaVersion = version == null ? null : Number(version)
 }
 
+export const getMediaVersion = () => mediaVersion
+
 /**
  * Get the media URL for a given media path.
  * In development, this uses the Vite proxy (/media).
@@ -35,18 +37,18 @@ export const getMediaUrl = (mediaPath) => {
  */
 const isNginxServing = () => {
   if (typeof window === 'undefined') return false
-  
+
   const port = window.location.port
   const protocol = window.location.protocol
-  
+
   // Nginx typically serves on:
   // - Port 443 (HTTPS, default)
   // - Port 80 (HTTP, default)
   // - No port specified (default ports)
   // - HTTPS protocol (usually nginx with SSL)
   return (
-    port === '' || 
-    port === '443' || 
+    port === '' ||
+    port === '443' ||
     port === '80' ||
     protocol === 'https:'
   )
@@ -64,7 +66,7 @@ const isNginxServing = () => {
  */
 export const getThumbnailUrl = (mediaPath, width, height) => {
   if (!mediaPath) return null
-  
+
   // Only use thumbnail URLs when nginx is serving (ports 443/80 or HTTPS)
   // In development (port 3000), use regular media URLs (Vite proxy doesn't support image_filter)
   if (isNginxServing()) {

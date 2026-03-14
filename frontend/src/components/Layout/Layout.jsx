@@ -117,6 +117,13 @@ const Layout = () => {
                       >
                         Account Settings
                       </Link>
+                      <Link
+                        to="/bugreports"
+                        className="account-menu-item"
+                        onClick={() => setAccountMenuOpen(false)}
+                      >
+                        Bug Reports
+                      </Link>
                       {isAdmin && (
                         <>
                           <Link
@@ -139,13 +146,6 @@ const Layout = () => {
                             onClick={() => setAccountMenuOpen(false)}
                           >
                             Medias Validation
-                          </Link>
-                          <Link
-                            to="/bugreports"
-                            className="account-menu-item"
-                            onClick={() => setAccountMenuOpen(false)}
-                          >
-                            Bug Reports
                           </Link>
                           <Link
                             to="/download-queues"

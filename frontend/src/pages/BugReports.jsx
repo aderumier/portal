@@ -13,18 +13,17 @@ const BugReports = () => {
   const [sortOrder, setSortOrder] = useState('desc')
   const [selectedBugReport, setSelectedBugReport] = useState(null)
   const [showDetailModal, setShowDetailModal] = useState(false)
+  const [statusFilter, setStatusFilter] = useState('open')
 
   useEffect(() => {
-    if (isAdmin) {
-      loadBugReports()
-    }
-  }, [isAdmin, sortBy, sortOrder])
+    loadBugReports()
+  }, [sortBy, sortOrder, statusFilter])
 
   const loadBugReports = async () => {
     try {
       setLoading(true)
       setError(null)
-      const response = await getBugReports(sortBy, sortOrder)
+      const response = await getBugReports(statusFilter, sortBy, sortOrder)
       setBugReports(response.bug_reports || [])
     } catch (err) {
       console.error('Error loading bug reports:', err)
@@ -83,18 +82,13 @@ const BugReports = () => {
   }
 
   const getStatusLabel = (status) => {
+    if (status === 'notabug') return 'Not a Bug'
+    if (status === 'waiting_user_response') return 'Waiting User Response'
+    if (status === 'waiting_admin_response') return 'Waiting Admin Response'
     return status.charAt(0).toUpperCase() + status.slice(1).replace(/([A-Z])/g, ' $1')
   }
 
-  if (!isAdmin) {
-    return (
-      <div className="bug-reports-page">
-        <div className="bug-reports-error">
-          <p>You must have Admin role to access bug reports.</p>
-        </div>
-      </div>
-    )
-  }
+
 
   if (loading) {
     return (
@@ -115,7 +109,38 @@ const BugReports = () => {
   return (
     <div className="bug-reports-page">
       <h1>Bug Reports</h1>
-      
+
+      <div className="bug-reports-status-filters" style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
+        <button
+          className={`filter-btn ${statusFilter === 'all' ? 'active' : ''}`}
+          onClick={() => setStatusFilter('all')}
+          style={{ padding: '8px 16px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc', backgroundColor: statusFilter === 'all' ? '#007bff' : '#f8f9fa', color: statusFilter === 'all' ? 'white' : 'black' }}
+        >
+          All
+        </button>
+        <button
+          className={`filter-btn ${statusFilter === 'open' ? 'active' : ''}`}
+          onClick={() => setStatusFilter('open')}
+          style={{ padding: '8px 16px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc', backgroundColor: statusFilter === 'open' ? '#007bff' : '#f8f9fa', color: statusFilter === 'open' ? 'white' : 'black' }}
+        >
+          Open
+        </button>
+        <button
+          className={`filter-btn ${statusFilter === 'resolved' ? 'active' : ''}`}
+          onClick={() => setStatusFilter('resolved')}
+          style={{ padding: '8px 16px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc', backgroundColor: statusFilter === 'resolved' ? '#28a745' : '#f8f9fa', color: statusFilter === 'resolved' ? 'white' : 'black' }}
+        >
+          Resolved
+        </button>
+        <button
+          className={`filter-btn ${statusFilter === 'notabug' ? 'active' : ''}`}
+          onClick={() => setStatusFilter('notabug')}
+          style={{ padding: '8px 16px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc', backgroundColor: statusFilter === 'notabug' ? '#dc3545' : '#f8f9fa', color: statusFilter === 'notabug' ? 'white' : 'black' }}
+        >
+          Not a Bug
+        </button>
+      </div>
+
       <div className="bug-reports-table-container">
         <table className="bug-reports-table">
           <thead>

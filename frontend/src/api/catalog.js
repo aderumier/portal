@@ -1,5 +1,5 @@
 import client from './client'
-import { setMediaVersion } from '../utils/constants'
+import { setMediaVersion, getMediaVersion } from '../utils/constants'
 
 export const refreshCatalog = async () => {
   const response = await client.post('/api/catalog/refresh')
@@ -22,8 +22,9 @@ export const getSystems = async (catalogType = 'releases') => {
 }
 
 export const getGames = async (system, page = 1, limit = 12, search = '', catalogType = 'releases') => {
+  const v = getMediaVersion()
   const response = await client.get(`/api/catalog/games/${system}`, {
-    params: { page, limit, search: search || undefined, catalog_type: catalogType }
+    params: { page, limit, search: search || undefined, catalog_type: catalogType, v: v || undefined }
   })
   return response.data
 }

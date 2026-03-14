@@ -52,11 +52,13 @@ async def get_systems(
     if not game_service._gamelists_loaded:
         game_service.preload_all_gamelists()
     
-    # Select appropriate catalog based on catalog_type
+    # Select appropriate catalog and dates based on catalog_type
     if catalog_type == 'wip':
         catalog = game_service.catalog_wip
+        gamelist_dates = game_service.system_gamelist_date_wip
     else:
         catalog = game_service.catalog_releases
+        gamelist_dates = game_service.system_gamelist_date_releases
     
     # Build systems list with game counts
     systems = []
@@ -83,7 +85,8 @@ async def get_systems(
             'hardware': db_system.hardware or 'unknown',
             'manufacturer': db_system.manufacturer or 'Unknown',
             'release': db_system.release or 'Unknown',
-            'version': version  # Add version to response
+            'version': version,  # Add version to response
+            'gamelistDate': gamelist_dates.get(db_system.id)
         })
     
     media_version = int(game_service._catalog_timestamp) if game_service._catalog_timestamp else 0

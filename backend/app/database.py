@@ -229,6 +229,21 @@ class BugReport(Base):
     )
 
 
+class BugReportComment(Base):
+    """Bug report comment model."""
+    __tablename__ = "bugreport_comments"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    bug_report_id = Column(Integer, nullable=False, index=True)
+    iduser = Column(String, nullable=False, index=True)
+    comment = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    __table_args__ = (
+        {'sqlite_autoincrement': True},
+    )
+
+
 def init_db():
     """Initialize database tables and run migrations."""
     Base.metadata.create_all(bind=engine)
