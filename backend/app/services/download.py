@@ -412,7 +412,8 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
                 # Security check: ensure directory is within GAMES_PATH
                 from app.config import settings
                 if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
-                    files = []
+                    # Include the main zip file as well as the directory files
+                    files = [source_filename]
                     # Walk the directory to find all files
                     for root, dirs, filenames in os.walk(dir_full_path):
                         for filename in filenames:
@@ -447,7 +448,8 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
                 # Security check: ensure directory is within GAMES_PATH
                 from app.config import settings
                 if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
-                    files = []
+                    # Include the main zip file as well as the directory files
+                    files = [source_filename]
                     # Walk the directory to find all files
                     for root, dirs, filenames in os.walk(dir_full_path):
                         for filename in filenames:
