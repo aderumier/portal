@@ -2002,7 +2002,7 @@ class DownloadService:
                         # Linux: psvita/ux0/app/{directory_name}
                         # Windows: psvita/vita3k/app/{directory_name}
                         if is_windows:
-                            save_location = f"psvita/vita3k/app/{directory_name}"
+                            save_location = f"psvita/vita3k/ux0/app/{directory_name}"
                         else:
                             save_location = f"psvita/ux0/app/{directory_name}"
                         logger.info(f"Detected .psvita file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
@@ -2016,12 +2016,11 @@ class DownloadService:
                         # Build location path based on platform
                         # Linux: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses config_location)
                         # Windows: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses save_location)
-                        location_path = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
                         if is_windows:
-                            save_location = location_path
+                            save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
                             logger.info(f"Detected .psn file, save_location: {save_location} (platform: windows)")
                         else:
-                            config_location = location_path
+                            config_location = f"rpcs3/dev_hdd0/game/{directory_name}"
                             logger.info(f"Detected .psn file, config_location: {config_location} (platform: linux)")
                 
                 # Check if this is a PS3 .m3u file and calculate save_location
