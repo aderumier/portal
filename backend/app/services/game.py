@@ -538,6 +538,55 @@ class GameService:
                 
                 unified_keys_to_create.append((unified_key, batocera_rompath, retrobat_rompath))
                 merged_count += 1
+                # Mark as matched to skip name fallback
+                paths['matched'] = True
+        
+        # Fallback: Merge by game name for remaining ROMs
+        batocera_unmatched = {} # name -> rompath
+        retrobat_unmatched = {} # name -> rompath
+        
+        for base_path, paths in base_path_map.items():
+            if paths.get('matched'):
+                continue
+                
+            if 'batocera' in paths:
+                rompath = paths['batocera']
+                name = catalog[system_id][rompath].get('name', '').lower().strip()
+                if name:
+                    batocera_unmatched[name] = rompath
+            
+            if 'retrobat' in paths:
+                rompath = paths['retrobat']
+                name = catalog[system_id][rompath].get('name', '').lower().strip()
+                if name:
+                    retrobat_unmatched[name] = rompath
+        
+        # Find matches by name
+        for name, batocera_rompath in batocera_unmatched.items():
+            if name in retrobat_unmatched:
+                retrobat_rompath = retrobat_unmatched[name]
+                
+                # Use batocera base path for unified key
+                base_path = self._get_rom_filename_without_ext(batocera_rompath)
+                unified_key = self._create_unified_rom_key(base_path, bat_ext, ret_ext)
+                
+                # If unified key already exists (unlikely but safe), skip
+                if unified_key in catalog[system_id]:
+                    continue
+                
+                primary_game_data = catalog[system_id][batocera_rompath]
+                
+                # Store unified key with primary game data
+                catalog[system_id][unified_key] = primary_game_data.copy()
+                catalog[system_id][unified_key]['_original_batocera_path'] = batocera_rompath
+                catalog[system_id][unified_key]['_original_retrobat_path'] = retrobat_rompath
+                
+                # Remove individual ROM paths
+                del catalog[system_id][batocera_rompath]
+                del catalog[system_id][retrobat_rompath]
+                
+                unified_keys_to_create.append((unified_key, batocera_rompath, retrobat_rompath))
+                merged_count += 1
         
         # Update sorted keys list - replace old keys with unified key
         if system_id in catalog_sorted_keys:
