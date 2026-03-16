@@ -383,10 +383,8 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
     # Check for .wsquashfs files
     if file_lower.endswith('.wsquashfs'):
         # Check if a corresponding .keys file exists
-        # Get filename without extension and append .keys
-        # We use splitext repeatedly in case of double extension or just use the base name
-        game_base_name = os.path.splitext(source_filename)[0]
-        keys_filename = f"{game_base_name}.keys"
+        # It is always and only ROM_NAME.wsquashfs.keys
+        keys_filename = f"{source_filename}.keys"
         keys_path = os.path.join(os.path.dirname(file_path), keys_filename)
         
         if os.path.isfile(keys_path):
