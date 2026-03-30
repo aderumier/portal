@@ -5508,56 +5508,38 @@ async def perform_bandwidth_test():
 
 def _run_bandwidth_test_sync():
     """Synchronous wrapper for bandwidth test (runs in executor).
-    
+
     Returns:
         Tuple of (upload_mbps, download_mbps) or None on error
     """
     try:
         from internetspeedtest import SpeedTest
-        
+
         st = SpeedTest()
-        
+
         # Get available servers
         servers = st.get_servers()
         if not servers:
             logger.error("No speedtest servers available")
             return None
-        
+
         # Find the best server
         best_server = st.find_best_server(servers)
         if not best_server:
             logger.error("Could not find best server for speed test")
             return None
-        
-        # Handle Server object - it may have attributes like name, host, etc.
+
         server_name = getattr(best_server, 'name', None) or getattr(best_server, 'host', None) or 'Unknown'
         logger.info(f"Running bandwidth test against server: {server_name}")
-        
-        # Test download speed
-        download_result = st.download(best_server)
-        if isinstance(download_result, tuple):
-            download_speed, _ = download_result  # (speed, bytes)
-        else:
-            download_speed = download_result
-        
-        # Test upload speed
-        upload_result = st.upload(best_server)
-        if isinstance(upload_result, tuple):
-            upload_speed, _ = upload_result  # (speed, bytes)
-        else:
-            upload_speed = upload_result
-        
-        # Convert to Mbits/s if needed (check if already in Mbits/s)
-        # The library should return Mbits/s, but let's ensure
-        upload_mbps = float(upload_speed)
-        download_mbps = float(download_speed)
-        
+
+        # download() and upload() return (speed_mbps, bytes_transferred)
+        download_mbps, _ = st.download(best_server)
+        upload_mbps, _ = st.upload(best_server)
+
         return (upload_mbps, download_mbps)
-        
+
     except Exception as e:
         logger.error(f"Error in bandwidth test: {e}", exc_info=True)
-        import traceback
-        logger.debug(f"Bandwidth test traceback: {traceback.format_exc()}")
         return None
 
 async def submit_bandwidth_test_results(upload_bandwidth: float, download_bandwidth: float):
