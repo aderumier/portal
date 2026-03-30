@@ -130,10 +130,10 @@ else:
         log_file_path = os.path.abspath(os.getenv('LOG_FILE'))
     elif config.get('LOG_DIR'):
         log_dir = config.get('LOG_DIR')
-        log_file_path = os.path.abspath(os.path.join(str(SERVICE_DIR), log_dir, 'rgs_download.log'))
+        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
     elif os.getenv('LOG_DIR'):
         log_dir = os.getenv('LOG_DIR')
-        log_file_path = os.path.abspath(os.path.join(str(SERVICE_DIR), log_dir, 'rgs_download.log'))
+        log_file_path = os.path.abspath(os.path.join(log_dir, 'rgs_download.log'))
     else:
         # Default Linux location...skipping...
         log_file_path = os.path.abspath(os.getenv('LOG_FILE', '/userdata/system/logs/rgs_download.log'))
