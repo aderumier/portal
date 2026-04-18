@@ -273,6 +273,10 @@ logger.addHandler(_startup_log_handler)
 # Global dictionary to store download log handlers
 _download_log_handlers = {}
 
+# Global set to prevent duplicate concurrent downloads of the same download_id
+_active_download_ids = set()
+_active_download_ids_lock = threading.Lock()
+
 # Global dictionary to track paused downloads (download_id -> paused_ref)
 # This allows WebSocket notifications to immediately pause downloads
 _active_download_pause_refs = {}
@@ -449,35 +453,41 @@ async def process_websocket_archive_stream(
             if elapsed > 0:
                 total_bytes_downloaded += bytes_transferred_this_session[0]
                 bytes_per_second = int(bytes_transferred_this_session[0] / elapsed) if bytes_transferred_this_session[0] > 0 else 0
-                
+
                 if not progress_thread_running:
+                    bytes_transferred_this_session[0] = 0  # Mark as accumulated to avoid double-count in main thread
                     break
-                
+
                 try:
                     progress_result = report_progress(download_id, total_bytes_downloaded, bytes_per_second)
                     if progress_result is None:
                         logger.debug(f"Download {download_id} was removed from queue")
                         paused_ref[0] = False
                         progress_thread_running = False
+                        bytes_transferred_this_session[0] = 0
                         break
                     elif progress_result is False:
                         logger.info(f"Download {download_id} is paused")
                         paused_ref[0] = True
                         progress_thread_running = False
+                        bytes_transferred_this_session[0] = 0
                         break
                 except requests.exceptions.HTTPError as e:
                     if e.response and e.response.status_code == 410:
                         logger.debug(f"Progress report returned 410 Gone - download {download_id} removed")
                         paused_ref[0] = False
                         progress_thread_running = False
+                        bytes_transferred_this_session[0] = 0
                         break
                     if not progress_thread_running:
+                        bytes_transferred_this_session[0] = 0
                         break
                 except Exception as e:
                     logger.debug(f"Progress report failed: {e}")
                     if not progress_thread_running:
+                        bytes_transferred_this_session[0] = 0
                         break
-                
+
                 last_report_time = time.time()
                 bytes_transferred_this_session[0] = 0
     
@@ -501,7 +511,8 @@ async def process_websocket_archive_stream(
     # Create a mapping of relative_path to file_info for quick lookup
     files_dict = {f['relative_path']: f for f in files_list}
     remaining_files_set = set(f['relative_path'] for f in files_list)
-    
+    last_ping_time = stream_start_time
+
     try:
         # Receive binary chunks from WebSocket
         while True:
@@ -533,7 +544,17 @@ async def process_websocket_archive_stream(
                           f"file_bytes_remaining={file_remaining_str}{file_progress_str}, "
                           f"files_completed={len(extracted_files)}")
                 last_status_log_time = current_time
-            
+
+            # Send application-level ping every 20s to keep connection alive
+            # (library auto-pings are disabled; without this a long transfer would be silently dropped)
+            if current_time - last_ping_time >= 20.0:
+                try:
+                    await websocket.send(json.dumps({"type": "ping"}))
+                    last_ping_time = current_time
+                except Exception as e:
+                    logger.error(f"WebSocket: Failed to send keepalive ping: {e}")
+                    raise
+
             # Check for pause
             if paused_ref and paused_ref[0]:
                 logger.info(f"Download {download_id} was paused during WebSocket streaming")
@@ -652,10 +673,21 @@ async def process_websocket_archive_stream(
                         else:
                             dest_file_path = os.path.join(dest_base_path, relative_path)
                         
+                        # Skip file if already successfully extracted (server may send archive twice)
+                        if relative_path in extracted_files:
+                            logger.debug(f"WebSocket: Skipping already-extracted file: {relative_path} ({file_size} bytes)")
+                            current_file_info = file_info
+                            current_file_relative_path = relative_path
+                            current_file_size = file_size
+                            current_file_bytes_remaining = file_size
+                            current_file_skip = True
+                            current_dest_file = None
+                            continue
+
                         # Create directory and open file
                         dest_file_dir = os.path.dirname(dest_file_path)
                         os.makedirs(dest_file_dir, exist_ok=True)
-                        
+
                         try:
                             current_file_info = file_info
                             current_file_relative_path = relative_path
@@ -779,7 +811,12 @@ async def process_websocket_archive_stream(
         # Stop progress reporter
         progress_thread_running = False
         progress_thread.join(timeout=10)
-        
+
+        # Accumulate any bytes received after the thread's last reset but before it exited
+        # (thread exits via while-check without accumulating these bytes)
+        total_bytes_downloaded += bytes_transferred_this_session[0]
+        bytes_transferred_this_session[0] = 0
+
         # Final progress report
         if total_bytes_downloaded > 0:
             try:
@@ -2042,14 +2079,17 @@ def download_directory_as_tar(download_id, system, game_id, base_url, dest_base_
             # Use the stored event loop from WebSocket connection
             with _websocket_lock:
                 loop = _websocket_event_loop
-            
+
+            # Use bytes from already-complete files as starting point for progress reporting
+            completed_bytes = sum(completed_files.values())
+
             if loop and loop.is_running():
                 # Loop is running (in WebSocket thread), use run_coroutine_threadsafe
                 import concurrent.futures
                 future = asyncio.run_coroutine_threadsafe(
                     download_directory_via_websocket_async(
                         download_id, remaining_paths, dest_base_path, system,
-                        remaining_files, bytes_already_transferred, paused_ref, download_info
+                        remaining_files, completed_bytes, paused_ref, download_info
                     ),
                     loop
                 )
@@ -4237,14 +4277,21 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
 def download_game(download_info):
     """Download a game file or directory via HTTP with progress reporting and resume support."""
     download_id = download_info.get('download_id')
-    
+
+    # Prevent duplicate concurrent downloads of the same download_id
+    with _active_download_ids_lock:
+        if download_id in _active_download_ids:
+            logger.warning(f"Download {download_id} is already in progress, skipping duplicate request")
+            return False
+        _active_download_ids.add(download_id)
+
     # Create and attach log handler for this download
     # Use root logger to capture all log messages during download
     log_handler = DownloadLogHandler(download_id)
     root_logger = logging.getLogger()
     root_logger.addHandler(log_handler)
     _download_log_handlers[download_id] = log_handler
-    
+
     # Log start of download
     logger.info(f"=== Starting download task for download_id: {download_id} ===")
     
@@ -4905,6 +4952,8 @@ def download_game(download_info):
         # Ensure cleanup even if something goes wrong
         if download_id in _active_download_pause_refs:
             del _active_download_pause_refs[download_id]
+        with _active_download_ids_lock:
+            _active_download_ids.discard(download_id)
 
 def mark_completed(download_id, download_info=None):
     """Mark a download as completed in the queue and send logs.
@@ -5106,7 +5155,7 @@ async def websocket_client():
         while True:
             try:
                 # Set max_size to 10MB to handle larger archive chunks (default is 1MB)
-                async with websockets.connect(ws_url, max_size=10 * 1024 * 1024) as websocket:
+                async with websockets.connect(ws_url, max_size=10 * 1024 * 1024, ping_interval=None) as websocket:
                     logger.info("WebSocket connected successfully")
                     backoff_delay = 0  # Reset backoff to 0 on successful connection
                     

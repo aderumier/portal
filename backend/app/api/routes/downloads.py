@@ -458,7 +458,15 @@ async def discover_download_files(
                             except ValueError:
                                 pass
                 else:
-                    # For .m3u and .cue files: files are relative to the source file's directory
+                    # Source file first, then associated files (.keys, tracks, etc.)
+                    if source_file:
+                        rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                        if requested_files is None or rel_path in requested_files:
+                            all_files_list.append({
+                                'source_path': base_path,
+                                'relative_path': rel_path,
+                                'size': os.path.getsize(base_path)
+                            })
                     for rel_file in parsed_files:
                         file_full_path = os.path.normpath(os.path.join(source_dir, rel_file))
                         if os.path.exists(file_full_path) and os.path.isfile(file_full_path):
@@ -473,14 +481,6 @@ async def discover_download_files(
                                         })
                             except ValueError:
                                 pass
-                    if source_file:
-                        rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
-                        if requested_files is None or rel_path in requested_files:
-                            all_files_list.append({
-                                'source_path': base_path,
-                                'relative_path': rel_path,
-                                'size': os.path.getsize(base_path)
-                            })
     elif os.path.isdir(base_path):
         # Regular directory
         for root, dirs, filenames in os.walk(base_path):
@@ -603,9 +603,17 @@ async def stream_archive_via_websocket(
             ping_interval = 20.0  # Send ping every 20 seconds to keep connection alive
         
         # Stream files in binary format with throttling
+        sent_files = set()
         for file_info in all_files_list:
             source_path = file_info['source_path']
             relative_path = file_info['relative_path']
+            
+            # Prevent sending duplicate files within the same archive stream
+            if relative_path in sent_files:
+                logger.warning(f"Archive stream deduplication: skipping already sent file {relative_path}")
+                continue
+            sent_files.add(relative_path)
+            
             file_size = file_info['size']
             
             # Check if download is paused (use Redis for active downloads)
@@ -2562,6 +2570,14 @@ async def download_file(
                                     logger.warning(f"File {file_full_path} path validation failed, skipping")
                             else:
                                 logger.warning(f"File listed in {source_file} does not exist: {file_full_path}")
+                                
+                        # Include the source file itself in the download
+                        if source_file:
+                            source_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                            files_list.append({
+                                'relative_path': source_rel_path,
+                                'size': os.path.getsize(base_path)
+                            })
                 
                 elif base_path_type == 'directory':
                     # Regular directory downloads (shouldn't happen with special files, but handle for completeness)

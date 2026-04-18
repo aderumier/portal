@@ -390,7 +390,7 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
         if os.path.isfile(keys_path):
             logger.info(f"Found corresponding .keys file for {source_filename}: {keys_filename}")
             return {
-                'files': [source_filename, keys_filename],
+                'files': [keys_filename],
                 'base_path_type': 'file',
                 'source_file': source_filename
             }
@@ -1005,6 +1005,10 @@ class DownloadService:
                                                 total_size += os.path.getsize(file_full_path)
                                         except ValueError:
                                             logger.warning(f"File {file_full_path} path validation failed, skipping from size calculation")
+                                            
+                                # Include the source file itself in the total size
+                                if source_file and os.path.exists(game_path) and os.path.isfile(game_path):
+                                    total_size += os.path.getsize(game_path)
                         
                         file_size = total_size
                         logger.info(f"Special file ({source_file}) total size: {file_size} bytes ({len(parsed_files)} items parsed)")
