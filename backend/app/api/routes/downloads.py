@@ -2747,6 +2747,23 @@ async def download_file(
                             status_code=status.HTTP_400_BAD_REQUEST,
                             detail="Invalid relative path"
                         )
+                else:
+                    # Fallback: Treat as regular file requested with relative_path (e.g. .keys file for .wsquashfs)
+                    # The relative_path is interpreted relatively to the parent directory of this file
+                    file_path = os.path.normpath(os.path.join(os.path.dirname(base_path), relative_path))
+                    
+                    # Ensure the file is within the games directory (security check)
+                    try:
+                        if not os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(file_path)]) == os.path.abspath(settings.GAMES_PATH):
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Invalid relative path (outside games directory)"
+                            )
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid relative path"
+                        )
             else:
                 # For directories, relative_path is relative to the directory
                 file_path = os.path.join(base_path, relative_path)
