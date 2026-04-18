@@ -4285,8 +4285,11 @@ def download_keys_file(game_id, dest_path, http_url):
     keys_dest = f"{dest_path}.keys"
     
     try:
+        headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+        }
         session = requests.Session()
-        keys_response = session.get(keys_url, stream=True, timeout=10)
+        keys_response = session.get(keys_url, stream=True, timeout=10, headers=headers)
         
         if keys_response.status_code == 200:
             logger.info(f"Downloading auxiliary keys file: {keys_url} to {keys_dest}")
