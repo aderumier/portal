@@ -4274,6 +4274,38 @@ def try_p2p_download_from_list(p2p_peers, system, rom_path, game_id, dest_path, 
 # End of P2P Download Helper Functions
 # ============================================================================
 
+def download_keys_file(game_id, dest_path, http_url):
+    """Download the .keys file associated with a game if it exists."""
+    import urllib.parse
+    import time
+    import requests
+    
+    keys_filename = f"{os.path.basename(game_id)}.keys"
+    keys_url = f"{http_url}&relative_path={urllib.parse.quote(keys_filename)}"
+    keys_dest = f"{dest_path}.keys"
+    
+    try:
+        session = requests.Session()
+        keys_response = session.get(keys_url, stream=True, timeout=10)
+        
+        if keys_response.status_code == 200:
+            logger.info(f"Downloading auxiliary keys file: {keys_url} to {keys_dest}")
+            with open(keys_dest, 'wb') as kf:
+                for chunk in keys_response.iter_content(chunk_size=8192):
+                    if chunk:
+                        kf.write(chunk)
+            logger.info(f"Successfully downloaded keys file to {keys_dest}")
+            return True
+        elif keys_response.status_code == 404:
+            logger.debug(f"No auxiliary keys file found for this game (HTTP 404).")
+            return False
+        else:
+            logger.warning(f"Failed to check/download keys file: HTTP {keys_response.status_code}")
+            return False
+    except Exception as e:
+        logger.debug(f"Error checking for keys file: {e}")
+        return False
+
 def download_game(download_info):
     """Download a game file or directory via HTTP with progress reporting and resume support."""
     download_id = download_info.get('download_id')
@@ -4618,6 +4650,9 @@ def download_game(download_info):
                     # Download media files and update gamelist.xml after successful P2P download
                     media_and_gamelist_success = False
                     try:
+                        # Pre-fetch the .keys file natively from server if it exists
+                        download_keys_file(clean_original_path, dest_path, http_url)
+                        
                         logger.info(f"P2P download completed successfully, downloading media files for {game_id}")
                         downloaded_media, game_data = download_game_media(system, game_id, download_id, batocera_system=target_system)
                         
@@ -4682,6 +4717,9 @@ def download_game(download_info):
                 # (media might not be downloaded yet)
                 media_and_gamelist_success = False
                 try:
+                    # Pre-fetch the .keys file natively from server if it exists
+                    download_keys_file(clean_original_path, dest_path, http_url)
+                    
                     logger.info(f"File already complete, downloading media files for {game_id}")
                     downloaded_media, game_data = download_game_media(system, game_id, download_id, batocera_system=target_system)
                     
@@ -4909,6 +4947,9 @@ def download_game(download_info):
             # Download media files and update gamelist.xml after successful game download
             media_and_gamelist_success = False
             try:
+                # Pre-fetch the .keys file natively from server if it exists
+                download_keys_file(clean_original_path, dest_path, http_url)
+                
                 logger.info(f"Download completed successfully, downloading media files for {game_id}")
                 downloaded_media, game_data = download_game_media(system, game_id, download_id, batocera_system=target_system)
                 
