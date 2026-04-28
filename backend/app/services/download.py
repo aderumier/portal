@@ -2281,15 +2281,13 @@ class DownloadService:
                 directory_name = parse_psn_file(file_path)
                 if directory_name:
                     # Build location path based on platform
-                    # Linux: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses config_location)
-                    # Windows: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses save_location)
-                    location_path = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
-                    is_windows_platform = is_windows
-                    if is_windows_platform:
-                        save_location = location_path
+                    # Linux: rpcs3/dev_hdd0/game/{directory_name} (uses config_location, joined with CONFIGDIR)
+                    # Windows: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses save_location, joined with SAVEDIR)
+                    if is_windows:
+                        save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
                         logger.info(f"Detected .psn file, save_location: {save_location} (platform: windows)")
                     else:
-                        config_location = location_path
+                        config_location = f"rpcs3/dev_hdd0/game/{directory_name}"
                         logger.info(f"Detected .psn file, config_location: {config_location} (platform: linux)")
             
             # Check if this is a PS3 .m3u file and calculate save_location
