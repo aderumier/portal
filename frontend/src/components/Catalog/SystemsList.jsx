@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useCatalog } from '../../context/CatalogContext'
+import { getSystemLogoUrl } from '../../utils/constants'
 import './SystemsList.css'
 
 const SystemsList = ({ systems }) => {
@@ -182,10 +183,6 @@ const SystemsList = ({ systems }) => {
     return hardware.charAt(0).toUpperCase() + hardware.slice(1).replace(/([A-Z])/g, ' $1')
   }
 
-  // Get system image path using system ID directly (no suffix stripping)
-  const getSystemImagePath = (systemId) => {
-    return `/systems_logos/${systemId}.webp`
-  }
 
   // Extract version number from version string (e.g., "v10.5" -> "10.5")
   const extractVersionNumber = (version) => {
@@ -283,7 +280,7 @@ const SystemsList = ({ systems }) => {
               <h2 className="hardware-category-title">{formatHardwareName(hardware)}</h2>
               <div className="systems-grid">
                 {groupedSystems[hardware].map((system) => {
-                  const systemImage = getSystemImagePath(system.id)
+                  const systemImage = getSystemLogoUrl(system.id)
                   return (
                     <Link
                       key={system.id}
@@ -361,7 +358,7 @@ const SystemsList = ({ systems }) => {
                   </thead>
                   <tbody>
                     {groupedSystems[hardware].map((system) => {
-                      const systemImage = getSystemImagePath(system.id)
+                      const systemImage = getSystemLogoUrl(system.id)
                       return (
                         <tr key={system.id}>
                           <td className="system-image-cell">

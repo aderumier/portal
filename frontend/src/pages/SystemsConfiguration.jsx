@@ -8,6 +8,7 @@ const SystemsConfiguration = () => {
   const [importing, setImporting] = useState(false)
   const [message, setMessage] = useState(null)
   const [imageErrors, setImageErrors] = useState(new Set())
+  const [imageToken, setImageToken] = useState(() => Date.now())
 
   useEffect(() => {
     loadSystems()
@@ -154,16 +155,9 @@ const SystemsConfiguration = () => {
 
       // Reset file input
       event.target.value = ''
-      
-      // Force image reload by adding timestamp
-      setTimeout(() => {
-        const img = document.querySelector(`img[alt="${systemId}"]`)
-        if (img) {
-          const url = new URL(img.src)
-          url.searchParams.set('t', Date.now())
-          img.src = url.toString()
-        }
-      }, 100)
+
+      // Bump token so all logo <img> srcs re-render with a new ?t= and bypass the cache
+      setImageToken(Date.now())
     } catch (error) {
       console.error('Error uploading image:', error)
       setMessage({
@@ -175,8 +169,7 @@ const SystemsConfiguration = () => {
   }
 
   const getSystemImageUrl = (systemId) => {
-    // Use system ID directly (no suffix stripping)
-    return `/systems_logos/${systemId}.webp`
+    return `/systems_logos/${systemId}.webp?t=${imageToken}`
   }
 
   const handleImageDoubleClick = (systemId, event) => {

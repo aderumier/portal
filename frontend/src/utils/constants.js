@@ -20,6 +20,15 @@ export const setMediaVersion = (version) => {
 export const getMediaVersion = () => mediaVersion
 
 /**
+ * Get the system logo URL for a given system ID.
+ * Appends ?v= when mediaVersion is set (cache busting after catalog refresh).
+ */
+export const getSystemLogoUrl = (systemId) => {
+  const base = `/systems_logos/${systemId}.webp`
+  return mediaVersion != null ? `${base}?v=${mediaVersion}` : base
+}
+
+/**
  * Get the media URL for a given media path.
  * In development, this uses the Vite proxy (/media).
  * In production, this uses the full API URL.

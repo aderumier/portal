@@ -142,6 +142,19 @@ server {
         proxy_buffering off;
     }
 
+    # User-uploaded system logos - dedicated block so SPA fallback (location /) never catches them
+    # ^~ prefix takes priority over regex locations, ensuring try_files always runs here
+    location ^~ /systems_logos/ {
+        root /opt/batocera-games-catalog/frontend/dist;
+        try_files $uri =404;
+
+        # Short TTL so newly uploaded logos propagate within an hour
+        # No "always" so 404 responses don't inherit these headers and don't get cached
+        expires 1h;
+        add_header Cache-Control "public, max-age=3600";
+        etag on;
+    }
+
     # Static assets with hashed filenames (Vite build) - cache forever
     # These files have content hashes in their names (e.g., app.abc123.js)
     # so they can be cached forever since the hash changes when content changes
@@ -161,13 +174,21 @@ server {
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|webp)$ {
         root /opt/batocera-games-catalog/frontend/dist;
         try_files $uri =404;
-        
+
         # Cache for 30 days (files without hashes)
+        # No "always" so 404 responses don't get cached (e.g. user-uploaded logos not yet present)
         expires 30d;
-        add_header Cache-Control "public, max-age=2592000" always;
-        
+        add_header Cache-Control "public, max-age=2592000";
+
         # Add ETag support
         etag on;
+    }
+
+    # Catch-all for any path with a file extension not matched above
+    # Prevents the SPA fallback from serving index.html for missing static assets
+    location ~* \.\w+$ {
+        root /opt/batocera-games-catalog/frontend/dist;
+        try_files $uri =404;
     }
 
     # Frontend - serve static files and SPA routing (must be last to catch all other requests)
