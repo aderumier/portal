@@ -13,7 +13,8 @@ export const useCatalog = () => {
 
 export const CatalogProvider = ({ children }) => {
   const [catalogType, setCatalogTypeState] = useState('releases')
-  const [releasesEnabled, setReleasesEnabled] = useState(true)
+  const [canViewReleases, setCanViewReleases] = useState(true)
+  const [canViewWip, setCanViewWip] = useState(true)
   const [loading, setLoading] = useState(true)
 
   // Load preference from API on mount
@@ -21,17 +22,16 @@ export const CatalogProvider = ({ children }) => {
     const loadPreference = async () => {
       try {
         const response = await client.get('/api/catalog/preference')
-        const enabled = response.data.releases_enabled !== false // Default to true if not present
-        setReleasesEnabled(enabled)
-        const preference = response.data.catalog_type || 'releases'
-        // If Releases is disabled and preference is 'releases', default to 'wip'
-        const defaultType = (enabled ? preference : (preference === 'releases' ? 'wip' : preference))
-        setCatalogTypeState(defaultType)
+        const viewReleases = response.data.can_view_releases !== false
+        const viewWip = response.data.can_view_wip !== false
+        setCanViewReleases(viewReleases)
+        setCanViewWip(viewWip)
+        setCatalogTypeState(response.data.catalog_type || 'releases')
       } catch (error) {
         console.error('Error loading catalog preference:', error)
-        // Default to 'releases' on error (assuming it's enabled)
         setCatalogTypeState('releases')
-        setReleasesEnabled(true)
+        setCanViewReleases(true)
+        setCanViewWip(true)
       } finally {
         setLoading(false)
       }
@@ -45,7 +45,7 @@ export const CatalogProvider = ({ children }) => {
       console.error('Invalid catalog type:', type)
       return
     }
-    
+
     try {
       await client.put('/api/catalog/preference', null, {
         params: { catalog_type: type }
@@ -61,7 +61,10 @@ export const CatalogProvider = ({ children }) => {
   const value = {
     catalogType,
     setCatalogType,
-    releasesEnabled,
+    canViewReleases,
+    canViewWip,
+    // Legacy alias kept for any remaining consumers
+    releasesEnabled: canViewReleases,
     loading
   }
 

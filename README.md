@@ -50,6 +50,8 @@ DISCORD_CLIENT_SECRET=your_discord_client_secret
 DISCORD_REDIRECT_URI=http://localhost:8000/api/auth/callback
 DISCORD_BOT_TOKEN=your_discord_bot_token
 DISCORD_GUILD_ID=1006854943157788722
+RELEASE_CATALOG_VIEWERS=release_viewer,admin
+WIP_CATALOG_VIEWERS=wip_viewer,admin
 GAMES_PATH=/path/to/your/games
 DATABASE_URL=sqlite:///./data/database.sqlite
 SECRET_KEY=your-secret-key-here
@@ -168,4 +170,3 @@ The existing Python download service can be used with the new API. Configure it 
 ## License
 
 MIT License
-

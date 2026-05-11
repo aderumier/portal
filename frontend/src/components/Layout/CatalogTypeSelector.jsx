@@ -3,19 +3,18 @@ import { useCatalog } from '../../context/CatalogContext'
 import './CatalogTypeSelector.css'
 
 const CatalogTypeSelector = () => {
-  const { catalogType, setCatalogType, releasesEnabled, loading } = useCatalog()
+  const { catalogType, setCatalogType, canViewReleases, canViewWip, loading } = useCatalog()
 
   const handleChange = (e) => {
-    const newType = e.target.value
-    setCatalogType(newType)
+    setCatalogType(e.target.value)
   }
 
   if (loading) {
-    return null // Don't render until preference is loaded
+    return null
   }
 
-  // If Releases catalog is disabled, don't show the selector (only WIP available)
-  if (!releasesEnabled) {
+  // Only one catalog accessible — no point showing a selector
+  if (!canViewReleases || !canViewWip) {
     return null
   }
 

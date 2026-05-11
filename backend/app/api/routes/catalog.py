@@ -1,13 +1,14 @@
 """Catalog routes."""
-from fastapi import APIRouter, Query, Depends, Request
+from fastapi import APIRouter, Query, Depends, Request, HTTPException, status
 from fastapi.responses import ORJSONResponse, Response
 from typing import Optional
 from sqlalchemy.orm import Session
-from app.database import get_db, System
+from app.database import get_db, System, User
 from app.services.game import GameService
 from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.guild import require_guild_member
-from app.api.middleware.roles import require_admin_role
+from app.api.middleware.roles import get_catalog_viewer_roles, require_admin_role, require_catalog_viewer
+from app.services import torrent as torrent_service
 from app.config import settings
 import logging
 import orjson
@@ -30,7 +31,7 @@ def get_game_service() -> GameService:
 async def get_systems(
     request: Request,
     catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
-    current_user: dict = Depends(require_guild_member),
+    current_user: dict = Depends(require_catalog_viewer),
     db: Session = Depends(get_db),
     game_service: GameService = Depends(get_game_service)
 ):
@@ -85,8 +86,9 @@ async def get_systems(
             'hardware': db_system.hardware or 'unknown',
             'manufacturer': db_system.manufacturer or 'Unknown',
             'release': db_system.release or 'Unknown',
-            'version': version,  # Add version to response
-            'gamelistDate': gamelist_dates.get(db_system.id)
+            'version': version,
+            'gamelistDate': gamelist_dates.get(db_system.id),
+            'torrent_available': torrent_service.base_torrent_exists(db_system.id),
         })
     
     media_version = int(game_service._catalog_timestamp) if game_service._catalog_timestamp else 0
@@ -106,7 +108,7 @@ async def get_games(
     limit: int = Query(12, ge=1, le=10000),
     search: Optional[str] = Query(None),
     catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
-    current_user: dict = Depends(require_guild_member),
+    current_user: dict = Depends(require_catalog_viewer),
     game_service: GameService = Depends(get_game_service),
     db: Session = Depends(get_db)
 ):
@@ -167,7 +169,7 @@ async def search_games(
     page: int = Query(1, ge=1),
     limit: int = Query(12, ge=1, le=100),
     catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
-    current_user: dict = Depends(require_guild_member),
+    current_user: dict = Depends(require_catalog_viewer),
     game_service: GameService = Depends(get_game_service),
     db: Session = Depends(get_db)
 ):
@@ -203,7 +205,7 @@ async def quick_search(
     q: str = Query(..., min_length=1),
     limit: int = Query(20, ge=1, le=50),
     catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
-    current_user: dict = Depends(require_guild_member),
+    current_user: dict = Depends(require_catalog_viewer),
     game_service: GameService = Depends(get_game_service),
     db: Session = Depends(get_db)
 ):
@@ -231,7 +233,7 @@ async def get_game_details(
     system: str,
     game_id: str,
     catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
-    current_user: dict = Depends(require_guild_member),
+    current_user: dict = Depends(require_catalog_viewer),
     game_service: GameService = Depends(get_game_service),
     db: Session = Depends(get_db)
 ):
@@ -297,15 +299,33 @@ async def get_catalog_preference(
 ):
     """Get user's catalog type preference from session."""
     catalog_type = request.session.get('catalog_type', 'releases')
+    can_view_releases = (
+        current_user.get('is_admin', False)
+        or not get_catalog_viewer_roles('releases')
+        or current_user.get('is_release_catalog_viewer', False)
+    )
+    can_view_wip = (
+        current_user.get('is_admin', False)
+        or not get_catalog_viewer_roles('wip')
+        or current_user.get('is_wip_catalog_viewer', False)
+    )
+    
+    if catalog_type == 'releases' and not can_view_releases:
+        catalog_type = 'wip' if can_view_wip else 'releases'
+    elif catalog_type == 'wip' and not can_view_wip:
+        catalog_type = 'releases' if can_view_releases else 'wip'
+    
     return {
-        "catalog_type": catalog_type
+        "catalog_type": catalog_type,
+        "can_view_releases": can_view_releases,
+        "can_view_wip": can_view_wip
     }
 
 @router.put("/preference")
 async def set_catalog_preference(
     request: Request,
     catalog_type: str = Query(..., regex='^(wip|releases)$'),
-    current_user: dict = Depends(require_guild_member)
+    current_user: dict = Depends(require_catalog_viewer)
 ):
     """Set user's catalog type preference in session."""
     request.session['catalog_type'] = catalog_type
@@ -316,11 +336,64 @@ async def get_top_downloads(
     limit: int = Query(100, ge=1, le=1000),
     catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
     sort_by: Optional[str] = Query('download_count', regex='^(download_count|playcount|gametime)$'),
-    current_user: dict = Depends(require_guild_member),
+    current_user: dict = Depends(require_catalog_viewer),
     game_service: GameService = Depends(get_game_service)
 ):
     """Get top games sorted by criteria (default: downloads)."""
     return game_service.get_top_games(limit=limit, catalog_type=catalog_type, sort_by=sort_by)
+
+@router.get("/torrent-systems")
+async def get_torrent_systems(
+    current_user: dict = Depends(require_guild_member),
+):
+    """Return the list of system IDs that have a torrent file available.
+    Always reads from disk — no catalog cache involved."""
+    from app.services.torrent import TORRENTS_DIR
+    if not TORRENTS_DIR.exists():
+        return {"system_ids": []}
+    system_ids = [p.stem for p in TORRENTS_DIR.glob("*.torrent")]
+    return {"system_ids": system_ids}
+
+
+@router.get("/systems/{system_id}/torrent")
+async def download_system_torrent(
+    system_id: str,
+    current_user: dict = Depends(require_guild_member),
+    db: Session = Depends(get_db)
+):
+    """Download a per-user .torrent file for a system (any logged-in guild member)."""
+    db_system = db.query(System).filter(System.id == system_id, System.enabled == True).first()
+    if not db_system:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System not found")
+
+    if not torrent_service.base_torrent_exists(system_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No torrent available for this system")
+
+    if not settings.TRACKER_ANNOUNCE_URL:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Torrent tracker not configured")
+
+    user_id = current_user.get("id")
+    db_user = db.query(User).filter(User.user_id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User record not found")
+
+    # Generate passkey on first use
+    if not db_user.torrent_passkey:
+        db_user.torrent_passkey = torrent_service.generate_passkey()
+        db.commit()
+        db.refresh(db_user)
+
+    torrent_bytes = torrent_service.build_user_torrent(system_id, db_user.torrent_passkey)
+    if torrent_bytes is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate torrent")
+
+    filename = f"{system_id}.torrent"
+    return Response(
+        content=torrent_bytes,
+        media_type="application/x-bittorrent",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
 
 @router.get("/systems/top/downloads")
 async def get_top_systems_downloads(

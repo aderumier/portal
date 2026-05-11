@@ -89,24 +89,48 @@ async def callback(
         download_role = settings.DISCORD_DOWNLOAD_ROLE
         fastdownload_role = settings.DISCORD_FASTDOWNLOAD_ROLE
         admin_role = settings.DISCORD_ADMIN_ROLE
+        release_catalog_roles = settings.RELEASE_CATALOG_VIEWERS
+        wip_catalog_roles = settings.WIP_CATALOG_VIEWERS
         
         is_download = False
         is_fastdownload = False
         is_admin = False
-        
+        is_release_catalog_viewer = not release_catalog_roles
+        is_wip_catalog_viewer = not wip_catalog_roles
+        catalog_viewer_roles = {}
+
         if is_guild_member:
-            # Check all roles in a single optimized call
-            role_names = [download_role, fastdownload_role, admin_role]
+            # Check all roles in a single optimized call (skip empty role names)
+            role_names = list(dict.fromkeys(filter(None, [
+                download_role, fastdownload_role, admin_role
+            ] + release_catalog_roles + wip_catalog_roles)))
             logger.info(f"Checking if user has roles {role_names} (ID: {user['id']})")
             role_results = await discord_service.check_roles(user['id'], role_names)
-            
-            is_download = role_results.get(download_role, False)
+
+            # If no download role configured, all guild members get download access
+            is_download = True if not download_role else role_results.get(download_role, False)
             is_fastdownload = role_results.get(fastdownload_role, False)
             is_admin = role_results.get(admin_role, False)
+            is_release_catalog_viewer = (
+                is_release_catalog_viewer
+                or is_admin
+                or any(role_results.get(role_name, False) for role_name in release_catalog_roles)
+            )
+            is_wip_catalog_viewer = (
+                is_wip_catalog_viewer
+                or is_admin
+                or any(role_results.get(role_name, False) for role_name in wip_catalog_roles)
+            )
+            catalog_viewer_roles = {
+                role_name: role_results.get(role_name, False)
+                for role_name in list(dict.fromkeys(release_catalog_roles + wip_catalog_roles))
+            }
             
             logger.info(f"{download_role} role check result: {'HAS role' if is_download else 'NOT has role'}")
             logger.info(f"{fastdownload_role} role check result: {'HAS role' if is_fastdownload else 'NOT has role'}")
             logger.info(f"{admin_role} role check result: {'HAS role' if is_admin else 'NOT has role'}")
+            logger.info(f"Release catalog access: {'YES' if is_release_catalog_viewer else 'NO'}")
+            logger.info(f"WIP catalog access: {'YES' if is_wip_catalog_viewer else 'NO'}")
         
         # Store user info in session
         request.session['user'] = {
@@ -117,7 +141,10 @@ async def callback(
             'is_guild_member': is_guild_member,
             'is_download': is_download,
             'is_fastdownload': is_fastdownload,
-            'is_admin': is_admin
+            'is_admin': is_admin,
+            'is_release_catalog_viewer': is_release_catalog_viewer,
+            'is_wip_catalog_viewer': is_wip_catalog_viewer,
+            'catalog_viewer_roles': catalog_viewer_roles
         }
         
         # Update or create user record in database with username, last_login, and IP address
@@ -264,6 +291,14 @@ async def get_current_user_info(
         'is_download': current_user.get('is_download', False),
         'is_fastdownload': current_user.get('is_fastdownload', False),
         'is_admin': current_user.get('is_admin', False),
+        'is_release_catalog_viewer': current_user.get(
+            'is_release_catalog_viewer',
+            current_user.get('is_admin', False) or not settings.RELEASE_CATALOG_VIEWERS
+        ),
+        'is_wip_catalog_viewer': current_user.get(
+            'is_wip_catalog_viewer',
+            current_user.get('is_admin', False) or not settings.WIP_CATALOG_VIEWERS
+        ),
         'download_role_name': download_role_name,
         'fastdownload_role_name': fastdownload_role_name,
         'admin_role_name': admin_role_name
@@ -294,24 +329,50 @@ async def refresh_roles_status(
         download_role = settings.DISCORD_DOWNLOAD_ROLE
         fastdownload_role = settings.DISCORD_FASTDOWNLOAD_ROLE
         admin_role = settings.DISCORD_ADMIN_ROLE
-        
-        # Check download role
-        is_download = await discord_service.has_role(user_id, download_role)
+        release_catalog_roles = settings.RELEASE_CATALOG_VIEWERS
+        wip_catalog_roles = settings.WIP_CATALOG_VIEWERS
+        catalog_roles = list(dict.fromkeys(release_catalog_roles + wip_catalog_roles))
+
+        role_names = list(dict.fromkeys(filter(None, [
+            download_role, fastdownload_role, admin_role
+        ] + catalog_roles)))
+        role_results = await discord_service.check_roles(user_id, role_names)
+
+        # Check download role (open access when not configured)
+        is_download = True if not download_role else role_results.get(download_role, False)
         logger.info(f"Refreshed {download_role} role check for user {user_id}: {'HAS role' if is_download else 'NOT has role'}")
         
         # Check fastdownload role
-        is_fastdownload = await discord_service.has_role(user_id, fastdownload_role)
+        is_fastdownload = role_results.get(fastdownload_role, False)
         logger.info(f"Refreshed {fastdownload_role} role check for user {user_id}: {'HAS role' if is_fastdownload else 'NOT has role'}")
         
         # Check admin role
-        is_admin = await discord_service.has_role(user_id, admin_role)
+        is_admin = role_results.get(admin_role, False)
         logger.info(f"Refreshed {admin_role} role check for user {user_id}: {'HAS role' if is_admin else 'NOT has role'}")
+        
+        is_release_catalog_viewer = (
+            not release_catalog_roles
+            or is_admin
+            or any(role_results.get(role_name, False) for role_name in release_catalog_roles)
+        )
+        is_wip_catalog_viewer = (
+            not wip_catalog_roles
+            or is_admin
+            or any(role_results.get(role_name, False) for role_name in wip_catalog_roles)
+        )
+        catalog_viewer_roles = {
+            role_name: role_results.get(role_name, False)
+            for role_name in catalog_roles
+        }
         
         # Update session
         if 'user' in request.session:
             request.session['user']['is_download'] = is_download
             request.session['user']['is_fastdownload'] = is_fastdownload
             request.session['user']['is_admin'] = is_admin
+            request.session['user']['is_release_catalog_viewer'] = is_release_catalog_viewer
+            request.session['user']['is_wip_catalog_viewer'] = is_wip_catalog_viewer
+            request.session['user']['catalog_viewer_roles'] = catalog_viewer_roles
             request.session.modified = True
         
         await discord_service.close()
@@ -322,6 +383,8 @@ async def refresh_roles_status(
             'is_download': is_download,
             'is_fastdownload': is_fastdownload,
             'is_admin': is_admin,
+            'is_release_catalog_viewer': is_release_catalog_viewer,
+            'is_wip_catalog_viewer': is_wip_catalog_viewer,
             'refreshed': True
         }
     except Exception as e:
@@ -330,4 +393,3 @@ async def refresh_roles_status(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to refresh roles status"
         )
-

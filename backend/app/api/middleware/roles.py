@@ -84,13 +84,22 @@ async def require_download_role(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required"
         )
-    
+
     # Check if authenticated via API token
     auth_method = getattr(request.state, 'auth_method', None)
     if auth_method == 'api_token':
         # API tokens bypass role checks (they're used by the download service)
         return current_user
-    
+
+    # If no download role is configured, all guild members have download access
+    if not settings.DISCORD_DOWNLOAD_ROLE:
+        if not current_user.get('is_guild_member', False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Guild membership required"
+            )
+        return current_user
+
     # Check if user has either download role or fastdownload role
     has_download_role = current_user.get('is_download', False)
     has_fastdownload_role = current_user.get('is_fastdownload', False)
@@ -138,3 +147,87 @@ async def require_admin_role(
     """Require user to have the admin role."""
     return await require_role(request, settings.DISCORD_ADMIN_ROLE, current_user)
 
+def get_catalog_viewer_roles(catalog_type: str) -> list:
+    """Return configured viewer roles for the requested catalog."""
+    if catalog_type == 'wip':
+        return settings.WIP_CATALOG_VIEWERS
+    return settings.RELEASE_CATALOG_VIEWERS
+
+async def require_catalog_viewer(
+    request: Request,
+    current_user: Optional[dict] = Depends(get_current_user)
+) -> dict:
+    """Require access to the requested catalog type.
+
+    Empty RELEASE_CATALOG_VIEWERS/WIP_CATALOG_VIEWERS preserve the previous
+    behavior: any authenticated guild member may view that catalog.
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+    
+    auth_method = getattr(request.state, 'auth_method', None)
+    if auth_method == 'api_token':
+        return current_user
+    
+    if not current_user.get('is_guild_member', False):
+        logger.warning(f"User {current_user.get('id')} is not a guild member")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Guild membership required"
+        )
+    
+    catalog_type = request.query_params.get('catalog_type', 'releases')
+    allowed_roles = get_catalog_viewer_roles(catalog_type)
+    if not allowed_roles:
+        return current_user
+    
+    if current_user.get('is_admin', False):
+        return current_user
+    
+    catalog_role_cache = current_user.get('catalog_viewer_roles', {})
+    if any(catalog_role_cache.get(role_name, False) for role_name in allowed_roles):
+        return current_user
+    
+    user_id = current_user.get('id')
+    logger.info(
+        f"Checking catalog access for user {user_id}: catalog={catalog_type}, roles={allowed_roles}"
+    )
+    
+    discord_service = None
+    try:
+        discord_service = DiscordService()
+        role_results = await discord_service.check_roles(user_id, allowed_roles)
+    except Exception as e:
+        logger.error(f"Error checking catalog viewer roles: {e}", exc_info=True)
+        role_results = {}
+    finally:
+        if discord_service:
+            await discord_service.close()
+    
+    has_catalog_access = any(role_results.get(role_name, False) for role_name in allowed_roles)
+    
+    if role_results and 'user' in request.session:
+        cached_roles = request.session['user'].setdefault('catalog_viewer_roles', {})
+        cached_roles.update(role_results)
+        if catalog_type == 'wip':
+            request.session['user']['is_wip_catalog_viewer'] = has_catalog_access
+            current_user['is_wip_catalog_viewer'] = has_catalog_access
+        else:
+            request.session['user']['is_release_catalog_viewer'] = has_catalog_access
+            current_user['is_release_catalog_viewer'] = has_catalog_access
+        request.session.modified = True
+        current_user['catalog_viewer_roles'] = cached_roles
+    
+    if not has_catalog_access:
+        logger.warning(
+            f"User {user_id} does not have any {catalog_type} catalog viewer role: {allowed_roles}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"{catalog_type} catalog access required"
+        )
+    
+    return current_user

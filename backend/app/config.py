@@ -1,13 +1,18 @@
 """Configuration management for the application."""
 import os
 import json
-from typing import Optional
+from typing import List, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 env_path = Path(__file__).parent.parent / '.env'
 load_dotenv(dotenv_path=env_path)
+
+
+def _parse_csv_env(value: str) -> List[str]:
+    """Parse comma-separated environment values into a clean list."""
+    return [item.strip() for item in value.split(',') if item.strip()]
 
 
 class Settings:
@@ -21,9 +26,11 @@ class Settings:
     DISCORD_GUILD_ID: str = os.getenv('DISCORD_GUILD_ID', '1006854943157788722')
     
     # Discord role mappings
-    DISCORD_DOWNLOAD_ROLE: str = os.getenv('DISCORD_DOWNLOAD_ROLE', 'Creator')
+    DISCORD_DOWNLOAD_ROLE: str = os.getenv('DISCORD_DOWNLOAD_ROLE', '')
     DISCORD_ADMIN_ROLE: str = os.getenv('DISCORD_ADMIN_ROLE', 'Creator')
     DISCORD_FASTDOWNLOAD_ROLE: str = os.getenv('DISCORD_FASTDOWNLOAD_ROLE', 'fastdownload')
+    RELEASE_CATALOG_VIEWERS: List[str] = _parse_csv_env(os.getenv('RELEASE_CATALOG_VIEWERS', ''))
+    WIP_CATALOG_VIEWERS: List[str] = _parse_csv_env(os.getenv('WIP_CATALOG_VIEWERS', ''))
     
     # Application settings
     GAMES_PATH: str = os.getenv('GAMES_PATH', '')
@@ -65,6 +72,10 @@ class Settings:
     P2P_MAX_PEER_ATTEMPTS: int = int(os.getenv('P2P_MAX_PEER_ATTEMPTS', '5'))  # Max peers to try (default: 5)
     P2P_TIMEOUT: int = int(os.getenv('P2P_TIMEOUT', '30'))  # Timeout for P2P requests in seconds (default: 30)
     
+    # Torrent tracker settings
+    TRACKER_ANNOUNCE_URL: str = os.getenv('TRACKER_ANNOUNCE_URL', '')  # e.g. https://tracker.example.com
+    TRACKER_API_SECRET: str = os.getenv('TRACKER_API_SECRET', '')  # Shared secret between tracker and backend
+
     # Catalog settings
     # Note: Releases catalog is always enabled
     
@@ -151,4 +162,3 @@ class Settings:
 
 
 settings = Settings()
-
