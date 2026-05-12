@@ -3073,6 +3073,15 @@ async def get_all_queues(
     queues = download_service.get_all_active_downloads()
     return queues
 
+@router.get("/transfers/current")
+async def get_current_transfers(
+    current_user: dict = Depends(require_admin_role),
+    download_service: DownloadService = Depends(get_download_service)
+):
+    """Get all currently active transfers with live bandwidth data (admin only)."""
+    transfers = await download_service.get_current_transfers()
+    return {"transfers": transfers}
+
 @router.post("/gamelist/upload")
 async def upload_gamelist(
     request: Request,

@@ -134,6 +134,13 @@ const Layout = () => {
                             Users Stats
                           </Link>
                           <Link
+                            to="/current-transfers"
+                            className="account-menu-item"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Current Transfers
+                          </Link>
+                          <Link
                             to="/clients-stats"
                             className="account-menu-item"
                             onClick={() => setAccountMenuOpen(false)}
