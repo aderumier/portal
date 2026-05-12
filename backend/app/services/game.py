@@ -1,5 +1,6 @@
 """Game catalog service for parsing gamelist.xml files."""
 import os
+import io
 import xml.etree.ElementTree as ET
 import logging
 import pickle
@@ -254,7 +255,12 @@ class GameService:
         else:
             raise ValueError(f"Invalid catalog_type: {catalog_type}. Must be 'wip' or 'releases'")
         
-        tree = ET.parse(gamelist_path)
+        UTF8_BOM = b'\xef\xbb\xbf'
+        with open(gamelist_path, 'rb') as _f:
+            raw = _f.read()
+        while raw.startswith(UTF8_BOM):
+            raw = raw[len(UTF8_BOM):]
+        tree = ET.parse(io.BytesIO(raw))
         root = tree.getroot()
         
         # Initialize catalog entry for this system
