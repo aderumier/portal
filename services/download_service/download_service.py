@@ -138,9 +138,13 @@ else:
         # Default Linux location...skipping...
         log_file_path = os.path.abspath(os.getenv('LOG_FILE', '/userdata/system/logs/rgs_download.log'))
 
-# Ensure log directory exists
-log_dir = os.path.dirname(log_file_path)
-os.makedirs(log_dir, exist_ok=True)
+# When LOG_DISABLE_FILE=1 skip writing to disk (logs still captured in memory for server upload)
+_log_file_disabled = os.getenv('LOG_DISABLE_FILE', '0').strip() in ('1', 'true', 'yes')
+
+if not _log_file_disabled:
+    log_dir = os.path.dirname(log_file_path)
+    if not os.path.isdir(log_dir):
+        print(f"Warning: log directory does not exist: {log_dir} — file logging will fail. Create it manually or set LOG_DISABLE_FILE=1.", file=sys.stderr)
 
 # Custom formatter that strips non-ASCII characters for Windows compatibility
 class ASCIIFormatter(logging.Formatter):
@@ -163,43 +167,47 @@ logger.setLevel(getattr(logging, log_level, logging.INFO))
 for handler in logger.handlers[:]:
     logger.removeHandler(handler)
 
-# Add rotating file handler with UTF-8 encoding (fixes Unicode encoding issues on Windows)
-# Rotate daily at midnight and keep 7 days of logs
-file_handler = TimedRotatingFileHandler(
-    log_file_path,
-    when='midnight',
-    interval=1,
-    backupCount=7,
-    encoding='utf-8'  # Use UTF-8 encoding to support Unicode characters
-)
-file_handler.setLevel(getattr(logging, log_level, logging.INFO))
-file_handler.setFormatter(ASCIIFormatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-))
-logger.addHandler(file_handler)
+if not _log_file_disabled:
+    # Add rotating file handler with UTF-8 encoding (fixes Unicode encoding issues on Windows)
+    # Rotate daily at midnight and keep 7 days of logs
+    file_handler = TimedRotatingFileHandler(
+        log_file_path,
+        when='midnight',
+        interval=1,
+        backupCount=7,
+        encoding='utf-8'  # Use UTF-8 encoding to support Unicode characters
+    )
+    file_handler.setLevel(getattr(logging, log_level, logging.INFO))
+    file_handler.setFormatter(ASCIIFormatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    logger.addHandler(file_handler)
 
-# Rotate log at service start if needed (if log file exists and is from a previous day)
-if os.path.exists(log_file_path):
-    try:
-        # Get the modification time of the current log file
-        log_mtime = os.path.getmtime(log_file_path)
-        log_mtime_dt = datetime.fromtimestamp(log_mtime)
-        
-        # Get today's midnight
-        today = datetime.now().date()
-        today_midnight = datetime.combine(today, dt_time.min)
-        
-        # If log file was last modified before today's midnight, rotate it
-        if log_mtime_dt < today_midnight:
-            file_handler.doRollover()
-    except Exception as e:
-        # If rotation check fails, log to stderr since logger might not be ready
-        print(f"Warning: Failed to check/rotate log file at startup: {e}", file=sys.stderr)
+    # Rotate log at service start if needed (if log file exists and is from a previous day)
+    if os.path.exists(log_file_path):
+        try:
+            # Get the modification time of the current log file
+            log_mtime = os.path.getmtime(log_file_path)
+            log_mtime_dt = datetime.fromtimestamp(log_mtime)
+
+            # Get today's midnight
+            today = datetime.now().date()
+            today_midnight = datetime.combine(today, dt_time.min)
+
+            # If log file was last modified before today's midnight, rotate it
+            if log_mtime_dt < today_midnight:
+                file_handler.doRollover()
+        except Exception as e:
+            # If rotation check fails, log to stderr since logger might not be ready
+            print(f"Warning: Failed to check/rotate log file at startup: {e}", file=sys.stderr)
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
-logger.info(f"Logging initialized. Log file: {log_file_path}")
+if _log_file_disabled:
+    logger.info("Logging initialized. File logging disabled (LOG_DISABLE_FILE=1)")
+else:
+    logger.info(f"Logging initialized. Log file: {log_file_path}")
 if config_ini_path.exists():
     logger.info(f"Configuration loaded from: {config_ini_path}")
 
@@ -1010,22 +1018,12 @@ http_session.headers.update({
 logger.info("HTTP session with keep-alive enabled")
 
 def ensure_directories():
-    """Ensure all required directories exist."""
+    """Verify required directories exist; warn if missing but do not create them."""
     for name, dirpath in [("ROMs", ROMS_PATH), ("Saves", SAVEDIR)] + ([("Config", CONFIGDIR)] if CONFIGDIR else []):
-        try:
-            Path(dirpath).mkdir(parents=True, exist_ok=True)
-            logger.info(f"{name} directory ensured: {dirpath}")
-        except OSError as e:
-            # On Windows services running as SYSTEM, drives may not be
-            # accessible (WinError 1326) when stat() is called internally
-            # by exist_ok. Try without exist_ok to avoid the stat() call.
-            try:
-                Path(dirpath).mkdir(parents=True, exist_ok=False)
-                logger.info(f"{name} directory created: {dirpath}")
-            except FileExistsError:
-                logger.info(f"{name} directory already exists: {dirpath}")
-            except OSError:
-                logger.warning(f"Cannot verify or create {name} directory: {dirpath} ({e}). Assuming it exists.")
+        if Path(dirpath).is_dir():
+            logger.info(f"{name} directory found: {dirpath}")
+        else:
+            logger.warning(f"{name} directory does not exist: {dirpath} — create it manually or mount it before starting the service.")
 
 def update_bandwidth_update_interval(new_interval):
     """Update the global BANDWIDTH_UPDATE_INTERVAL value.
