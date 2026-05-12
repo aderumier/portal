@@ -1,6 +1,7 @@
 """Download queue service."""
 import logging
 import os
+import asyncio
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -12,6 +13,16 @@ from app.services.bandwidth import BandwidthManager
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Serializes concurrent get_next_download calls to prevent the same download_id
+# being claimed by multiple concurrent requests (check-then-act race condition).
+_get_next_download_lock: Optional[asyncio.Lock] = None
+
+def _get_download_lock() -> asyncio.Lock:
+    global _get_next_download_lock
+    if _get_next_download_lock is None:
+        _get_next_download_lock = asyncio.Lock()
+    return _get_next_download_lock
 
 def parse_m3u_file(m3u_file_path: str) -> List[str]:
     """Parse a .m3u file and return list of file paths (relative to m3u file location).
@@ -1444,6 +1455,93 @@ class DownloadService:
                 'total_user_queue': 0
             }
     
+    async def get_current_transfers(self) -> List[Dict]:
+        """Get all currently active transfers with live Redis bandwidth data (admin only)."""
+        from app.services.redis_downloads import RedisDownloadTracker
+        from app.database import ApiToken, User
+
+        active_items = self.db.query(DownloadQueue).filter(
+            DownloadQueue.status == 'downloading',
+            DownloadQueue.active_download == True
+        ).order_by(DownloadQueue.started_at.asc()).all()
+
+        unique_user_ids = {item.user_id for item in active_items}
+        unique_token_ids = {item.token_id for item in active_items}
+
+        username_cache: Dict[str, str] = {}
+        if unique_user_ids:
+            for u in self.db.query(User).filter(User.user_id.in_(list(unique_user_ids))).all():
+                username_cache[u.user_id] = u.username or u.user_id
+
+        token_cache: Dict[int, str] = {}
+        if unique_token_ids:
+            for t in self.db.query(ApiToken).filter(ApiToken.id.in_(list(unique_token_ids))).all():
+                token_cache[t.id] = t.name
+
+        transfers = []
+        for item in active_items:
+            redis_status = await RedisDownloadTracker.get_download_status(item.id)
+
+            bytes_transferred = item.bytes_transferred or 0
+            bandwidth_used = item.bandwidth_used or 0
+            p2p_remote_token_id = None
+
+            if redis_status:
+                bytes_transferred = redis_status.get('bytes_transferred', bytes_transferred)
+                bandwidth_used = redis_status.get('bytes_per_second', bandwidth_used)
+                p2p_remote_token_id = redis_status.get('p2p_remote_token_id')
+
+            if not p2p_remote_token_id:
+                p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(item.id)
+
+            p2p_remote_token_name = None
+            if p2p_remote_token_id:
+                remote_token = self.db.query(ApiToken).filter(ApiToken.id == p2p_remote_token_id).first()
+                if remote_token:
+                    p2p_remote_token_name = remote_token.name
+
+            # Resolve game name and system
+            lookup_game_id = item.game_id
+            catalog_version = item.catalog_version
+            system_id = item.system_id
+            if catalog_version:
+                import re
+                match = re.match(r'\.zfs/snapshot/' + re.escape(catalog_version) + r'/(.*)', item.game_id)
+                if match:
+                    lookup_game_id = match.group(1)
+
+            game = {}
+            if system_id:
+                game = self.game_service.get_game_by_id(lookup_game_id, system_id,
+                                                         catalog_type='releases' if catalog_version else 'wip') or {}
+
+            game_name = game.get('name', lookup_game_id)
+            system = game.get('system', system_id or '')
+            system_name = self.game_service.get_system_name(system)
+
+            progress_percent = 0
+            if item.file_size and item.file_size > 0:
+                progress_percent = min(100, int((bytes_transferred / item.file_size) * 100))
+
+            transfers.append({
+                'id': item.id,
+                'source_type': 'p2p' if p2p_remote_token_id else 'direct',
+                'source_name': p2p_remote_token_name if p2p_remote_token_id else 'Server',
+                'target_username': username_cache.get(item.user_id, item.user_id),
+                'target_token_name': token_cache.get(item.token_id, '?'),
+                'game_name': game_name,
+                'system': system,
+                'system_name': system_name,
+                'queue_type': item.queue_type,
+                'bandwidth_download': bandwidth_used,
+                'bytes_transferred': bytes_transferred,
+                'file_size': item.file_size,
+                'progress_percent': progress_percent,
+                'started_at': item.started_at.isoformat() if item.started_at else None,
+            })
+
+        return transfers
+
     async def remove_from_queue(self, user_id: str, game_id: str) -> bool:
         """Remove a game from the download queue."""
         try:
@@ -1779,9 +1877,14 @@ class DownloadService:
         """Get next available download from queue, including resumable interrupted downloads.
         
         Only returns downloads associated with the specified token_id.
-        
+
         If queue_type is None, searches both fast and slow queues for downloads with matching token_id.
         """
+        async with _get_download_lock():
+            return await self._get_next_download_locked(queue_type, service_id, token_id, platform, client_version)
+
+    async def _get_next_download_locked(self, queue_type: Optional[str] = None, service_id: str = 'default', token_id: Optional[int] = None, platform: Optional[str] = None, client_version: Optional[str] = None) -> Optional[Dict]:
+        """Internal implementation of get_next_download, called under the global lock."""
         try:
             # First, try to promote items from user queues to global queue for this token
             # When queue_type is None, promote from both queues
