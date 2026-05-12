@@ -88,6 +88,36 @@ start_backend() {
     return 0
 }
 
+# Function to start torrent tracker
+start_tracker() {
+    echo "Starting torrent tracker..."
+
+    TRACKER_DIR="$SCRIPT_DIR/torrent-tracker"
+    TRACKER_BIN="$TRACKER_DIR/batocera-tracker"
+    TRACKER_CFG="$TRACKER_DIR/config.yaml"
+
+    if [ ! -f "$TRACKER_BIN" ]; then
+        echo "  Tracker binary not found, building..."
+        (cd "$TRACKER_DIR" && go build -o batocera-tracker . > "$LOG_DIR/tracker_build.log" 2>&1)
+        if [ $? -ne 0 ]; then
+            echo "✗ Tracker build failed. Check $LOG_DIR/tracker_build.log"
+            return 1
+        fi
+    fi
+
+    nohup "$TRACKER_BIN" -config "$TRACKER_CFG" > "$LOG_DIR/tracker.log" 2>&1 &
+    TRACKER_PID=$!
+    echo "Tracker started with PID: $TRACKER_PID"
+    echo "$TRACKER_PID" >> "$PID_FILE"
+
+    sleep 1
+    if ! kill -0 $TRACKER_PID 2>/dev/null; then
+        echo "✗ Tracker failed to start. Check $LOG_DIR/tracker.log"
+        return 1
+    fi
+    return 0
+}
+
 # Function to start frontend
 start_frontend() {
     echo "Starting frontend server..."
@@ -144,10 +174,18 @@ else
     echo "✗ Frontend failed to start"
 fi
 
+# Start torrent tracker (optional — skipped if Redis is unavailable)
+if start_tracker; then
+    echo "✓ Torrent tracker started successfully"
+else
+    echo "✗ Torrent tracker failed to start (non-fatal)"
+fi
+
 echo ""
 echo "Services started!"
-echo "Backend: http://localhost:8000"
+echo "Backend:  http://localhost:8000"
 echo "Frontend: http://localhost:3000"
+echo "Tracker:  http://localhost:6969"
 echo ""
 echo "Logs are available in: $LOG_DIR"
 echo "To stop services, run: ./stop.sh"

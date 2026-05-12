@@ -1,0 +1,14 @@
+#!/bin/bash
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "upgrade" ]; then
+    if systemctl is-active --quiet batocera-tracker.service 2>/dev/null; then
+        echo "Stopping batocera-tracker.service..."
+        systemctl stop batocera-tracker.service || true
+    fi
+    if [ "$1" = "remove" ]; then
+        systemctl disable batocera-tracker.service || true
+    fi
+fi
+
+exit 0

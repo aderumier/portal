@@ -199,6 +199,8 @@ class User(Base):
     country = Column(String, nullable=True)  # Country code from GeoIP lookup
     p2p_total_download_mb = Column(Float, default=0.0, nullable=False)  # Total P2P download traffic in MB (sum of all tokens)
     p2p_total_upload_mb = Column(Float, default=0.0, nullable=False)  # Total P2P upload traffic in MB (sum of all tokens)
+    torrent_passkey = Column(String, nullable=True, unique=True, index=True)  # Per-user passkey for private torrent tracker
+    torrent_locked_ip = Column(String, nullable=True)  # First-announce IP lock
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     

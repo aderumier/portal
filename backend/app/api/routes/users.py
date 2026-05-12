@@ -382,7 +382,8 @@ async def get_users_stats(
                 'created_at': user.created_at.isoformat() if user.created_at else None,
                 'updated_at': user.updated_at.isoformat() if user.updated_at else None,
                 'p2p_total_download_mb': round(user.p2p_total_download_mb, 2) if user.p2p_total_download_mb else 0,
-                'p2p_total_upload_mb': round(user.p2p_total_upload_mb, 2) if user.p2p_total_upload_mb else 0
+                'p2p_total_upload_mb': round(user.p2p_total_upload_mb, 2) if user.p2p_total_upload_mb else 0,
+                'torrent_locked_ips': [e.rpartition('@')[0] or e for e in (user.torrent_locked_ip or '').split(',') if e],
             })
         
         return {"users": users_list}

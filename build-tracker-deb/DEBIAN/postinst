@@ -1,0 +1,38 @@
+#!/bin/bash
+set -e
+
+INSTALL_DIR="/opt/batocera-tracker"
+
+# Create pixn user if it doesn't exist
+if ! id "pixn" &>/dev/null; then
+    adduser --system --group --no-create-home --disabled-login pixn || true
+fi
+
+# Create config from example if not present
+if [ -f "$INSTALL_DIR/config.yaml.example" ] && [ ! -f "$INSTALL_DIR/config.yaml" ]; then
+    cp "$INSTALL_DIR/config.yaml.example" "$INSTALL_DIR/config.yaml"
+    echo "Created $INSTALL_DIR/config.yaml — please configure it before starting the service."
+fi
+
+# Fix ownership
+if id "pixn" &>/dev/null; then
+    chown -R pixn:pixn "$INSTALL_DIR" || true
+fi
+# Keep config.yaml writable by root/admin but readable by pixn
+chmod 640 "$INSTALL_DIR/config.yaml" 2>/dev/null || true
+
+systemctl daemon-reload
+systemctl enable batocera-tracker.service || true
+
+# Restart if it was already enabled (i.e. an upgrade)
+if systemctl is-active --quiet batocera-tracker.service 2>/dev/null; then
+    echo "Restarting batocera-tracker.service after upgrade..."
+    systemctl restart batocera-tracker.service || true
+fi
+
+echo ""
+echo "batocera-tracker installed."
+echo "Configure: /opt/batocera-tracker/config.yaml"
+echo "Start:     sudo systemctl start batocera-tracker"
+
+exit 0

@@ -1,11 +1,19 @@
 import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useCatalog } from '../../context/CatalogContext'
+import { useAuth } from '../../context/AuthContext'
 import { getSystemLogoUrl } from '../../utils/constants'
+import client from '../../api/client'
 import './SystemsList.css'
+
+const TorrentIcon = () => (
+  <img src="/torrent-icon.png" width="14" height="14" alt="torrent" style={{ display: 'block' }} />
+)
 
 const SystemsList = ({ systems }) => {
   const { catalogType } = useCatalog()
+  const { isAuthenticated } = useAuth()
+  const [torrentSystems, setTorrentSystems] = useState(new Set())
   const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
   const [selectedHardware, setSelectedHardware] = useState(null) // null = all, or specific hardware type
   const [sortColumn, setSortColumn] = useState(() => localStorage.getItem('systemsSortColumn') || 'name') // 'name', 'manufacturer', 'release'
@@ -41,6 +49,13 @@ const SystemsList = ({ systems }) => {
     setSelectedHardware(hardware)
     localStorage.setItem('systemsHardwareFilter', hardware === null ? 'all' : hardware)
   }
+
+  useEffect(() => {
+    if (!isAuthenticated) return
+    client.get('/api/catalog/torrent-systems')
+      .then(r => setTorrentSystems(new Set(r.data.system_ids)))
+      .catch(() => {})
+  }, [isAuthenticated])
 
   // Group systems by hardware category (exclude library category)
   const groupedSystems = systems.reduce((acc, system) => {
@@ -291,16 +306,27 @@ const SystemsList = ({ systems }) => {
                         <img
                           src={systemImage}
                           alt={system.name}
-                          onError={(e) => {
-                            // Fallback to a placeholder if image doesn't exist
-                            e.target.style.display = 'none'
-                          }}
+                          onError={(e) => { e.target.style.display = 'none' }}
                         />
                       </div>
                       <div className="system-card-content">
                         <h2>{system.name}</h2>
                         {catalogType === 'releases' && system.version && extractVersionNumber(system.version) && (
-                          <p className="system-version-text">version {extractVersionNumber(system.version)}</p>
+                          <p className="system-version-text">
+                            {isAuthenticated && torrentSystems.has(system.id) ? (
+                              <a
+                                href={`/api/catalog/systems/${system.id}/torrent`}
+                                className="system-version-torrent"
+                                title="Download torrent"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <TorrentIcon />
+                                <span className="system-version-label">version {extractVersionNumber(system.version)}</span>
+                              </a>
+                            ) : (
+                              <>version {extractVersionNumber(system.version)}</>
+                            )}
+                          </p>
                         )}
                         {system.gamelistDate && (
                           <p className="system-version-text">{system.gamelistDate}</p>
@@ -399,6 +425,15 @@ const SystemsList = ({ systems }) => {
                             >
                               View Games
                             </Link>
+                            {isAuthenticated && torrentSystems.has(system.id) && (
+                              <a
+                                href={`/api/catalog/systems/${system.id}/torrent`}
+                                className="torrent-icon-btn"
+                                title="Download torrent"
+                              >
+                                <TorrentIcon />
+                              </a>
+                            )}
                           </td>
                         </tr>
                       )

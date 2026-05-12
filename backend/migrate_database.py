@@ -138,6 +138,8 @@ def migrate_database():
         ("country", "TEXT"),
         ("p2p_total_download_mb", "REAL NOT NULL DEFAULT 0.0"),
         ("p2p_total_upload_mb", "REAL NOT NULL DEFAULT 0.0"),
+        ("torrent_passkey", "TEXT"),
+        ("torrent_locked_ip", "TEXT"),
     ]
     
     for col_name, col_def in columns_to_add:
@@ -156,6 +158,12 @@ def migrate_database():
         print("  ✓ Created/verified index idx_users_user_id")
     except sqlite3.OperationalError as e:
         print(f"  ✗ Error creating index idx_users_user_id: {e}")
+
+    try:
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_torrent_passkey ON users(torrent_passkey)")
+        print("  ✓ Created/verified index idx_users_torrent_passkey")
+    except sqlite3.OperationalError as e:
+        print(f"  ✗ Error creating index idx_users_torrent_passkey: {e}")
     
     # Create download_archive table if it doesn't exist
     cursor.execute("""

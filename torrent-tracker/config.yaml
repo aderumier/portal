@@ -1,0 +1,27 @@
+addr: "127.0.0.1:6969"
+
+# UDP tracker address (BEP 15). Leave empty to disable.
+# udp_addr: ":6970"
+
+# How often (seconds) clients must re-announce (30 min default)
+announce_interval: 1800
+
+# Minimum re-announce interval clients should respect (5 min)
+min_interval: 300
+
+# Seconds before a silent peer is expired from memory (1 hour)
+peer_ttl: 3600
+
+# Set true when the tracker sits behind nginx and you want X-Real-IP
+# to be used as the client address instead of the TCP remote address.
+trusted_proxy: true
+
+# Redis connection URL for peer storage, UDP grants, and connection IDs.
+redis_url: "redis://localhost:6379/0"
+
+# Optional key prefix to namespace Redis keys (useful when sharing a Redis instance).
+redis_key_prefix: "bt:"
+
+# FastAPI backend — passkey validation is delegated here instead of direct DB access.
+backend_url: "http://localhost:8000"
+backend_secret: "change-me"

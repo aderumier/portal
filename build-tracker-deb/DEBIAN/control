@@ -1,0 +1,9 @@
+Package: batocera-tracker
+Version: 1.0.0
+Architecture: amd64
+Maintainer: Batocera Games Catalog <admin@example.com>
+Depends: redis-server
+Description: Batocera BitTorrent Tracker
+ Private BitTorrent tracker (HTTP BEP 3 + UDP BEP 15) for the Batocera
+ Games Catalog. Passkey validation is delegated to the main backend API.
+ Peer state is stored in Redis.

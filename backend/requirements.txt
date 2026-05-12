@@ -16,3 +16,4 @@ orjson>=3.9.0  # Fast JSON library for better serialization performance
 zstandard>=0.22.0  # Fast zstd compression library
 zstandard>=0.22.0  # Fast zstd compression library
 packaging>=23.0    # Required for version comparisons
+torf>=4.2.0        # Torrent file creation and manipulation

@@ -37,6 +37,10 @@ DISCORD_DOWNLOAD_ROLE=download
 DISCORD_FASTDOWNLOAD_ROLE=fastdownload
 # Role name required for media validation access
 DISCORD_ADMIN_ROLE=admin
+# Optional comma-separated role names allowed to browse each catalog.
+# Leave empty to allow any authenticated guild member.
+RELEASE_CATALOG_VIEWERS=
+WIP_CATALOG_VIEWERS=
 
 # Bandwidth Management
 # Global bandwidth limit in Mbits/s (e.g., 1000 for 1 Gbits/s, 100 for 100 Mbits/s)
@@ -84,4 +88,3 @@ echo "   4. GAMES_PATH - Set to your actual Batocera games directory path"
 echo ""
 echo "The SECRET_KEY has been auto-generated. You can change it if needed."
 echo ""
-

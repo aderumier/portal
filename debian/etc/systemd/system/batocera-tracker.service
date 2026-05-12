@@ -1,0 +1,17 @@
+[Unit]
+Description=Batocera BitTorrent Tracker
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=pixn
+Group=pixn
+WorkingDirectory=/opt/batocera-tracker
+ExecStart=/opt/batocera-tracker/batocera-tracker -config /opt/batocera-tracker/config.yaml
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

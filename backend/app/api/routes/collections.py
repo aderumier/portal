@@ -8,7 +8,7 @@ import logging
 from app.database import get_db, System
 from app.services.game import GameService
 from app.services.collection import CollectionService
-from app.api.middleware.guild import require_guild_member
+from app.api.middleware.roles import require_catalog_viewer
 from app.api.routes.catalog import get_game_service
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def get_collection_service() -> CollectionService:
 @router.get("")
 async def get_collections(
     catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
-    current_user: dict = Depends(require_guild_member),
+    current_user: dict = Depends(require_catalog_viewer),
     game_service: GameService = Depends(get_game_service),
     collection_service: CollectionService = Depends(get_collection_service)
 ):
@@ -45,7 +45,7 @@ async def get_collection_games(
     limit: int = Query(12, ge=1, le=10000),
     search: Optional[str] = Query(None),
     catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
-    current_user: dict = Depends(require_guild_member),
+    current_user: dict = Depends(require_catalog_viewer),
     game_service: GameService = Depends(get_game_service),
     collection_service: CollectionService = Depends(get_collection_service),
     db: Session = Depends(get_db)

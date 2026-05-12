@@ -180,6 +180,31 @@ const SystemsConfiguration = () => {
     }
   }
 
+  const handleTorrentUpload = async (systemId, event) => {
+    const file = event.target.files[0]
+    if (!file) return
+
+    if (!file.name.toLowerCase().endsWith('.torrent')) {
+      setMessage({ type: 'error', text: 'File must be a .torrent file' })
+      event.target.value = ''
+      return
+    }
+
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      await client.post(`/api/admin/systems/${systemId}/torrent`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+      setMessage({ type: 'success', text: `Torrent uploaded for ${systemId}` })
+      setSystems(prev => prev.map(s => s.id === systemId ? { ...s, torrent_available: true } : s))
+    } catch (error) {
+      setMessage({ type: 'error', text: error.response?.data?.detail || 'Failed to upload torrent' })
+    } finally {
+      event.target.value = ''
+    }
+  }
+
   if (loading) {
     return <div className="systems-config-loading">Loading systems...</div>
   }
@@ -219,6 +244,7 @@ const SystemsConfiguration = () => {
               <th>Retrobat Extension</th>
               <th>Enabled</th>
               <th>Download Enabled</th>
+              <th>Torrent</th>
             </tr>
           </thead>
           <tbody>
@@ -344,6 +370,18 @@ const SystemsConfiguration = () => {
                   >
                     {system.download_enabled !== false ? 'Enabled' : 'Disabled'}
                   </button>
+                </td>
+                <td className="torrent-cell">
+                  <input
+                    type="file"
+                    accept=".torrent"
+                    onChange={(e) => handleTorrentUpload(system.id, e)}
+                    style={{ display: 'none' }}
+                    id={`torrent-input-${system.id}`}
+                  />
+                  <label htmlFor={`torrent-input-${system.id}`} className={`torrent-upload-btn ${system.torrent_available ? 'has-torrent' : 'no-torrent'}`} title="Click to upload .torrent file">
+                    {system.torrent_available ? 'Uploaded' : 'Upload'}
+                  </label>
                 </td>
               </tr>
             ))}

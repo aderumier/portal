@@ -2,10 +2,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List
-from app.database import get_db, System
+from app.database import get_db, System, User
 from app.api.middleware.roles import require_admin_role
 from app.services.system_import import SystemImportService
 from app.services.system_image import SystemImageService
+from app.services import torrent as torrent_service
 from pydantic import BaseModel
 import logging
 
@@ -52,6 +53,7 @@ async def get_systems(
                 "retrobat_extension": s.retrobat_extension or "",
                 "enabled": s.enabled,
                 "download_enabled": s.download_enabled,
+                "torrent_available": torrent_service.base_torrent_exists(s.id),
                 "created_at": s.created_at.isoformat() if s.created_at else None,
                 "updated_at": s.updated_at.isoformat() if s.updated_at else None,
             }
@@ -184,4 +186,54 @@ async def upload_system_image(
         "success": True,
         "message": f"System image uploaded and converted to {system_id}.webp"
     }
+
+
+@router.post("/systems/{system_id}/torrent")
+async def upload_system_torrent(
+    system_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+):
+    """Upload a base .torrent file for a system (admin only)."""
+    db_system = db.query(System).filter(System.id == system_id).first()
+    if not db_system:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System not found")
+
+    if not file.filename.lower().endswith(".torrent"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be a .torrent file")
+
+    try:
+        content = await file.read()
+    except Exception as e:
+        logger.error(f"Error reading torrent file: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to read uploaded file")
+
+    # Basic validation: try parsing with torf
+    try:
+        import torf
+        torf.Torrent.read_stream(content)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid torrent file: {e}")
+
+    torrent_service.save_base_torrent(system_id, content)
+
+    return {"success": True, "message": f"Torrent uploaded for system {system_id}"}
+
+
+@router.delete("/users/{user_id}/torrent-ip")
+async def reset_torrent_ip(
+    user_id: str,
+    current_user: dict = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+):
+    """Reset a user's torrent IP lock so they can re-announce from a new IP (admin only)."""
+    db_user = db.query(User).filter(User.user_id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    db_user.torrent_locked_ip = None
+    db.commit()
+    logger.info(f"Admin {current_user.get('username')} reset torrent IP lock for user {user_id}")
+    return {"success": True, "message": f"Torrent IP lock reset for user {user_id}"}
 

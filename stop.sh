@@ -54,9 +54,10 @@ if [ -f "$PID_FILE" ]; then
 fi
 
 # Also kill any processes on our ports (in case PID file is missing)
-echo "Checking for processes on ports 8000 and 3000..."
+echo "Checking for processes on ports 8000, 3000 and 6969..."
 kill_by_port 8000
 kill_by_port 3000
+kill_by_port 6969
 
 # Kill any remaining uvicorn processes
 echo "Checking for remaining uvicorn processes..."
@@ -65,6 +66,10 @@ pkill -f "uvicorn app.main:app" 2>/dev/null
 # Kill any remaining npm/vite processes
 echo "Checking for remaining npm/vite processes..."
 pkill -f "vite" 2>/dev/null
+
+# Kill any remaining tracker processes
+echo "Checking for remaining tracker processes..."
+pkill -f "batocera-tracker" 2>/dev/null
 
 echo ""
 echo "All services stopped!"

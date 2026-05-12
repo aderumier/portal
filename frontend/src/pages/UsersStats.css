@@ -1,7 +1,5 @@
 .users-stats-page {
   padding: 2rem 0;
-  max-width: 1400px;
-  margin: 0 auto;
 }
 
 .users-stats-page h1 {
@@ -48,17 +46,52 @@
   letter-spacing: 0.5px;
 }
 
+/* ---- toolbar ---- */
+.users-table-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.users-search {
+  padding: 0.45rem 0.75rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  width: 220px;
+  transition: border-color 0.2s;
+}
+
+.users-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.users-count {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* ---- full-bleed table ---- */
 .users-table-container {
   background: var(--bg-card);
-  border-radius: 12px;
-  overflow: hidden;
   box-shadow: 0 4px 12px var(--shadow);
-  border: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  width: 100vw;
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .users-table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 1400px;
 }
 
 .users-table thead {
@@ -67,18 +100,39 @@
 }
 
 .users-table th {
-  padding: 1rem 1.5rem;
+  padding: 0.75rem 1rem;
   text-align: left;
   font-weight: 600;
   color: var(--text-primary);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.users-table th.sortable {
+  cursor: pointer;
+}
+
+.users-table th.sortable:hover {
+  color: var(--accent);
+}
+
+.sort-icon {
+  margin-left: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--accent);
+}
+
+.sort-icon--idle {
+  color: var(--text-secondary);
+  opacity: 0.5;
 }
 
 .users-table tbody tr {
   border-bottom: 1px solid var(--border);
-  transition: background-color 0.2s ease;
+  transition: background-color 0.15s ease;
 }
 
 .users-table tbody tr:hover {
@@ -90,28 +144,14 @@
 }
 
 .users-table td {
-  padding: 1rem 1.5rem;
+  padding: 0.65rem 1rem;
   color: var(--text-primary);
   vertical-align: middle;
+  font-size: 0.9rem;
 }
 
 .username-cell {
   font-weight: 600;
-}
-
-.username {
-  color: var(--text-primary);
-  font-size: 1rem;
-}
-
-.userid-cell {
-  font-family: monospace;
-  font-size: 0.9rem;
-  color: var(--text-secondary);
-}
-
-.userid {
-  color: var(--text-secondary);
 }
 
 .download-mb-cell {
@@ -119,26 +159,17 @@
   color: var(--accent);
 }
 
-.download-mb {
-  color: var(--accent);
-}
-
 .download-number-cell {
   text-align: center;
-  font-weight: 500;
 }
 
-.download-number {
-  color: var(--text-primary);
+.num-cell {
+  text-align: center;
 }
 
-.last-login-ip-cell {
+.mono-cell {
   font-family: monospace;
   font-size: 0.85rem;
-  color: var(--text-secondary);
-}
-
-.last-login-ip {
   color: var(--text-secondary);
 }
 
@@ -147,29 +178,82 @@
 }
 
 .country-flag {
-  font-size: 1.5rem;
+  font-size: 1.4rem;
   display: inline-block;
   line-height: 1;
 }
 
-.last-login-cell {
-  color: var(--text-secondary);
-  font-size: 0.9rem;
-}
-
-.last-login {
-  color: var(--text-secondary);
-}
-
+.last-login-cell,
 .created-at-cell {
   color: var(--text-secondary);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
 }
 
-.created-at {
+/* ---- torrent IPs ---- */
+.torrent-ips-cell {
+  font-size: 0.85rem;
+}
+
+.torrent-ips {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.torrent-ip-count {
+  position: relative;
+  color: var(--text-secondary);
+  cursor: default;
+  border-bottom: 1px dotted var(--text-secondary);
+}
+
+.torrent-ip-tooltip {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  box-shadow: 0 4px 12px var(--shadow);
+  z-index: 10;
+  flex-direction: column;
+  gap: 0.2rem;
+  white-space: nowrap;
+  font-family: monospace;
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+
+.torrent-ip-count:hover .torrent-ip-tooltip {
+  display: flex;
+}
+
+.torrent-ips-none {
   color: var(--text-secondary);
 }
 
+.reset-torrent-ip-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.15rem 0.35rem;
+  transition: all 0.15s ease;
+}
+
+.reset-torrent-ip-btn:hover {
+  background: rgba(220, 53, 69, 0.15);
+  border-color: #dc3545;
+  color: #dc3545;
+}
+
+/* ---- misc ---- */
 .no-users {
   text-align: center;
   padding: 3rem;
@@ -193,20 +277,12 @@
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .users-table-container {
-    overflow-x: auto;
-  }
-
   .users-table {
-    min-width: 800px;
+    min-width: 900px;
   }
 
   .users-table th,
   .users-table td {
-    padding: 0.8rem 1rem;
+    padding: 0.6rem 0.75rem;
   }
 }
-
-
-
-
