@@ -190,6 +190,13 @@ const Layout = () => {
                             Systems Configuration
                           </Link>
                           <Link
+                            to="/torrent-tracker-stats"
+                            className="account-menu-item"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Torrent Tracker Stats
+                          </Link>
+                          <Link
                             to="/debug"
                             className="account-menu-item"
                             onClick={() => setAccountMenuOpen(false)}

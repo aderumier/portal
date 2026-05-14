@@ -217,7 +217,6 @@ async def upload_system_torrent(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid torrent file: {e}")
 
     torrent_service.save_base_torrent(system_id, content)
-
     return {"success": True, "message": f"Torrent uploaded for system {system_id}"}
 
 

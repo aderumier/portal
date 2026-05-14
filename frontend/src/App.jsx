@@ -31,6 +31,7 @@ import TopSystemsList from './pages/TopSystemsList'
 import Collections from './pages/Collections'
 import Collection from './pages/Collection'
 import CurrentTransfers from './pages/CurrentTransfers'
+import TorrentTrackerStats from './pages/TorrentTrackerStats'
 
 function App() {
   return (
@@ -65,6 +66,7 @@ function App() {
               <Route path="connected-clients" element={<ProtectedRoute requireAdmin><ConnectedClients /></ProtectedRoute>} />
               <Route path="systems-configuration" element={<ProtectedRoute requireAdmin><SystemsConfiguration /></ProtectedRoute>} />
               <Route path="current-transfers" element={<ProtectedRoute requireAdmin><CurrentTransfers /></ProtectedRoute>} />
+              <Route path="torrent-tracker-stats" element={<ProtectedRoute requireAdmin><TorrentTrackerStats /></ProtectedRoute>} />
               <Route path="debug" element={<ProtectedRoute requireAdmin><Debug /></ProtectedRoute>} />
             </Route>
           </Routes>

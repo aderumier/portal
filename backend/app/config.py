@@ -75,6 +75,8 @@ class Settings:
     # Torrent tracker settings
     TRACKER_ANNOUNCE_URL: str = os.getenv('TRACKER_ANNOUNCE_URL', '')  # e.g. https://tracker.example.com
     TRACKER_API_SECRET: str = os.getenv('TRACKER_API_SECRET', '')  # Shared secret between tracker and backend
+    TRACKER_REDIS_KEY_PREFIX: str = os.getenv('TRACKER_REDIS_KEY_PREFIX', 'tracker:')  # Must match redis_key_prefix in Go tracker config
+    TRACKER_REDIS_URL: str = os.getenv('TRACKER_REDIS_URL', '')  # Tracker's own Redis server
 
     # Catalog settings
     # Note: Releases catalog is always enabled

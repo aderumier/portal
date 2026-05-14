@@ -7,7 +7,7 @@ from fastapi.responses import ORJSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.database import init_db
-from app.api.routes import auth, catalog, downloads, users, media, systems_config, bugreports, debug, collections, tracker
+from app.api.routes import auth, catalog, downloads, users, media, systems_config, bugreports, debug, collections, tracker, tracker_admin
 import logging
 import os
 import sys
@@ -303,6 +303,7 @@ app.include_router(collections.router, prefix="/api/collections", tags=["collect
 app.include_router(bugreports.router, prefix="/api", tags=["bugreports"])
 app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
 app.include_router(tracker.router, prefix="/api/internal/tracker", tags=["tracker-internal"])
+app.include_router(tracker_admin.router, prefix="/api/admin/tracker", tags=["tracker-admin"])
 
 # Include media router
 app.include_router(media.router, prefix="/api/media", tags=["media"])
