@@ -294,6 +294,9 @@ _websocket_event_loop = None  # Event loop for WebSocket operations
 _websocket_recv_lock = None  # Async lock for coordinating message reception (initialized in websocket_client)
 _archive_download_active = False  # Flag to indicate if archive download is in progress
 
+# Local upload bandwidth in Mbits/s (updated after bandwidth test and on WebSocket connect)
+_local_upload_bandwidth_mbps = None
+
 # Global UPnP connection info (set during setup, used for each WebSocket connection)
 _p2p_connection_info = {
     "external_ip": None,
@@ -3306,6 +3309,10 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         connect_timeout = 5
         read_timeout = 60  # Per-chunk timeout (applies to final response)
         
+        # Compute per-upload speed limit: half of local upload bandwidth
+        bw_mbps = _local_upload_bandwidth_mbps
+        bytes_per_sec = (bw_mbps * 125000 / 2) if bw_mbps else None
+
         # Create generator for streaming upload
         # requests.put with a generator automatically uses chunked transfer encoding
         def file_chunk_generator():
@@ -3316,11 +3323,11 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
             start_time = time.time()
             last_log_time = start_time
             log_interval = 5.0  # Log progress every 5 seconds
-            
+
             with open(file_path, 'rb') as f:
                 if resume_from > 0:
                     f.seek(resume_from)
-                
+
                 remaining = bytes_to_send
                 while remaining > 0:
                     # Check for cancellation before each chunk
@@ -3328,7 +3335,7 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
                         logger.info(f"Reverse P2P upload cancelled by remote client for download_id={download_id}")
                         clear_reverse_upload_cancelled(download_id)
                         raise ReverseUploadCancelled(f"Upload cancelled by remote client for download_id={download_id}")
-                    
+
                     # Read up to 1MB chunk
                     read_size = min(chunk_size_bytes, remaining)
                     chunk = f.read(read_size)
@@ -3336,7 +3343,7 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
                         break
                     remaining -= len(chunk)
                     bytes_sent += len(chunk)
-                    
+
                     # Log progress periodically
                     current_time = time.time()
                     if current_time - last_log_time >= log_interval:
@@ -3345,8 +3352,14 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
                         progress_pct = (bytes_sent / bytes_to_send * 100) if bytes_to_send > 0 else 0
                         logger.info(f"Reverse P2P upload progress: {bytes_sent / (1024*1024):.1f}/{bytes_to_send / (1024*1024):.1f} MB ({progress_pct:.1f}%), speed={speed_mbps:.2f} Mbits/s, target={target_ip}:{target_port}")
                         last_log_time = current_time
-                    
+
                     yield chunk
+
+                    if bytes_per_sec:
+                        expected_time = bytes_sent / bytes_per_sec
+                        elapsed = time.time() - start_time
+                        if expected_time > elapsed:
+                            time.sleep(expected_time - elapsed)
         
         # Send file via PUT request with streaming (chunked encoding)
         # requests automatically uses chunked transfer encoding when a generator is provided
@@ -5324,6 +5337,11 @@ async def websocket_client():
                                         else:
                                             logger.debug("Reconnection detected - skipping gamelist.xml and P2P inventory upload (will upload after 24h)")
                                         
+                                        # Restore stored upload bandwidth from backend (used for P2P throttling)
+                                        upload_bandwidth_from_server = data.get("upload_bandwidth")
+                                        if upload_bandwidth_from_server is not None:
+                                            _apply_upload_bandwidth(float(upload_bandwidth_from_server))
+
                                         # Check if bandwidth test is needed
                                         bandwidth_test_needed = data.get("bandwidth_test_needed", False)
                                         if bandwidth_test_needed:
@@ -5633,6 +5651,18 @@ def _run_bandwidth_test_sync():
         logger.error(f"Error in bandwidth test: {e}", exc_info=True)
         return None
 
+def _apply_upload_bandwidth(mbps: float):
+    """Store upload bandwidth locally and propagate to the P2P server for throttling."""
+    global _local_upload_bandwidth_mbps
+    _local_upload_bandwidth_mbps = mbps
+    if P2P_CLIENT_AVAILABLE:
+        try:
+            from p2p_client import set_upload_bandwidth
+            set_upload_bandwidth(mbps)
+        except Exception as e:
+            logger.error(f"Error propagating upload bandwidth to P2P server: {e}")
+
+
 async def submit_bandwidth_test_results(upload_bandwidth: float, download_bandwidth: float):
     """Submit bandwidth test results to backend.
     
@@ -5660,7 +5690,9 @@ async def submit_bandwidth_test_results(upload_bandwidth: float, download_bandwi
             logger.info(f"Successfully submitted bandwidth test results: upload={upload_bandwidth:.2f} Mbits/s, download={download_bandwidth:.2f} Mbits/s")
         else:
             logger.warning(f"Backend returned success=false for bandwidth test submission: {result.get('message', 'Unknown error')}")
-            
+
+        _apply_upload_bandwidth(upload_bandwidth)
+
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to submit bandwidth test results: {e}")
     except Exception as e:

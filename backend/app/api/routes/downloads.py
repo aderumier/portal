@@ -1225,7 +1225,8 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
                 "has_user_queue": available_downloads.get('has_user_queue', False),
                 "has_resumable": available_downloads.get('has_resumable', False),
                 "bandwidth_test_needed": bandwidth_test_needed,
-                "skip_upnp": skip_upnp
+                "skip_upnp": skip_upnp,
+                "upload_bandwidth": api_token.upload_bandwidth if api_token else None
             })
             logger.debug(f"Sent 'connected' message to token_id {token_id}")
         except Exception as e:

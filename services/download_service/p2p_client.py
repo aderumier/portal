@@ -9,12 +9,25 @@ from urllib.parse import urlparse, unquote
 from pathlib import Path
 import json
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
 # Global P2P server instance
 _p2p_server = None
 _p2p_server_lock = threading.Lock()
+
+# Upload bandwidth limit for P2P serving (set from download_service after bandwidth test)
+_upload_bandwidth_mbps = None
+_upload_bandwidth_lock = threading.Lock()
+
+
+def set_upload_bandwidth(mbps):
+    """Set the local upload bandwidth (Mbits/s). P2P downloads are throttled to half of this."""
+    global _upload_bandwidth_mbps
+    with _upload_bandwidth_lock:
+        _upload_bandwidth_mbps = mbps
+    logger.info(f"P2P upload bandwidth set to {mbps:.2f} Mbits/s, download limit: {mbps / 2:.2f} Mbits/s")
 
 
 # Global dictionary to store pending reverse connection requests
@@ -497,17 +510,30 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                 self.send_header('Accept-Ranges', 'bytes')
                 self.end_headers()
                 
+                # Compute per-download speed limit: half of local upload bandwidth
+                with _upload_bandwidth_lock:
+                    bw_mbps = _upload_bandwidth_mbps
+                bytes_per_sec = (bw_mbps * 125000 / 2) if bw_mbps else None
+
                 # Send file content
                 with open(file_path, 'rb') as f:
                     f.seek(start_byte)
                     remaining = content_length
+                    transfer_start = time.monotonic()
+                    bytes_sent = 0
                     while remaining > 0:
-                        chunk_size = min(8192, remaining)  # 8KB chunks
+                        chunk_size = min(65536, remaining)  # 64KB chunks
                         chunk = f.read(chunk_size)
                         if not chunk:
                             break
                         self.wfile.write(chunk)
+                        bytes_sent += len(chunk)
                         remaining -= len(chunk)
+                        if bytes_per_sec:
+                            expected_time = bytes_sent / bytes_per_sec
+                            elapsed = time.monotonic() - transfer_start
+                            if expected_time > elapsed:
+                                time.sleep(expected_time - elapsed)
                         
             except Exception as e:
                 logger.error(f"Error handling file request: {e}", exc_info=True)
