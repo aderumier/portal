@@ -14,7 +14,7 @@ const formatBytes = (bytes) => {
 
 const formatSpeed = (bytesPerSec) => {
   if (!bytesPerSec || bytesPerSec === 0) return null
-  return `${formatBytes(bytesPerSec)}/s`
+  return `${(bytesPerSec * 8 / 1_000_000).toFixed(2)} Mbit/s`
 }
 
 const CurrentTransfers = () => {
@@ -81,7 +81,7 @@ const CurrentTransfers = () => {
           <div className="stat-label">P2P Transfers</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value">{formatSpeed(totalDownloadBw) || '0 B/s'}</div>
+          <div className="stat-value">{formatSpeed(totalDownloadBw) || '0 Mbit/s'}</div>
           <div className="stat-label">Total Bandwidth</div>
         </div>
       </div>
@@ -122,7 +122,10 @@ const CurrentTransfers = () => {
                       </span>
                     </td>
                     <td className="source-cell">
-                      <div>{t.source_name}</div>
+                      {t.source_username && (
+                        <div className="source-username">{t.source_username}</div>
+                      )}
+                      <div className="source-token">{t.source_name}</div>
                     </td>
                     <td className="target-cell">
                       <div className="target-username">{t.target_username}</div>

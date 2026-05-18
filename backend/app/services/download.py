@@ -1495,10 +1495,14 @@ class DownloadService:
                 p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(item.id)
 
             p2p_remote_token_name = None
+            p2p_remote_username = None
             if p2p_remote_token_id:
                 remote_token = self.db.query(ApiToken).filter(ApiToken.id == p2p_remote_token_id).first()
                 if remote_token:
                     p2p_remote_token_name = remote_token.name
+                    remote_user = self.db.query(User).filter(User.user_id == remote_token.user_id).first()
+                    if remote_user:
+                        p2p_remote_username = remote_user.username or remote_user.user_id
 
             # Resolve game name and system
             lookup_game_id = item.game_id
@@ -1526,6 +1530,7 @@ class DownloadService:
             transfers.append({
                 'id': item.id,
                 'source_type': 'p2p' if p2p_remote_token_id else 'direct',
+                'source_username': p2p_remote_username,
                 'source_name': p2p_remote_token_name if p2p_remote_token_id else 'Server',
                 'target_username': username_cache.get(item.user_id, item.user_id),
                 'target_token_name': token_cache.get(item.token_id, '?'),

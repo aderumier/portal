@@ -6,6 +6,7 @@ from sqlalchemy import desc, asc
 from app.database import get_db, BugReport, BugReportComment, User
 from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.roles import require_admin_role
+from app.api.middleware.guild import require_guild_member
 from app.api.routes.catalog import get_game_service
 from typing import Optional, List
 import logging
@@ -37,7 +38,7 @@ class AddBugReportCommentRequest(BaseModel):
 @router.post("/bugreports")
 async def submit_bug_report(
     request: SubmitBugReportRequest,
-    current_user: dict = Depends(require_auth_user),
+    current_user: dict = Depends(require_guild_member),
     db: Session = Depends(get_db)
 ):
     """Submit a bug report."""

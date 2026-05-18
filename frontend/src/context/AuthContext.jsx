@@ -32,13 +32,11 @@ export const AuthProvider = ({ children }) => {
       const response = await client.get('/api/auth/me')
       setUser(response.data)
     } catch (error) {
-      // 401 is expected for unauthenticated users, don't treat it as an error
       if (error.response?.status === 401) {
         setUser(null)
       } else {
-        // For other errors, still set user to null but log the error
         console.error('Auth check error:', error)
-        setUser(null)
+        // Non-401 errors (5xx, network) don't clear the session
       }
     } finally {
       setLoading(false)

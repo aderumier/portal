@@ -458,19 +458,38 @@ class GameService:
         ret_ext = retrobat_ext.lstrip('.') if retrobat_ext else ''
         return f"{base_path}.({bat_ext}|{ret_ext})"
     
+    def _parse_extensions(self, ext_str: str) -> list:
+        """Parse a comma-separated extension string into a normalized list."""
+        exts = []
+        for e in ext_str.split(','):
+            e = e.strip()
+            if e:
+                if not e.startswith('.'):
+                    e = '.' + e
+                exts.append(e)
+        return exts
+
+    def _ext_for_rompath(self, rompath: str, exts: list) -> str:
+        """Return the first extension from exts that the rompath ends with, or ''."""
+        rompath_lower = rompath.lower()
+        for ext in exts:
+            if rompath_lower.endswith(ext.lower()):
+                return ext
+        return ''
+
     def _merge_games_with_extensions(self, system_id: str, catalog_type: str, batocera_ext: str, retrobat_ext: str) -> int:
         """Merge games with different extensions when both ROMs exist.
-        
+
         When a system has both batocera_extension and retrobat_extension defined,
         finds games with matching base paths but different extensions and creates
-        unified ROM keys.
-        
+        unified ROM keys. Both fields accept comma-separated lists of extensions.
+
         Args:
             system_id: System identifier
             catalog_type: 'wip' or 'releases'
-            batocera_ext: Batocera extension (e.g., ".z64")
-            retrobat_ext: Retrobat extension (e.g., ".n64")
-            
+            batocera_ext: Batocera extension(s), e.g. ".z64" or ".cue,.chd"
+            retrobat_ext: Retrobat extension(s), e.g. ".n64" or ".zip"
+
         Returns:
             int: Number of merged games
         """
@@ -483,114 +502,111 @@ class GameService:
             catalog_sorted_keys = self.catalog_sorted_keys_releases
         else:
             raise ValueError(f"Invalid catalog_type: {catalog_type}")
-        
+
         if system_id not in catalog:
             return 0
-        
-        # Normalize extensions (remove leading dot if present, add if missing)
-        bat_ext = batocera_ext.strip()
-        if bat_ext and not bat_ext.startswith('.'):
-            bat_ext = '.' + bat_ext
-        
-        ret_ext = retrobat_ext.strip()
-        if ret_ext and not ret_ext.startswith('.'):
-            ret_ext = '.' + ret_ext
-        
-        if not bat_ext or not ret_ext:
-            return 0  # Both extensions must be defined
-        
-        # Build map of base path -> (rompath with bat_ext, rompath with ret_ext)
-        base_path_map = {}  # base_path -> {'batocera': rompath, 'retrobat': rompath}
-        
+
+        bat_exts = self._parse_extensions(batocera_ext)
+        ret_exts = self._parse_extensions(retrobat_ext)
+
+        if not bat_exts or not ret_exts:
+            return 0  # Both sides must have at least one extension
+
+        # Build map: base_path -> {'batocera': rompath, 'batocera_ext': ext,
+        #                          'retrobat': rompath, 'retrobat_ext': ext}
+        # First match in priority order wins for each side.
+        base_path_map = {}
+
         for rompath in catalog[system_id].keys():
             base_path = self._get_rom_filename_without_ext(rompath)
-            rompath_lower = rompath.lower()
-            
-            # Check if this ROM path ends with batocera extension
-            if rompath_lower.endswith(bat_ext.lower()):
-                if base_path not in base_path_map:
-                    base_path_map[base_path] = {}
-                base_path_map[base_path]['batocera'] = rompath
-            # Check if this ROM path ends with retrobat extension
-            elif rompath_lower.endswith(ret_ext.lower()):
-                if base_path not in base_path_map:
-                    base_path_map[base_path] = {}
-                base_path_map[base_path]['retrobat'] = rompath
-        
+            if base_path not in base_path_map:
+                base_path_map[base_path] = {}
+            entry = base_path_map[base_path]
+
+            matched_bat = self._ext_for_rompath(rompath, bat_exts)
+            if matched_bat and 'batocera' not in entry:
+                entry['batocera'] = rompath
+                entry['batocera_ext'] = matched_bat
+                continue
+
+            matched_ret = self._ext_for_rompath(rompath, ret_exts)
+            if matched_ret and 'retrobat' not in entry:
+                entry['retrobat'] = rompath
+                entry['retrobat_ext'] = matched_ret
+
         # Find pairs that have both extensions
         merged_count = 0
         unified_keys_to_create = []
-        
+
         for base_path, paths in base_path_map.items():
             if 'batocera' in paths and 'retrobat' in paths:
-                # Both ROMs exist - create unified key
-                unified_key = self._create_unified_rom_key(base_path, bat_ext, ret_ext)
                 batocera_rompath = paths['batocera']
                 retrobat_rompath = paths['retrobat']
-                
-                # Choose batocera as primary (as per plan)
-                primary_rompath = batocera_rompath
+                unified_key = self._create_unified_rom_key(base_path, paths['batocera_ext'], paths['retrobat_ext'])
+
                 primary_game_data = catalog[system_id][batocera_rompath]
-                
+
                 # Store unified key with primary game data
                 catalog[system_id][unified_key] = primary_game_data.copy()
                 # Add metadata about both paths for download resolution
                 catalog[system_id][unified_key]['_original_batocera_path'] = batocera_rompath
                 catalog[system_id][unified_key]['_original_retrobat_path'] = retrobat_rompath
-                
+
                 # Remove individual ROM paths from catalog
                 del catalog[system_id][batocera_rompath]
                 del catalog[system_id][retrobat_rompath]
-                
+
                 unified_keys_to_create.append((unified_key, batocera_rompath, retrobat_rompath))
                 merged_count += 1
-                # Mark as matched to skip name fallback
                 paths['matched'] = True
-        
+
         # Fallback: Merge by game name for remaining ROMs
-        batocera_unmatched = {} # name -> rompath
-        retrobat_unmatched = {} # name -> rompath
-        
+        batocera_unmatched = {}  # name -> rompath
+        retrobat_unmatched = {}  # name -> rompath
+
         for base_path, paths in base_path_map.items():
             if paths.get('matched'):
                 continue
-                
+
             if 'batocera' in paths:
                 rompath = paths['batocera']
                 name = catalog[system_id][rompath].get('name', '').lower().strip()
                 if name:
                     batocera_unmatched[name] = rompath
-            
+
             if 'retrobat' in paths:
                 rompath = paths['retrobat']
                 name = catalog[system_id][rompath].get('name', '').lower().strip()
                 if name:
                     retrobat_unmatched[name] = rompath
-        
+
         # Find matches by name
         for name, batocera_rompath in batocera_unmatched.items():
             if name in retrobat_unmatched:
                 retrobat_rompath = retrobat_unmatched[name]
-                
-                # Use batocera base path for unified key
+
+                # Use actual extensions of matched rompaths for the unified key
+                bat_ext_for_pair = self._ext_for_rompath(batocera_rompath, bat_exts)
+                ret_ext_for_pair = self._ext_for_rompath(retrobat_rompath, ret_exts)
+
                 base_path = self._get_rom_filename_without_ext(batocera_rompath)
-                unified_key = self._create_unified_rom_key(base_path, bat_ext, ret_ext)
-                
+                unified_key = self._create_unified_rom_key(base_path, bat_ext_for_pair, ret_ext_for_pair)
+
                 # If unified key already exists (unlikely but safe), skip
                 if unified_key in catalog[system_id]:
                     continue
-                
+
                 primary_game_data = catalog[system_id][batocera_rompath]
-                
+
                 # Store unified key with primary game data
                 catalog[system_id][unified_key] = primary_game_data.copy()
                 catalog[system_id][unified_key]['_original_batocera_path'] = batocera_rompath
                 catalog[system_id][unified_key]['_original_retrobat_path'] = retrobat_rompath
-                
+
                 # Remove individual ROM paths
                 del catalog[system_id][batocera_rompath]
                 del catalog[system_id][retrobat_rompath]
-                
+
                 unified_keys_to_create.append((unified_key, batocera_rompath, retrobat_rompath))
                 merged_count += 1
         
@@ -617,7 +633,7 @@ class GameService:
             catalog_sorted_keys[system_id] = new_sorted_keys
         
         if merged_count > 0:
-            logger.info(f"Merged {merged_count} game pairs in {system_id} ({catalog_type}): {bat_ext} <-> {ret_ext}")
+            logger.info(f"Merged {merged_count} game pairs in {system_id} ({catalog_type}): {bat_exts} <-> {ret_exts}")
         
         return merged_count
     
@@ -2098,6 +2114,13 @@ class GameService:
                                     except (ValueError, TypeError):
                                         pass
                                 
+                                # Skip corrupted entries (EmulationStation runaway counter bug)
+                                MAX_PLAYCOUNT = 5000
+                                MAX_GAMETIME = 7_776_000  # 3 months in seconds
+                                if playcount > MAX_PLAYCOUNT or gametime > MAX_GAMETIME:
+                                    logger.warning(f"    Skipping corrupted stats for {game_path}: playcount={playcount}, gametime={gametime}")
+                                    continue
+
                                 # Skip if both are zero
                                 if playcount == 0 and gametime == 0:
                                     continue

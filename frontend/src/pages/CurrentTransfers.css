@@ -234,10 +234,13 @@
   white-space: nowrap;
 }
 
-.source-name {
-  font-size: 0.8rem;
+.source-username {
+  font-weight: 600;
+}
+
+.source-token {
+  font-size: 0.78rem;
   color: var(--text-secondary);
-  margin-top: 0.15rem;
 }
 
 .game-cell {

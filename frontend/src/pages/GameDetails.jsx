@@ -14,7 +14,7 @@ import './GameDetails.css'
 const GameDetails = () => {
   const { system, gameId } = useParams()
   const navigate = useNavigate()
-  const { isAdmin, isDownload, isFastDownload } = useAuth()
+  const { isAdmin, isDownload, isFastDownload, isGuildMember } = useAuth()
   const { catalogType } = useCatalog()
   const [game, setGame] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -171,13 +171,15 @@ const GameDetails = () => {
         <button className="back-btn" onClick={() => navigate(-1)}>
           ← Back
         </button>
-        <button
-          className="bug-report-button"
-          onClick={() => setShowBugReportModal(true)}
-          title="Report a bug"
-        >
-          🐛 Report Bug
-        </button>
+        {isGuildMember && (
+          <button
+            className="bug-report-button"
+            onClick={() => setShowBugReportModal(true)}
+            title="Report a bug"
+          >
+            🐛 Report Bug
+          </button>
+        )}
       </div>
 
       <div className="game-details-content">
