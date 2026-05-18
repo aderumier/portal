@@ -89,7 +89,7 @@ def generate_torrent_from_snapshot(system_id: str, snapshot_name: str) -> bytes:
     t.private = True
     t.trackers = [[f"{announce_base}/announce"]]
     t.filepaths = file_paths   # common parent (snapshot_path) becomes the implicit root
-    t.name = system_id         # override auto-name (which would be the snapshot name)
+    t.name = snapshot_name     # top-level folder in the torrent = snapshot name
 
     _last_pct = [-1]
 
@@ -130,6 +130,7 @@ def generate_torrent_from_snapshot(system_id: str, snapshot_name: str) -> bytes:
             f"({len(file_paths)} files, {len(data)} bytes)"
         )
     return data
+
 
 
 def build_user_torrent(system_id: str, passkey: str) -> Optional[bytes]:

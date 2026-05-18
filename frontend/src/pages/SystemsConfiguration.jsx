@@ -260,7 +260,6 @@ const SystemsConfiguration = () => {
   const handleGenerateTorrent = async () => {
     if (!generateModal.selectedSnapshot) return
     const { systemId, selectedSnapshot } = generateModal
-    // Close modal immediately
     setGenerateModal(prev => ({ ...prev, open: false }))
     setGeneratingSystemId(systemId)
     try {
