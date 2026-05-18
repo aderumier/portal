@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import client from '../api/client'
 import './SystemsConfiguration.css'
 
@@ -9,6 +9,16 @@ const SystemsConfiguration = () => {
   const [message, setMessage] = useState(null)
   const [imageErrors, setImageErrors] = useState(new Set())
   const [imageToken, setImageToken] = useState(() => Date.now())
+  const [generateModal, setGenerateModal] = useState({
+    open: false,
+    systemId: null,
+    snapshots: [],
+    selectedSnapshot: '',
+    loadingSnapshots: false,
+  })
+  // system ID currently being generated (null = none)
+  const [generatingSystemId, setGeneratingSystemId] = useState(null)
+  const pollingRef = useRef(null)
 
   useEffect(() => {
     loadSystems()
@@ -205,6 +215,65 @@ const SystemsConfiguration = () => {
     }
   }
 
+  const handleOpenGenerateTorrent = async (systemId) => {
+    setGenerateModal({ open: true, systemId, snapshots: [], selectedSnapshot: '', loadingSnapshots: true })
+    try {
+      const response = await client.get(`/api/admin/systems/${systemId}/snapshots`)
+      const snapshots = response.data.snapshots || []
+      setGenerateModal(prev => ({
+        ...prev,
+        snapshots,
+        selectedSnapshot: snapshots[0] || '',
+        loadingSnapshots: false,
+      }))
+    } catch (error) {
+      setGenerateModal(prev => ({ ...prev, loadingSnapshots: false }))
+      setMessage({ type: 'error', text: 'Failed to load snapshots' })
+    }
+  }
+
+  const startPolling = (systemId) => {
+    if (pollingRef.current) clearInterval(pollingRef.current)
+    pollingRef.current = setInterval(async () => {
+      try {
+        const response = await client.get(`/api/admin/systems/${systemId}/torrent-generation-status`)
+        const { status: st, message: msg } = response.data
+        if (st === 'done') {
+          clearInterval(pollingRef.current)
+          pollingRef.current = null
+          setGeneratingSystemId(null)
+          setSystems(prev => prev.map(s => s.id === systemId ? { ...s, torrent_available: true } : s))
+          setMessage({ type: 'success', text: msg || `Torrent ready for ${systemId}` })
+        } else if (st === 'error') {
+          clearInterval(pollingRef.current)
+          pollingRef.current = null
+          setGeneratingSystemId(null)
+          setMessage({ type: 'error', text: msg || 'Torrent generation failed' })
+        }
+      } catch (_) { /* ignore transient poll errors */ }
+    }, 5000)
+  }
+
+  // Clean up polling interval on unmount
+  useEffect(() => () => { if (pollingRef.current) clearInterval(pollingRef.current) }, [])
+
+  const handleGenerateTorrent = async () => {
+    if (!generateModal.selectedSnapshot) return
+    const { systemId, selectedSnapshot } = generateModal
+    // Close modal immediately
+    setGenerateModal(prev => ({ ...prev, open: false }))
+    setGeneratingSystemId(systemId)
+    try {
+      await client.post(`/api/admin/systems/${systemId}/generate-torrent`, {
+        snapshot: selectedSnapshot,
+      })
+      startPolling(systemId)
+    } catch (error) {
+      setGeneratingSystemId(null)
+      setMessage({ type: 'error', text: error.response?.data?.detail || 'Failed to start torrent generation' })
+    }
+  }
+
   if (loading) {
     return <div className="systems-config-loading">Loading systems...</div>
   }
@@ -382,12 +451,69 @@ const SystemsConfiguration = () => {
                   <label htmlFor={`torrent-input-${system.id}`} className={`torrent-upload-btn ${system.torrent_available ? 'has-torrent' : 'no-torrent'}`} title="Click to upload .torrent file">
                     {system.torrent_available ? 'Uploaded' : 'Upload'}
                   </label>
+                  <button
+                    className={`torrent-generate-btn${generatingSystemId === system.id ? ' generating' : ''}`}
+                    onClick={() => handleOpenGenerateTorrent(system.id)}
+                    disabled={!!generatingSystemId}
+                    title={generatingSystemId === system.id ? 'Generating torrent…' : 'Generate torrent from ZFS snapshot'}
+                  >
+                    {generatingSystemId === system.id ? <span className="spinner" /> : null}
+                    {generatingSystemId === system.id ? 'Generating…' : 'Generate'}
+                  </button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {generateModal.open && (
+        <div className="modal-overlay" onClick={() => setGenerateModal(prev => ({ ...prev, open: false }))}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <h2 className="modal-title">Generate Torrent</h2>
+            <p className="modal-subtitle">System: <strong>{generateModal.systemId}</strong></p>
+
+            {generateModal.loadingSnapshots ? (
+              <p className="modal-status">Loading snapshots...</p>
+            ) : generateModal.snapshots.length === 0 ? (
+              <p className="modal-status modal-status-empty">
+                No ZFS snapshots found at /pixn/roms/{generateModal.systemId}/.zfs/snapshot/
+              </p>
+            ) : (
+              <div className="modal-field">
+                <label className="modal-label" htmlFor="snapshot-select">ZFS Snapshot</label>
+                <select
+                  id="snapshot-select"
+                  className="modal-select"
+                  value={generateModal.selectedSnapshot}
+                  onChange={e => setGenerateModal(prev => ({ ...prev, selectedSnapshot: e.target.value }))}
+                  disabled={generateModal.generating}
+                >
+                  {generateModal.snapshots.map(snap => (
+                    <option key={snap} value={snap}>{snap}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="modal-actions">
+              <button
+                className="modal-btn modal-btn-cancel"
+                onClick={() => setGenerateModal(prev => ({ ...prev, open: false }))}
+              >
+                Cancel
+              </button>
+              <button
+                className="modal-btn modal-btn-generate"
+                onClick={handleGenerateTorrent}
+                disabled={!generateModal.selectedSnapshot || generateModal.loadingSnapshots}
+              >
+                Generate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

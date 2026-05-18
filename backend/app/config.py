@@ -72,6 +72,9 @@ class Settings:
     P2P_MAX_PEER_ATTEMPTS: int = int(os.getenv('P2P_MAX_PEER_ATTEMPTS', '5'))  # Max peers to try (default: 5)
     P2P_TIMEOUT: int = int(os.getenv('P2P_TIMEOUT', '30'))  # Timeout for P2P requests in seconds (default: 30)
     
+    # ROM storage path (used for ZFS snapshot torrent generation)
+    ROMS_PATH: str = os.getenv('ROMS_PATH', '/pixn/roms')
+
     # Torrent tracker settings
     TRACKER_ANNOUNCE_URL: str = os.getenv('TRACKER_ANNOUNCE_URL', '')  # e.g. https://tracker.example.com
     TRACKER_API_SECRET: str = os.getenv('TRACKER_API_SECRET', '')  # Shared secret between tracker and backend

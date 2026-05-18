@@ -1,5 +1,6 @@
 """Systems configuration routes."""
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+import threading
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db, System, User
@@ -12,11 +13,42 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# One generation at a time; released by the background thread when done
+_generation_lock = threading.Lock()
+# system_id -> {'status': 'generating'|'done'|'error', 'message': str}
+_generation_status: dict = {}
+
+
+def _run_generate_torrent(system_id: str, snapshot_name: str) -> None:
+    """Background thread: generate torrent and update status."""
+    import time
+    logger.info(f"[torrent-gen] START system={system_id} snapshot={snapshot_name}")
+    t0 = time.monotonic()
+    try:
+        torrent_service.generate_torrent_from_snapshot(system_id, snapshot_name)
+        elapsed = time.monotonic() - t0
+        msg = f"Torrent generated from snapshot {snapshot_name} in {elapsed:.1f}s"
+        _generation_status[system_id] = {"status": "done", "message": msg}
+        logger.info(f"[torrent-gen] DONE system={system_id} elapsed={elapsed:.1f}s")
+    except Exception as e:
+        elapsed = time.monotonic() - t0
+        logger.error(
+            f"[torrent-gen] FAILED system={system_id} elapsed={elapsed:.1f}s error={e}",
+            exc_info=True,
+        )
+        _generation_status[system_id] = {"status": "error", "message": str(e)}
+    finally:
+        _generation_lock.release()
+
 router = APIRouter()
 
 def get_system_image_service() -> SystemImageService:
     """Get system image service instance."""
     return SystemImageService()
+
+class GenerateTorrentRequest(BaseModel):
+    snapshot: str
+
 
 class SystemUpdate(BaseModel):
     """System update model."""
@@ -218,6 +250,68 @@ async def upload_system_torrent(
 
     torrent_service.save_base_torrent(system_id, content)
     return {"success": True, "message": f"Torrent uploaded for system {system_id}"}
+
+
+@router.get("/systems/{system_id}/snapshots")
+async def list_system_snapshots(
+    system_id: str,
+    current_user: dict = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+):
+    """List available ZFS snapshots for a system (admin only)."""
+    db_system = db.query(System).filter(System.id == system_id).first()
+    if not db_system:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System not found")
+
+    snapshots = torrent_service.list_zfs_snapshots(system_id)
+    return {"snapshots": snapshots}
+
+
+@router.post("/systems/{system_id}/generate-torrent")
+async def generate_system_torrent(
+    system_id: str,
+    request: GenerateTorrentRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(require_admin_role),
+    db: Session = Depends(get_db)
+):
+    """Start background torrent generation from a ZFS snapshot (admin only).
+
+    Returns immediately; poll /systems/{system_id}/torrent-generation-status for progress.
+    Only one generation may run at a time across all systems.
+    """
+    db_system = db.query(System).filter(System.id == system_id).first()
+    if not db_system:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System not found")
+
+    if not _generation_lock.acquire(blocking=False):
+        busy = next(
+            (sid for sid, s in _generation_status.items() if s.get("status") == "generating"),
+            "another system",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Torrent generation already in progress for {busy}",
+        )
+
+    _generation_status[system_id] = {
+        "status": "generating",
+        "message": f"Hashing files from snapshot {request.snapshot}…",
+    }
+    # BackgroundTasks runs sync functions in a threadpool (anyio), so this won't
+    # block the event loop. The lock is released inside _run_generate_torrent.
+    background_tasks.add_task(_run_generate_torrent, system_id, request.snapshot)
+
+    return {"status": "generating", "message": f"Generation started for {system_id}"}
+
+
+@router.get("/systems/{system_id}/torrent-generation-status")
+async def get_torrent_generation_status(
+    system_id: str,
+    current_user: dict = Depends(require_admin_role),
+):
+    """Poll the status of an in-progress or completed torrent generation."""
+    return _generation_status.get(system_id, {"status": "idle"})
 
 
 @router.delete("/users/{user_id}/torrent-ip")
