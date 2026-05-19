@@ -205,6 +205,15 @@ def migrate_database():
             print(f"  ✗ Error adding column client_version: {e}")
     else:
         print("  - Column client_version already exists in download_archive table")
+
+    if 'device' not in existing_archive_columns:
+        try:
+            cursor.execute("ALTER TABLE download_archive ADD COLUMN device TEXT")
+            print("  ✓ Added column device to download_archive table")
+        except sqlite3.OperationalError as e:
+            print(f"  ✗ Error adding column device: {e}")
+    else:
+        print("  - Column device already exists in download_archive table")
     
     # Create indexes for download_archive
     indexes_to_create = [

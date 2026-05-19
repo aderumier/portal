@@ -1,39 +1,69 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { getMediaUrl } from '../utils/constants'
 import client from '../api/client'
 import './DownloadHistory.css'
+
+const PAGE_SIZE = 100
 
 const GlobalDownloadHistory = () => {
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
   const [error, setError] = useState(null)
   const [selectedLog, setSelectedLog] = useState(null)
   const [logContent, setLogContent] = useState(null)
   const [loadingLog, setLoadingLog] = useState(false)
 
-  useEffect(() => {
-    loadHistory()
-  }, [])
+  const sentinelRef = useRef(null)
+  const offsetRef = useRef(0)
 
-  const loadHistory = async () => {
+  const loadPage = useCallback(async (offset, append) => {
     try {
-      setLoading(true)
+      if (offset === 0) setLoading(true)
+      else setLoadingMore(true)
       setError(null)
-      const response = await client.get('/api/download/history/all')
-      setHistory(response.data.history || [])
+      const response = await client.get('/api/download/history/all', {
+        params: { limit: PAGE_SIZE, offset }
+      })
+      const items = response.data.history || []
+      if (append) {
+        setHistory(prev => [...prev, ...items])
+      } else {
+        setHistory(items)
+      }
+      setHasMore(items.length === PAGE_SIZE)
+      offsetRef.current = offset + items.length
     } catch (err) {
       console.error('Error loading global download history:', err)
       setError('Failed to load download history')
     } finally {
       setLoading(false)
+      setLoadingMore(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    loadPage(0, false)
+  }, [loadPage])
+
+  useEffect(() => {
+    if (!sentinelRef.current) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !loadingMore && !loading) {
+          loadPage(offsetRef.current, true)
+        }
+      },
+      { threshold: 0.1 }
+    )
+    observer.observe(sentinelRef.current)
+    return () => observer.disconnect()
+  }, [hasMore, loadingMore, loading, loadPage])
 
   const formatDate = (dateString) => {
     if (!dateString) return 'Unknown'
-    const date = new Date(dateString)
-    return date.toLocaleString()
+    return new Date(dateString).toLocaleString()
   }
 
   const formatBytes = (bytes) => {
@@ -46,14 +76,10 @@ const GlobalDownloadHistory = () => {
 
   const getStatusBadgeClass = (status) => {
     switch (status) {
-      case 'completed':
-        return 'status-completed'
-      case 'error':
-        return 'status-error'
-      case 'cancelled':
-        return 'status-cancelled'
-      default:
-        return 'status-other'
+      case 'completed': return 'status-completed'
+      case 'error': return 'status-error'
+      case 'cancelled': return 'status-cancelled'
+      default: return 'status-other'
     }
   }
 
@@ -66,11 +92,7 @@ const GlobalDownloadHistory = () => {
       setSelectedLog(downloadId)
     } catch (err) {
       console.error('Error loading log:', err)
-      if (err.response?.status === 404) {
-        setError('Log file not found')
-      } else {
-        setError('Failed to load log')
-      }
+      setError(err.response?.status === 404 ? 'Log file not found' : 'Failed to load log')
       setSelectedLog(null)
       setLogContent(null)
     } finally {
@@ -85,19 +107,19 @@ const GlobalDownloadHistory = () => {
   }
 
   if (loading) {
-    return <div className="download-history-container">
+    return <div className="download-history-page">
       <div className="loading">Loading download history...</div>
     </div>
   }
 
-  if (error) {
-    return <div className="download-history-container">
+  if (error && history.length === 0) {
+    return <div className="download-history-page">
       <div className="error">{error}</div>
     </div>
   }
 
   return (
-    <div className="download-history-container">
+    <div className="download-history-page">
       <div className="download-history-header">
         <h1>Global Download History</h1>
         <p>View all completed, cancelled, and failed downloads for all users</p>
@@ -108,82 +130,82 @@ const GlobalDownloadHistory = () => {
           <p>No download history found.</p>
         </div>
       ) : (
-        <div className="download-history-list">
-          <table className="history-table">
-            <thead>
-              <tr>
-                <th>Username</th>
-                <th>Game</th>
-                <th>System</th>
-                <th>Version</th>
-                <th>Client</th>
-                <th>Status</th>
-                <th>Size</th>
-                <th>Date</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.username || item.user_id || '-'}</td>
-                  <td className="game-cell">
-                    {item.image && (
-                      <img 
-                        src={getMediaUrl(item.image)} 
-                        alt={item.game_name}
-                        className="game-thumbnail"
-                        onError={(e) => {
-                          e.target.style.display = 'none'
-                        }}
-                      />
-                    )}
-                    <div className="game-info">
-                      <Link 
+        <>
+          <div className="download-history-toolbar">
+            <span className="download-history-count">{history.length} entries loaded</span>
+          </div>
+
+          <div className="download-history-table-container">
+            <table className="history-table">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Device</th>
+                  <th>Game</th>
+                  <th>System</th>
+                  <th>Version</th>
+                  <th>Client</th>
+                  <th>Status</th>
+                  <th>Size</th>
+                  <th>Date</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((item) => (
+                  <tr key={item.id}>
+                    <td className="username-cell">{item.username || item.user_id || '-'}</td>
+                    <td className="device-cell">{item.device || '-'}</td>
+                    <td className="game-cell">
+                      <Link
                         to={`/game/${item.system}/${encodeURIComponent(item.rompath)}`}
                         className="game-link"
                       >
                         {item.game_name}
                       </Link>
-                    </div>
-                  </td>
-                  <td>{item.system_name || item.system}</td>
-                  <td>
-                    <span className="version-tag">{item.catalog_version || 'WIP'}</span>
-                  </td>
-                  <td>
-                    {item.client_version ? (
-                      <span className="client-version-tag">{item.client_version}</span>
-                    ) : (
-                      <span className="no-client-version">-</span>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`status-badge ${getStatusBadgeClass(item.status)}`}>
-                      {item.status}
-                    </span>
-                  </td>
-                  <td>
-                    {item.file_size ? formatBytes(item.file_size) : 'Unknown'}
-                  </td>
-                  <td>{formatDate(item.timestamp)}</td>
-                  <td>
-                    <button
-                      className="btn-log"
-                      onClick={() => fetchLog(item.download_id)}
-                      title="View download log"
-                    >
-                      View Log
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    </td>
+                    <td className="system-cell">{item.system_name || item.system}</td>
+                    <td>
+                      <span className="version-tag">{item.catalog_version || 'WIP'}</span>
+                    </td>
+                    <td>
+                      {item.client_version ? (
+                        <span className="client-version-tag">{item.client_version}</span>
+                      ) : (
+                        <span className="no-client-version">-</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`status-badge ${getStatusBadgeClass(item.status)}`}>
+                        {item.status}
+                      </span>
+                    </td>
+                    <td>{item.file_size ? formatBytes(item.file_size) : 'Unknown'}</td>
+                    <td className="date-cell">{formatDate(item.timestamp)}</td>
+                    <td>
+                      <button
+                        className="btn-log"
+                        onClick={() => fetchLog(item.download_id)}
+                        title="View download log"
+                      >
+                        View Log
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div ref={sentinelRef} className="scroll-sentinel">
+            {loadingMore && <div className="loading-more">Loading more...</div>}
+            {!hasMore && history.length > 0 && (
+              <div className="no-more">All {history.length} entries loaded</div>
+            )}
+          </div>
+        </>
       )}
 
-      {/* Log Modal */}
       {selectedLog && (
         <div className="modal-overlay" onClick={closeLogModal}>
           <div className="modal-content log-modal" onClick={(e) => e.stopPropagation()}>
@@ -211,4 +233,3 @@ const GlobalDownloadHistory = () => {
 }
 
 export default GlobalDownloadHistory
-

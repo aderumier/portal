@@ -46,14 +46,14 @@ const Layout = () => {
       }
     }
 
-    if (accountMenuOpen) {
+    if (accountMenuOpen || playlistMenuOpen) {
       document.addEventListener('mousedown', handleClickOutside)
     }
 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside)
     }
-  }, [accountMenuOpen])
+  }, [accountMenuOpen, playlistMenuOpen])
 
   return (
     <div className="layout">
@@ -82,10 +82,10 @@ const Layout = () => {
                   </button>
                   {playlistMenuOpen && (
                     <div className="playlist-menu-dropdown">
-                      <Link to="/playlist/collections" className="playlist-menu-item">Collections</Link>
-                      <Link to="/playlist/top-downloads" className="playlist-menu-item">Top Download</Link>
-                      <Link to="/playlist/top-playcount" className="playlist-menu-item">Top Playcount</Link>
-                      <Link to="/playlist/top-playtime" className="playlist-menu-item">Top Playtime</Link>
+                      <Link to="/playlist/collections" className="playlist-menu-item" onClick={() => setPlaylistMenuOpen(false)}>Collections</Link>
+                      <Link to="/playlist/top-downloads" className="playlist-menu-item" onClick={() => setPlaylistMenuOpen(false)}>Top Download</Link>
+                      <Link to="/playlist/top-playcount" className="playlist-menu-item" onClick={() => setPlaylistMenuOpen(false)}>Top Playcount</Link>
+                      <Link to="/playlist/top-playtime" className="playlist-menu-item" onClick={() => setPlaylistMenuOpen(false)}>Top Playtime</Link>
                     </div>
                   )}
                 </div>

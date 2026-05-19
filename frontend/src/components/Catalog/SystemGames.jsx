@@ -569,12 +569,16 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
     const viewedGameKey = getStorageKey('viewedGame')
     localStorage.setItem(viewedGameKey, game.id)
 
+    // Save ordered list of game IDs for prev/next navigation in GameDetails
+    const navList = (viewMode === 'table' ? sortedGamesForTable : filteredGames).map(g => g.id)
+    sessionStorage.setItem(`gameNavList_${systemId}`, JSON.stringify(navList))
+
     let gameId = game.id.replace(/^\.\//, '')
     if (gameId.startsWith(`${game.system}/`)) {
       gameId = gameId.substring(game.system.length + 1)
     }
     navigate(`/game/${game.system}/${encodeURIComponent(gameId)}`, {
-      state: { fromSystemGames: true }
+      state: { fromSystemGames: true, systemId }
     })
   }
 

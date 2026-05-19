@@ -2,6 +2,67 @@
   padding: 2rem 0;
 }
 
+.game-nav-btn {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 2rem;
+  line-height: 1;
+  color: var(--text-primary);
+  transition: all 0.2s ease;
+  z-index: 100;
+  opacity: 0.6;
+  padding: 0;
+}
+
+.game-nav-prev {
+  left: 0.75rem;
+}
+
+.game-nav-next {
+  right: 0.75rem;
+}
+
+.game-nav-btn:hover {
+  opacity: 1;
+  background: var(--bg-secondary);
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-50%) scale(1.1);
+}
+
+@media (max-width: 768px) {
+  .game-nav-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 1.5rem;
+    top: auto;
+    bottom: 1.5rem;
+    transform: none;
+  }
+
+  .game-nav-prev {
+    left: 1rem;
+  }
+
+  .game-nav-next {
+    right: 1rem;
+  }
+
+  .game-nav-btn:hover {
+    transform: scale(1.1);
+  }
+}
+
 .game-details-loading,
 .game-details-error {
   text-align: center;

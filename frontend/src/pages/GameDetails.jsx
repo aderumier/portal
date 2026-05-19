@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useCatalog } from '../context/CatalogContext'
 import { getMediaUrl } from '../utils/constants'
@@ -14,6 +14,7 @@ import './GameDetails.css'
 const GameDetails = () => {
   const { system, gameId } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const { isAdmin, isDownload, isFastDownload, isGuildMember } = useAuth()
   const { catalogType } = useCatalog()
   const [game, setGame] = useState(null)
@@ -22,6 +23,51 @@ const GameDetails = () => {
   const [selectedMedia, setSelectedMedia] = useState(null)
   const [showBugReportModal, setShowBugReportModal] = useState(false)
   const { addToQueue, handleTokenSelected, cancelTokenSelection, showTokenSelector, showOldClientWarning, setShowOldClientWarning } = useDownloadWithToken()
+
+  // Prev/next navigation from system game list
+  const fromSystemGames = location.state?.fromSystemGames
+  const navSystemId = location.state?.systemId
+  const [gameNavList, setGameNavList] = useState([])
+
+  useEffect(() => {
+    if (fromSystemGames && navSystemId) {
+      const stored = sessionStorage.getItem(`gameNavList_${navSystemId}`)
+      if (stored) {
+        try { setGameNavList(JSON.parse(stored)) } catch (e) { /* ignore */ }
+      }
+    }
+  }, [fromSystemGames, navSystemId])
+
+  const currentNavIndex = useMemo(() => {
+    if (!gameNavList.length) return -1
+    return gameNavList.findIndex(id => {
+      let normalized = id.replace(/^\.\//, '')
+      if (normalized.startsWith(`${system}/`)) normalized = normalized.substring(system.length + 1)
+      return normalized === gameId
+    })
+  }, [gameNavList, gameId, system])
+
+  const prevNavId = currentNavIndex > 0 ? gameNavList[currentNavIndex - 1] : null
+  const nextNavId = currentNavIndex >= 0 && currentNavIndex < gameNavList.length - 1 ? gameNavList[currentNavIndex + 1] : null
+
+  const navigateToNavGame = useCallback((id) => {
+    let gId = id.replace(/^\.\//, '')
+    if (gId.startsWith(`${system}/`)) gId = gId.substring(system.length + 1)
+    navigate(`/game/${system}/${encodeURIComponent(gId)}`, {
+      state: { fromSystemGames: true, systemId: navSystemId }
+    })
+  }, [navigate, system, navSystemId])
+
+  useEffect(() => {
+    if (!fromSystemGames) return
+    const handleKeyDown = (e) => {
+      if (e.key === 'ArrowLeft' && prevNavId) navigateToNavGame(prevNavId)
+      else if (e.key === 'ArrowRight' && nextNavId) navigateToNavGame(nextNavId)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [fromSystemGames, prevNavId, nextNavId, navigateToNavGame])
+
   const isLoadingRef = useRef(false)
   const lastLoadKeyRef = useRef(null)
   const hasLoadedRef = useRef(false)
@@ -167,6 +213,16 @@ const GameDetails = () => {
 
   return (
     <div className="game-details">
+      {prevNavId && (
+        <button className="game-nav-btn game-nav-prev" onClick={() => navigateToNavGame(prevNavId)} title="Previous game (←)">
+          ‹
+        </button>
+      )}
+      {nextNavId && (
+        <button className="game-nav-btn game-nav-next" onClick={() => navigateToNavGame(nextNavId)} title="Next game (→)">
+          ›
+        </button>
+      )}
       <div className="game-details-header">
         <button className="back-btn" onClick={() => navigate(-1)}>
           ← Back
