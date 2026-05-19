@@ -7,7 +7,7 @@ import client from '../../api/client'
 import './SystemsList.css'
 
 const TorrentIcon = () => (
-  <img src="/torrent-icon.png" width="14" height="14" alt="torrent" style={{ display: 'block' }} />
+  <img src="/qbittorrent-icon.svg" width="22" height="22" alt="torrent" style={{ display: 'block' }} />
 )
 
 const SystemsList = ({ systems }) => {
