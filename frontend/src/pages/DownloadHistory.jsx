@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { getMediaUrl } from '../utils/constants'
 import client from '../api/client'
 import './DownloadHistory.css'
 
@@ -85,19 +84,19 @@ const DownloadHistory = () => {
   }
 
   if (loading) {
-    return <div className="download-history-container">
+    return <div className="download-history-page">
       <div className="loading">Loading download history...</div>
     </div>
   }
 
   if (error) {
-    return <div className="download-history-container">
+    return <div className="download-history-page">
       <div className="error">{error}</div>
     </div>
   }
 
   return (
-    <div className="download-history-container">
+    <div className="download-history-page">
       <div className="download-history-header">
         <h1>Download History</h1>
         <p>View your completed, cancelled, and failed downloads</p>
@@ -109,72 +108,69 @@ const DownloadHistory = () => {
           <Link to="/downloads" className="btn-primary">Go to Downloads</Link>
         </div>
       ) : (
-        <div className="download-history-list">
-          <table className="history-table">
-            <thead>
-              <tr>
-                <th>Game</th>
-                <th>System</th>
-                <th>Version</th>
-                <th>Client</th>
-                <th>Status</th>
-                <th>Size</th>
-                <th>Date</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((item) => (
-                <tr key={item.id}>
-                  <td className="game-cell">
-                    {item.image && (
-                      <img
-                        src={getMediaUrl(item.image)}
-                        alt={item.game_name}
-                        className="game-thumbnail"
-                        onError={(e) => {
-                          e.target.style.display = 'none'
-                        }}
-                      />
-                    )}
-                    <div className="game-info">
-                      <span className="game-name">{item.game_name}</span>
-                    </div>
-                  </td>
-                  <td>{item.system_name || item.system}</td>
-                  <td>
-                    <span className="version-tag">{item.catalog_version || 'WIP'}</span>
-                  </td>
-                  <td>
-                    {item.client_version ? (
-                      <span className="client-version-tag">{item.client_version}</span>
-                    ) : (
-                      <span className="no-client-version">-</span>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`status-badge ${getStatusBadgeClass(item.status)}`}>
-                      {item.status}
-                    </span>
-                  </td>
-                  <td>
-                    {item.file_size ? formatBytes(item.file_size) : 'Unknown'}
-                  </td>
-                  <td>{formatDate(item.timestamp)}</td>
-                  <td>
-                    <button
-                      className="btn-log"
-                      onClick={() => fetchLog(item.download_id)}
-                      title="View download log"
-                    >
-                      View Log
-                    </button>
-                  </td>
+        <>
+          <div className="download-history-toolbar">
+            <span className="download-history-count">{history.length} entries loaded</span>
+          </div>
+
+          <div className="download-history-table-container">
+            <table className="history-table">
+              <thead>
+                <tr>
+                  <th>Game</th>
+                  <th>System</th>
+                  <th>Version</th>
+                  <th>Client</th>
+                  <th>Status</th>
+                  <th>Size</th>
+                  <th>Date</th>
+                  <th>Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {history.map((item) => (
+                  <tr key={item.id}>
+                    <td className="game-cell">
+                      <Link
+                        to={`/game/${item.system}/${encodeURIComponent(item.rompath)}`}
+                        className="game-link"
+                      >
+                        {item.game_name}
+                      </Link>
+                    </td>
+                    <td className="system-cell">{item.system_name || item.system}</td>
+                    <td>
+                      <span className="version-tag">{item.catalog_version || 'WIP'}</span>
+                    </td>
+                    <td>
+                      {item.client_version ? (
+                        <span className="client-version-tag">{item.client_version}</span>
+                      ) : (
+                        <span className="no-client-version">-</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`status-badge ${getStatusBadgeClass(item.status)}`}>
+                        {item.status}
+                      </span>
+                    </td>
+                    <td>{item.file_size ? formatBytes(item.file_size) : 'Unknown'}</td>
+                    <td className="date-cell">{formatDate(item.timestamp)}</td>
+                    <td>
+                      <button
+                        className="btn-log"
+                        onClick={() => fetchLog(item.download_id)}
+                        title="View download log"
+                      >
+                        View Log
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
 
       {/* Log Modal */}
