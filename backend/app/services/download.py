@@ -807,15 +807,14 @@ class DownloadService:
                 return False
 
             # Enforce maximum queue size per user
-            MAX_QUEUE_SIZE = 10
             user_queue_count = self.db.query(DownloadQueue).filter(
                 and_(
                     DownloadQueue.user_id == user_id,
                     DownloadQueue.status.in_(['user_queue', 'downloading'])
                 )
             ).count()
-            if user_queue_count >= MAX_QUEUE_SIZE:
-                logger.warning(f"User {user_id} has reached the maximum queue size of {MAX_QUEUE_SIZE}")
+            if user_queue_count >= settings.MAX_QUEUE_SIZE:
+                logger.warning(f"User {user_id} has reached the maximum queue size of {settings.MAX_QUEUE_SIZE}")
                 return False
 
             # Get file size if possible (game_id is rompath, need to prepend system)

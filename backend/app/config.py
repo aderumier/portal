@@ -50,6 +50,9 @@ class Settings:
     
     # Client version settings
     MIN_CLIENT_VERSION: str = os.getenv('MIN_CLIENT_VERSION', '0.1')
+
+    # Queue settings
+    MAX_QUEUE_SIZE: int = int(os.getenv('MAX_QUEUE_SIZE', '10'))  # Maximum games per user queue
     
     # Bandwidth management settings
     # GLOBAL_BANDWIDTH_LIMIT is in Mbits/s, converted to bytes/s internally

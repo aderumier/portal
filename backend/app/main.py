@@ -93,6 +93,32 @@ async def preload_game_data():
         import traceback
         logger.error(traceback.format_exc())
     
+    # Trim oversized user queues on startup
+    try:
+        from app.database import get_db, DownloadQueue
+        db = next(get_db())
+        try:
+            rows = db.query(DownloadQueue.user_id).filter(
+                DownloadQueue.status.in_(['user_queue', 'downloading'])
+            ).distinct().all()
+            for (uid,) in rows:
+                user_items = db.query(DownloadQueue).filter(
+                    and_(
+                        DownloadQueue.user_id == uid,
+                        DownloadQueue.status.in_(['user_queue', 'downloading'])
+                    )
+                ).order_by(DownloadQueue.id.asc()).all()
+                if len(user_items) > settings.MAX_QUEUE_SIZE:
+                    excess = user_items[settings.MAX_QUEUE_SIZE:]
+                    for item in excess:
+                        db.delete(item)
+                    db.commit()
+                    logger.info(f"Trimmed {len(excess)} excess queue items for user {uid}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Failed to trim oversized queues on startup: {e}")
+
     # Start background task for cleaning up stuck downloads
     asyncio.create_task(cleanup_stuck_downloads())
     

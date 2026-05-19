@@ -973,19 +973,16 @@ async def add_to_queue(
             )
     
     # Check queue size limit before attempting to add
-    MAX_QUEUE_SIZE = 10
-    from app.models import DownloadQueue
-    from sqlalchemy import and_
     user_queue_count = db.query(DownloadQueue).filter(
         and_(
             DownloadQueue.user_id == user_id,
             DownloadQueue.status.in_(['user_queue', 'downloading'])
         )
     ).count()
-    if user_queue_count >= MAX_QUEUE_SIZE:
+    if user_queue_count >= settings.MAX_QUEUE_SIZE:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Queue is full. Maximum {MAX_QUEUE_SIZE} games allowed in queue."
+            detail=f"Queue is full. Maximum {settings.MAX_QUEUE_SIZE} games allowed in queue."
         )
 
     success = await download_service.add_to_queue(user_id, game_id, system_id, user_has_fastdownload, token_id=token_id, catalog_version=catalog_version)
