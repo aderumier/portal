@@ -805,7 +805,19 @@ class DownloadService:
             if existing:
                 logger.warning(f"Game already in queue: {game_id} (status: {existing.status})")
                 return False
-            
+
+            # Enforce maximum queue size per user
+            MAX_QUEUE_SIZE = 10
+            user_queue_count = self.db.query(DownloadQueue).filter(
+                and_(
+                    DownloadQueue.user_id == user_id,
+                    DownloadQueue.status.in_(['user_queue', 'downloading'])
+                )
+            ).count()
+            if user_queue_count >= MAX_QUEUE_SIZE:
+                logger.warning(f"User {user_id} has reached the maximum queue size of {MAX_QUEUE_SIZE}")
+                return False
+
             # Get file size if possible (game_id is rompath, need to prepend system)
             # Handle both files and directories, including special file types (.m3u, .cue, .xbox360)
             # For unified keys (e.g., game.(ext1|ext2)), we need to resolve to actual path or check both
@@ -2704,6 +2716,14 @@ class DownloadService:
             user = self.db.query(User).filter(User.user_id == download.user_id).first()
             if user:
                 username = user.username
+
+            # Get token name (device)
+            device = None
+            if download.token_id:
+                from app.database import ApiToken
+                token = self.db.query(ApiToken).filter(ApiToken.id == download.token_id).first()
+                if token:
+                    device = token.name
             
             # Sync bytes_transferred from Redis if available (for accurate archive data and P2P statistics)
             # Progress reports update Redis but not the database, so we sync once when archiving
@@ -2746,7 +2766,8 @@ class DownloadService:
                 bytes_transferred=bytes_transferred,  # Use synced value
                 file_size=download.file_size,
                 catalog_version=download.catalog_version,  # Store catalog version (e.g., "v2-RGS_bbc") for Releases, None for WIP
-                client_version=download.client_version  # Store client version (e.g., "0.1")
+                client_version=download.client_version,  # Store client version (e.g., "0.1")
+                device=device  # Store token name (device)
             )
             
             self.db.add(archive_entry)
@@ -2822,15 +2843,15 @@ class DownloadService:
             logger.error(traceback.format_exc())
             return []
     
-    def get_all_download_history(self, limit: int = 100) -> List[Dict]:
+    def get_all_download_history(self, limit: int = 100, offset: int = 0) -> List[Dict]:
         """Get download history for all users from archive (admin only)."""
         try:
             from app.database import DownloadArchive
-            
+
             # Get all archived downloads, ordered by most recent first
             archive_items = self.db.query(DownloadArchive).order_by(
                 DownloadArchive.timestamp.desc()
-            ).limit(limit).all()
+            ).offset(offset).limit(limit).all()
             
             history = []
             for item in archive_items:
@@ -2868,18 +2889,19 @@ class DownloadService:
                     'timestamp': item.timestamp.isoformat() if item.timestamp else None,
                     'image': '',
                     'catalog_version': catalog_version,  # Include catalog version (e.g., "v2-RGS_bbc")
-                    'client_version': item.client_version  # Include client version (e.g., "0.1")
+                    'client_version': item.client_version,  # Include client version (e.g., "0.1")
+                    'device': item.device  # Include device (token name)
                 }
-                
+
                 # Add game image if available
                 if game:
                     history_item['image'] = self._normalize_media_path_for_frontend(
-                        game.get('image', ''), 
+                        game.get('image', ''),
                         game.get('system', '')
                     )
-                
+
                 history.append(history_item)
-            
+
             return history
         except Exception as e:
             logger.error(f"Error getting all download history: {e}")

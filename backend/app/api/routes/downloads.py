@@ -855,10 +855,11 @@ async def get_download_history(
 async def get_all_download_history(
     current_user: dict = Depends(require_admin_role),
     download_service: DownloadService = Depends(get_download_service),
-    limit: int = Query(100, ge=1, le=1000)
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
 ):
     """Get download history for all users (admin only)."""
-    history = download_service.get_all_download_history(limit)
+    history = download_service.get_all_download_history(limit, offset)
     return {"history": history}
 
 @router.post("/queue")
@@ -971,8 +972,24 @@ async def add_to_queue(
                 detail=f"No snapshot path found for system {system_id}"
             )
     
+    # Check queue size limit before attempting to add
+    MAX_QUEUE_SIZE = 10
+    from app.models import DownloadQueue
+    from sqlalchemy import and_
+    user_queue_count = db.query(DownloadQueue).filter(
+        and_(
+            DownloadQueue.user_id == user_id,
+            DownloadQueue.status.in_(['user_queue', 'downloading'])
+        )
+    ).count()
+    if user_queue_count >= MAX_QUEUE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Queue is full. Maximum {MAX_QUEUE_SIZE} games allowed in queue."
+        )
+
     success = await download_service.add_to_queue(user_id, game_id, system_id, user_has_fastdownload, token_id=token_id, catalog_version=catalog_version)
-    
+
     if not success:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
