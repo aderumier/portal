@@ -35,6 +35,41 @@
   gap: 1rem;
 }
 
+.systems-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.name-filter-container {
+  display: flex;
+  align-items: center;
+}
+
+.name-filter-input {
+  padding: 0.5rem 0.75rem;
+  height: 2.125rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  transition: all 0.2s ease;
+  min-width: 200px;
+}
+
+.name-filter-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg-primary);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.1);
+}
+
+.name-filter-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
 .hardware-filter-bar {
   position: sticky;
   top: 80px;
@@ -387,6 +422,14 @@
   .systems-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .systems-header-controls {
+    flex-wrap: wrap;
+  }
+
+  .name-filter-input {
+    min-width: 150px;
   }
 
   .hardware-filter-bar {
