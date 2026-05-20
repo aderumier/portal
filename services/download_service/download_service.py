@@ -2895,6 +2895,9 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
         logger.info(f"XML Content:\n{xml_content}")
         logger.info(f"=== End Batocera API Request Parameters ===")
         
+        # Flush files to disk before notifying Batocera API
+        os.sync()
+
         # Send POST request to Batocera API
         batocera_api_url = "http://127.0.0.1:1234"
         url = f"{batocera_api_url}/addgames/{batocera_system}"
@@ -2911,8 +2914,8 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
             logger.info(f"Successfully added/updated game in Batocera system '{batocera_system}' (system will reload on next access)")
             return True
         elif response.status_code == 204:
-            logger.info(f"No games were added/updated in Batocera system '{batocera_system}' (game may already exist)")
-            return True  # Not an error, just no changes
+            logger.info(f"No games were added/updated in Batocera system '{batocera_system}' (game may already exist), falling back to manual update")
+            return _update_gamelist_xml_manually(batocera_system, game_id, xml_content)
         elif response.status_code == 400:
             logger.error(f"Bad request when adding game to Batocera: {response.text}")
             return False
