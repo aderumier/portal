@@ -1214,7 +1214,8 @@ class DownloadService:
         try:
             from app.database import ApiToken, User
             from app.services.redis_downloads import RedisDownloadTracker
-            
+            from datetime import timedelta
+
             # Get all token IDs for this user
             user_tokens = self.db.query(ApiToken).filter(
                 ApiToken.user_id == user_id
@@ -1232,22 +1233,34 @@ class DownloadService:
                 DownloadQueue.status == 'downloading'
             ).all()
             
+            stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
+
             uploads = []
             for download in active_downloads:
                 # Get p2p_remote_token_id from Redis
                 p2p_remote_token_id = await RedisDownloadTracker.get_p2p_remote_token_id(download.id)
-                
+
                 if p2p_remote_token_id and p2p_remote_token_id in user_token_ids:
                     # This download is using one of user's tokens as source - it's an upload for this user
-                    
+
                     # Get download progress from Redis
                     redis_status = await RedisDownloadTracker.get_download_status(download.id)
                     bytes_transferred = 0
                     bandwidth_used = 0
-                    
+
                     if redis_status:
                         bytes_transferred = redis_status.get('bytes_transferred', 0)
                         bandwidth_used = redis_status.get('bytes_per_second', 0)
+
+                        # Skip uploads with no progress for >5 minutes — cleanup task will handle them
+                        last_progress_str = redis_status.get('last_progress_at')
+                        if last_progress_str:
+                            try:
+                                last_progress = datetime.fromisoformat(last_progress_str.replace('Z', '+00:00'))
+                                if last_progress < stale_threshold:
+                                    continue
+                            except Exception:
+                                pass
                     
                     # Get game info
                     catalog_version = download.catalog_version
@@ -1470,6 +1483,7 @@ class DownloadService:
         """Get all currently active transfers with live Redis bandwidth data (admin only)."""
         from app.services.redis_downloads import RedisDownloadTracker
         from app.database import ApiToken, User
+        from datetime import timedelta
 
         active_items = self.db.query(DownloadQueue).filter(
             DownloadQueue.status == 'downloading',
@@ -1489,9 +1503,29 @@ class DownloadService:
             for t in self.db.query(ApiToken).filter(ApiToken.id.in_(list(unique_token_ids))).all():
                 token_cache[t.id] = t.name
 
+        stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
+
         transfers = []
         for item in active_items:
             redis_status = await RedisDownloadTracker.get_download_status(item.id)
+
+            # Skip entries with no Redis data or stale last_progress_at (cleanup will handle them)
+            if redis_status:
+                last_progress_str = redis_status.get('last_progress_at')
+                if last_progress_str:
+                    try:
+                        last_progress = datetime.fromisoformat(last_progress_str.replace('Z', '+00:00'))
+                        if last_progress < stale_threshold:
+                            continue
+                    except Exception:
+                        pass
+            else:
+                # No Redis entry: check DB last_progress_at as fallback
+                last_prog = item.last_progress_at
+                if last_prog is not None:
+                    last_prog_utc = last_prog.replace(tzinfo=timezone.utc) if last_prog.tzinfo is None else last_prog
+                    if last_prog_utc < stale_threshold:
+                        continue
 
             bytes_transferred = item.bytes_transferred or 0
             bandwidth_used = item.bandwidth_used or 0

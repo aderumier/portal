@@ -53,6 +53,7 @@ class Settings:
 
     # Queue settings
     MAX_QUEUE_SIZE: int = int(os.getenv('MAX_QUEUE_SIZE', '10'))  # Maximum games per user queue
+    MAX_DOWNLOAD_AGE_HOURS: int = int(os.getenv('MAX_DOWNLOAD_AGE_HOURS', '4'))  # Cancel a stuck download if no progress for this many hours
     
     # Bandwidth management settings
     # GLOBAL_BANDWIDTH_LIMIT is in Mbits/s, converted to bytes/s internally
