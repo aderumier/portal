@@ -359,8 +359,8 @@ class P2PInventoryService:
                         logger.debug(f"P2P peer selection: Filtered out token_id={token_id} (both peer and requesting client have closed ports)")
                         continue
                     
-                    # Filter: Skip if file is large (>10MB) and peer has slow upload (<20 Mbits/s)
-                    if rom_file_size_bytes is not None and rom_file_size_bytes > 10485760:  # 10MB in bytes
+                    # Filter: Skip if file is large (>100MB) and peer has slow upload (<20 Mbits/s)
+                    if rom_file_size_bytes is not None and rom_file_size_bytes > 104857600:  # 100MB in bytes
                         if upload_bandwidth is None or upload_bandwidth < 20.0:
                             filtered_count += 1
                             logger.debug(f"P2P peer selection: Filtered out token_id={token_id} (slow upload: {upload_bandwidth} Mbits/s for large file: {rom_file_size_bytes} bytes)")
@@ -378,14 +378,40 @@ class P2PInventoryService:
                     logger.debug(f"Error processing candidate token_id {token_id}: {e}")
                     continue
             
-            # Sort by upload_bandwidth (descending, None values last - but we set None to 0.0 above)
-            eligible_peers.sort(key=lambda x: x['upload_bandwidth'], reverse=True)
-            
+            # Fetch upload/download totals for all eligible peers in one DB query
+            if eligible_peers:
+                try:
+                    from app.database import SessionLocal, ApiToken
+                    db = SessionLocal()
+                    try:
+                        peer_ids = [p['token_id'] for p in eligible_peers]
+                        tokens = db.query(ApiToken.id, ApiToken.p2p_total_upload_mb, ApiToken.p2p_total_download_mb) \
+                            .filter(ApiToken.id.in_(peer_ids)).all()
+                        ratio_map = {}
+                        for t in tokens:
+                            dl = t.p2p_total_download_mb or 0.0
+                            ul = t.p2p_total_upload_mb or 0.0
+                            ratio_map[t.id] = ul / dl if dl > 0 else 0.0
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.debug(f"P2P peer selection: Could not fetch upload/download ratios: {e}")
+                    ratio_map = {}
+
+                for peer in eligible_peers:
+                    peer['upload_download_ratio'] = ratio_map.get(peer['token_id'], 0.0)
+
+            # Sort by upload/download ratio ascending (peers that have uploaded least relative to
+            # their downloads are prioritised), then by upload_bandwidth descending as tiebreaker
+            eligible_peers.sort(key=lambda x: (x.get('upload_download_ratio', 0.0), -x['upload_bandwidth']))
+
             # Log selection summary
             logger.info(f"P2P peer selection for {system}/{rom_path}: {len(eligible_peers)} eligible peers found (filtered out {filtered_count} candidates)")
             if eligible_peers:
                 bandwidths = [p['upload_bandwidth'] for p in eligible_peers]
+                ratios = [p.get('upload_download_ratio', 0.0) for p in eligible_peers]
                 logger.info(f"P2P peer selection: Upload bandwidths - min={min(bandwidths):.2f}, max={max(bandwidths):.2f}, avg={sum(bandwidths)/len(bandwidths):.2f} Mbits/s")
+                logger.info(f"P2P peer selection: Upload/download ratios - min={min(ratios):.3f}, max={max(ratios):.3f}")
             
             # Include p2p_port_accessible in results (needed for client decision-making)
             peers_to_send = []
