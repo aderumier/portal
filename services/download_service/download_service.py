@@ -25,7 +25,7 @@ import random
 import struct
 
 # Client version
-CLIENT_VERSION = "0.10"
+CLIENT_VERSION = "0.11"
 
 # Configure stdout/stderr for Windows to handle non-ASCII characters gracefully
 # This prevents encoding errors when third-party libraries (like internetspeedtest) print emojis
@@ -938,6 +938,7 @@ SERVICE_ID = config.get('SERVICE_ID') or os.getenv('SERVICE_ID', socket.gethostn
 
 # P2P server configuration
 P2P_PORT = int(config.get('P2P_PORT') or os.getenv('P2P_PORT', '8765'))
+DISABLE_UPLOAD_BANDWIDTH_LIMIT = os.getenv('DISABLE_UPLOAD_BANDWIDTH_LIMIT', '0').strip() in ('1', 'true', 'yes')
 
 # Read API_TOKEN from environment variable or API_TOKEN.txt file
 # Priority: Environment Variable > File
@@ -3312,9 +3313,9 @@ def handle_reverse_p2p_upload(target_ip, target_port, target_path, system, rom_p
         connect_timeout = 5
         read_timeout = 60  # Per-chunk timeout (applies to final response)
         
-        # Compute per-upload speed limit: half of local upload bandwidth
+        # Compute per-upload speed limit: half of local upload bandwidth (disabled by DISABLE_UPLOAD_BANDWIDTH_LIMIT=1)
         bw_mbps = _local_upload_bandwidth_mbps
-        bytes_per_sec = (bw_mbps * 125000 / 2) if bw_mbps else None
+        bytes_per_sec = None if DISABLE_UPLOAD_BANDWIDTH_LIMIT else ((bw_mbps * 125000 / 2) if bw_mbps else None)
 
         # Create generator for streaming upload
         # requests.put with a generator automatically uses chunked transfer encoding
