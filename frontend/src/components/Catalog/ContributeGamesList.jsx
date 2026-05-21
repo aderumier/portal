@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { getMediaUrl } from '../../utils/constants'
@@ -6,6 +6,24 @@ import { getContributeGames } from '../../api/catalog'
 import client from '../../api/client'
 import './SystemGames.css'
 import './ContributeGamesList.css'
+
+// ── Pure helpers (module scope — stable references) ──────────────────────────
+
+const formatReleaseYear = (dateString) => {
+  if (!dateString) return null
+  const str = String(dateString)
+  if (/^\d{8}/.test(str)) return str.substring(0, 4)
+  const match = str.match(/^(\d{4})/)
+  return match ? match[1] : null
+}
+
+const getGameUrl = (game) => {
+  let gameId = game.id.replace(/^\.\//, '')
+  if (gameId.startsWith(`${game.system}/`)) gameId = gameId.substring(game.system.length + 1)
+  return `/game/${game.system}/${encodeURIComponent(gameId)}`
+}
+
+// ── Icons ─────────────────────────────────────────────────────────────────────
 
 const VideoIcon = () => (
   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -28,6 +46,8 @@ const UploadArrowIcon = () => (
     <path d="M2 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
 )
+
+// ── Sub-components (module scope — stable references) ─────────────────────────
 
 const Lightbox = ({ url, alt, onClose }) => {
   useEffect(() => {
@@ -143,6 +163,76 @@ const MediaThumbCell = ({ path, label, uploadProps, onLightboxOpen }) => {
   )
 }
 
+// ── Memoized table — skipped entirely when only lightbox state changes ─────────
+
+const ContributeGamesTable = React.memo(({
+  filteredGames, sortColumn, sortDirection, onSort, isAdmin, onLightboxOpen, onUploadSuccess,
+}) => {
+  const SortHeader = ({ column, label }) => (
+    <th className="sortable" onClick={() => onSort(column)} style={{ cursor: 'pointer' }}>
+      {label} {sortColumn === column && (sortDirection === 'asc' ? '↑' : '↓')}
+    </th>
+  )
+
+  return (
+    <div className="games-table-container">
+      <table className="games-table contribute-games-table">
+        <thead>
+          <tr>
+            <SortHeader column="name" label="Game Name" />
+            <SortHeader column="publisher" label="Publisher" />
+            <SortHeader column="releaseDate" label="Year" />
+            <SortHeader column="thumbnail" label="Thumbnail" />
+            <SortHeader column="boxart" label="Boxart" />
+            <SortHeader column="fanart" label="Fanart" />
+            <SortHeader column="marquee" label="Marquee" />
+            <SortHeader column="video" label="Video" />
+          </tr>
+        </thead>
+        <tbody>
+          {filteredGames.map((game) => {
+            const gameUrl = getGameUrl(game)
+            return (
+              <tr key={game.id} className="game-table-row">
+                <td className="game-name-cell">
+                  <Link to={gameUrl} state={{ catalogType: 'wip' }} className="game-name">
+                    {game.name}
+                  </Link>
+                </td>
+                <td className="game-publisher-cell">{game.publisher || '-'}</td>
+                <td className="game-releaseyear-cell">{formatReleaseYear(game.releasedate) || '-'}</td>
+
+                <MediaThumbCell path={game.thumbnail} label="Thumbnail" onLightboxOpen={onLightboxOpen} />
+                <MediaThumbCell path={game.boxart} label="Boxart" onLightboxOpen={onLightboxOpen} />
+                <MediaThumbCell
+                  path={game.fanart}
+                  label="Fanart"
+                  onLightboxOpen={onLightboxOpen}
+                  uploadProps={isAdmin ? { system: game.system, gameId: game.id, mediaType: 'fanart', label: 'Fanart', onUploadSuccess } : null}
+                />
+                <MediaThumbCell
+                  path={game.marquee}
+                  label="Marquee"
+                  onLightboxOpen={onLightboxOpen}
+                  uploadProps={isAdmin ? { system: game.system, gameId: game.id, mediaType: 'marquee', label: 'Marquee', onUploadSuccess } : null}
+                />
+                <td className="contribute-media-cell">
+                  {game.video
+                    ? <span className="contribute-video-icon" title="Video available"><VideoIcon /></span>
+                    : <MissingPlaceholder label="Video" />
+                  }
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+})
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 const ContributeGamesList = ({ systemId }) => {
   const [allGames, setAllGames] = useState([])
   const [loading, setLoading] = useState(true)
@@ -152,7 +242,7 @@ const ContributeGamesList = ({ systemId }) => {
   const [nameFilter, setNameFilter] = useState('')
   const [sortColumn, setSortColumn] = useState('name')
   const [sortDirection, setSortDirection] = useState('asc')
-  const [lightbox, setLightbox] = useState(null) // { url, alt }
+  const [lightbox, setLightbox] = useState(null)
   const { isAdmin } = useAuth()
 
   const openLightbox = useCallback((url, alt) => setLightbox({ url, alt }), [])
@@ -175,17 +265,7 @@ const ContributeGamesList = ({ systemId }) => {
 
   useEffect(() => { loadGames() }, [loadGames])
 
-  const letters = ['#', ...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i))]
-
-  const formatReleaseYear = (dateString) => {
-    if (!dateString) return null
-    const str = String(dateString)
-    if (/^\d{8}/.test(str)) return str.substring(0, 4)
-    const match = str.match(/^(\d{4})/)
-    return match ? match[1] : null
-  }
-
-  const handleSort = (column) => {
+  const handleSort = useCallback((column) => {
     setSortColumn(prev => {
       if (prev === column) {
         setSortDirection(dir => dir === 'asc' ? 'desc' : 'asc')
@@ -194,41 +274,35 @@ const ContributeGamesList = ({ systemId }) => {
       setSortDirection('asc')
       return column
     })
-  }
+  }, [])
 
-  const getGameUrl = (game) => {
-    let gameId = game.id.replace(/^\.\//, '')
-    if (gameId.startsWith(`${game.system}/`)) gameId = gameId.substring(game.system.length + 1)
-    return `/game/${game.system}/${encodeURIComponent(gameId)}`
-  }
-
-  const mediaExists = (val) => val ? 1 : 0
-
-  const filteredGames = allGames
-    .filter(game => {
-      if (selectedLetter) {
-        const firstChar = (game.name || '').trim()[0] || ''
-        if (selectedLetter === '#') { if (/[A-Za-z]/.test(firstChar)) return false }
-        else { if (firstChar.toUpperCase() !== selectedLetter) return false }
-      }
-      if (nameFilter && !(game.name || '').toLowerCase().includes(nameFilter.toLowerCase())) return false
-      return true
-    })
-    .sort((a, b) => {
-      let cmp = 0
-      if (sortColumn === 'name') cmp = (a.name || '').localeCompare(b.name || '')
-      else if (sortColumn === 'publisher') cmp = (a.publisher || '').localeCompare(b.publisher || '')
-      else if (sortColumn === 'releaseDate') cmp = (formatReleaseYear(a.releasedate) || '0').localeCompare(formatReleaseYear(b.releasedate) || '0')
-      else if (['thumbnail', 'boxart', 'fanart', 'marquee', 'video'].includes(sortColumn))
-        cmp = mediaExists(a[sortColumn]) - mediaExists(b[sortColumn])
-      return sortDirection === 'desc' ? -cmp : cmp
-    })
-
-  const SortHeader = ({ column, label }) => (
-    <th className="sortable" onClick={() => handleSort(column)} style={{ cursor: 'pointer' }}>
-      {label} {sortColumn === column && (sortDirection === 'asc' ? '↑' : '↓')}
-    </th>
+  const letters = useMemo(
+    () => ['#', ...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i))],
+    []
   )
+
+  // lightbox is intentionally NOT in deps — changing it must not recompute the list
+  const filteredGames = useMemo(() => {
+    const mediaFields = ['thumbnail', 'boxart', 'fanart', 'marquee', 'video']
+    return allGames
+      .filter(game => {
+        if (selectedLetter) {
+          const firstChar = (game.name || '').trim()[0] || ''
+          if (selectedLetter === '#') { if (/[A-Za-z]/.test(firstChar)) return false }
+          else { if (firstChar.toUpperCase() !== selectedLetter) return false }
+        }
+        if (nameFilter && !(game.name || '').toLowerCase().includes(nameFilter.toLowerCase())) return false
+        return true
+      })
+      .sort((a, b) => {
+        let cmp = 0
+        if (sortColumn === 'name') cmp = (a.name || '').localeCompare(b.name || '')
+        else if (sortColumn === 'publisher') cmp = (a.publisher || '').localeCompare(b.publisher || '')
+        else if (sortColumn === 'releaseDate') cmp = (formatReleaseYear(a.releasedate) || '0').localeCompare(formatReleaseYear(b.releasedate) || '0')
+        else if (mediaFields.includes(sortColumn)) cmp = (a[sortColumn] ? 1 : 0) - (b[sortColumn] ? 1 : 0)
+        return sortDirection === 'desc' ? -cmp : cmp
+      })
+  }, [allGames, selectedLetter, nameFilter, sortColumn, sortDirection])
 
   if (loading && allGames.length === 0) return <div className="loading">Loading games...</div>
   if (error && allGames.length === 0) return <div className="error">{error}</div>
@@ -273,61 +347,15 @@ const ContributeGamesList = ({ systemId }) => {
       {filteredGames.length === 0 ? (
         <div className="no-games">No games found with missing medias</div>
       ) : (
-        <div className="games-table-container">
-          <table className="games-table contribute-games-table">
-            <thead>
-              <tr>
-                <SortHeader column="name" label="Game Name" />
-                <SortHeader column="publisher" label="Publisher" />
-                <SortHeader column="releaseDate" label="Year" />
-                <SortHeader column="thumbnail" label="Thumbnail" />
-                <SortHeader column="boxart" label="Boxart" />
-                <SortHeader column="fanart" label="Fanart" />
-                <SortHeader column="marquee" label="Marquee" />
-                <SortHeader column="video" label="Video" />
-              </tr>
-            </thead>
-            <tbody>
-              {filteredGames.map((game) => {
-                const gameUrl = getGameUrl(game)
-                return (
-                  <tr key={game.id} className="game-table-row">
-                    <td className="game-name-cell">
-                      <Link to={gameUrl} state={{ catalogType: 'wip' }} className="game-name">
-                        {game.name}
-                      </Link>
-                    </td>
-                    <td className="game-publisher-cell">{game.publisher || '-'}</td>
-                    <td className="game-releaseyear-cell">{formatReleaseYear(game.releasedate) || '-'}</td>
-
-                    <MediaThumbCell path={game.thumbnail} label="Thumbnail" onLightboxOpen={openLightbox} />
-                    <MediaThumbCell path={game.boxart} label="Boxart" onLightboxOpen={openLightbox} />
-
-                    <MediaThumbCell
-                      path={game.fanart}
-                      label="Fanart"
-                      onLightboxOpen={openLightbox}
-                      uploadProps={isAdmin ? { system: game.system, gameId: game.id, mediaType: 'fanart', label: 'Fanart', onUploadSuccess: loadGames } : null}
-                    />
-                    <MediaThumbCell
-                      path={game.marquee}
-                      label="Marquee"
-                      onLightboxOpen={openLightbox}
-                      uploadProps={isAdmin ? { system: game.system, gameId: game.id, mediaType: 'marquee', label: 'Marquee', onUploadSuccess: loadGames } : null}
-                    />
-
-                    <td className="contribute-media-cell">
-                      {game.video
-                        ? <span className="contribute-video-icon" title="Video available"><VideoIcon /></span>
-                        : <MissingPlaceholder label="Video" />
-                      }
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        <ContributeGamesTable
+          filteredGames={filteredGames}
+          sortColumn={sortColumn}
+          sortDirection={sortDirection}
+          onSort={handleSort}
+          isAdmin={isAdmin}
+          onLightboxOpen={openLightbox}
+          onUploadSuccess={loadGames}
+        />
       )}
     </div>
   )
