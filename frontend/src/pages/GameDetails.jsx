@@ -27,6 +27,7 @@ const GameDetails = () => {
   // Prev/next navigation from system game list
   const fromSystemGames = location.state?.fromSystemGames
   const navSystemId = location.state?.systemId
+  const preferredMediaType = location.state?.preferredMediaType
   const [gameNavList, setGameNavList] = useState([])
 
   useEffect(() => {
@@ -54,9 +55,9 @@ const GameDetails = () => {
     let gId = id.replace(/^\.\//, '')
     if (gId.startsWith(`${system}/`)) gId = gId.substring(system.length + 1)
     navigate(`/game/${system}/${encodeURIComponent(gId)}`, {
-      state: { fromSystemGames: true, systemId: navSystemId }
+      state: { fromSystemGames: true, systemId: navSystemId, preferredMediaType: selectedMedia?.type }
     })
-  }, [navigate, system, navSystemId])
+  }, [navigate, system, navSystemId, selectedMedia])
 
   useEffect(() => {
     if (!fromSystemGames) return
@@ -96,8 +97,10 @@ const GameDetails = () => {
       setGame(gameData)
       hasLoadedRef.current = true
 
-      // Set initial selected media (prefer boxart, then thumbnail, then image)
-      if (gameData.boxart) {
+      // Set initial selected media: use preferred type from nav if available, else boxart → thumbnail → image
+      if (preferredMediaType && gameData[preferredMediaType]) {
+        setSelectedMedia({ type: preferredMediaType, url: getMediaUrl(gameData[preferredMediaType]) })
+      } else if (gameData.boxart) {
         setSelectedMedia({ type: 'boxart', url: getMediaUrl(gameData.boxart) })
       } else if (gameData.thumbnail) {
         setSelectedMedia({ type: 'thumbnail', url: getMediaUrl(gameData.thumbnail) })
@@ -116,7 +119,7 @@ const GameDetails = () => {
       setLoading(false)
       isLoadingRef.current = false
     }
-  }, [system, gameId, catalogType])
+  }, [system, gameId, catalogType, preferredMediaType])
 
   useEffect(() => {
     // Reset state when dependencies change to a different game
