@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create volume mount point for ROMs and saves
-RUN mkdir -p /userdata/roms /userdata/saves
+RUN mkdir -p /userdata/roms /userdata/saves /userdata/system/logs
 
 # Set default environment variables
 ENV ROMS_PATH=/userdata/roms

@@ -3,7 +3,6 @@ import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useCatalog } from '../context/CatalogContext'
 import { getMediaUrl } from '../utils/constants'
-import MediaUpload from '../components/Media/MediaUpload'
 import TokenSelectorDropdown from '../components/TokenSelector/TokenSelectorDropdown'
 import WarningModal from '../components/WarningModal/WarningModal'
 import BugReportModal from '../components/BugReport/BugReportModal'
@@ -15,7 +14,7 @@ const GameDetails = () => {
   const { system, gameId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
-  const { isAdmin, isDownload, isFastDownload, isGuildMember } = useAuth()
+  const { isDownload, isFastDownload, isGuildMember } = useAuth()
   const { catalogType } = useCatalog()
   const [game, setGame] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -194,11 +193,6 @@ const GameDetails = () => {
       }))
   }
 
-  const handleUploadSuccess = () => {
-    // Optionally reload game details or show a message
-    // For now, just show success in the upload component
-  }
-
   if (loading) {
     return <div className="game-details-loading">Loading game details...</div>
   }
@@ -261,66 +255,17 @@ const GameDetails = () => {
             {mediaItems.length > 0 && (
               <div className="media-thumbnails">
                 {mediaItems.map((media) => {
-                  // Only fanart and marquee can be uploaded (for admins), and only in WIP catalog
-                  const canUpload = isAdmin && catalogType !== 'releases' && (media.type === 'fanart' || media.type === 'marquee')
-
-                  if (media.hasMedia && !canUpload) {
-                    // Regular media thumbnail (no upload)
-                    return (
-                      <div
-                        key={media.type}
-                        className={`media-thumbnail ${selectedMedia?.type === media.type ? 'active' : ''}`}
-                        onClick={() => setSelectedMedia({ type: media.type, url: media.url })}
-                      >
-                        <img src={media.url} alt={media.label} />
-                        <span className="media-label">{media.label}</span>
-                      </div>
-                    )
-                  } else if (media.hasMedia && canUpload) {
-                    // Media with upload option (fanart/marquee for admins)
-                    return (
-                      <div
-                        key={media.type}
-                        className={`media-thumbnail ${selectedMedia?.type === media.type ? 'active' : ''} with-upload`}
-                      >
-                        <div
-                          className="media-thumbnail-image"
-                          onClick={() => setSelectedMedia({ type: media.type, url: media.url })}
-                        >
-                          <img src={media.url} alt={media.label} />
-                        </div>
-                        <span className="media-label">{media.label}</span>
-                        <MediaUpload
-                          system={game.system}
-                          gameId={game.id}
-                          mediaType={media.type}
-                          label={media.label}
-                          onUploadSuccess={() => {
-                            handleUploadSuccess()
-                            loadGameDetails() // Reload to show new image
-                          }}
-                          compact={true}
-                        />
-                      </div>
-                    )
-                  } else if (canUpload) {
-                    // No media, but can upload (fanart/marquee for admins)
-                    return (
-                      <MediaUpload
-                        key={media.type}
-                        system={game.system}
-                        gameId={game.id}
-                        mediaType={media.type}
-                        label={media.label}
-                        onUploadSuccess={() => {
-                          handleUploadSuccess()
-                          loadGameDetails() // Reload to show new image
-                        }}
-                      />
-                    )
-                  }
-                  // For other media types without media, don't show anything
-                  return null
+                  if (!media.hasMedia) return null
+                  return (
+                    <div
+                      key={media.type}
+                      className={`media-thumbnail ${selectedMedia?.type === media.type ? 'active' : ''}`}
+                      onClick={() => setSelectedMedia({ type: media.type, url: media.url })}
+                    >
+                      <img src={media.url} alt={media.label} />
+                      <span className="media-label">{media.label}</span>
+                    </div>
+                  )
                 })}
               </div>
             )}

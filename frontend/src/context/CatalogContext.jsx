@@ -15,6 +15,7 @@ export const CatalogProvider = ({ children }) => {
   const [catalogType, setCatalogTypeState] = useState('releases')
   const [canViewReleases, setCanViewReleases] = useState(true)
   const [canViewWip, setCanViewWip] = useState(true)
+  const [canContribute, setCanContribute] = useState(false)
   const [loading, setLoading] = useState(true)
 
   // Load preference from API on mount
@@ -26,6 +27,7 @@ export const CatalogProvider = ({ children }) => {
         const viewWip = response.data.can_view_wip !== false
         setCanViewReleases(viewReleases)
         setCanViewWip(viewWip)
+        setCanContribute(response.data.can_contribute === true)
         setCatalogTypeState(response.data.catalog_type || 'releases')
       } catch (error) {
         console.error('Error loading catalog preference:', error)
@@ -63,6 +65,7 @@ export const CatalogProvider = ({ children }) => {
     setCatalogType,
     canViewReleases,
     canViewWip,
+    canContribute,
     // Legacy alias kept for any remaining consumers
     releasesEnabled: canViewReleases,
     loading

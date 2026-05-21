@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Outlet, Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useCatalog } from '../../context/CatalogContext'
+
 import './Layout.css'
 import HeaderSearch from './HeaderSearch'
 import CatalogTypeSelector from './CatalogTypeSelector'
@@ -9,6 +10,7 @@ import { refreshCatalog } from '../../api/catalog'
 
 const Layout = () => {
   const { user, isAuthenticated, isAdmin, isDownload, isFastDownload, logout } = useAuth()
+  const { canContribute } = useCatalog()
   const navigate = useNavigate()
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [playlistMenuOpen, setPlaylistMenuOpen] = useState(false)
@@ -72,6 +74,7 @@ const Layout = () => {
             {isAuthenticated ? (
               <>
                 <Link to="/systems">Systems</Link>
+                {canContribute && <Link to="/contribute">Contribute</Link>}
 
                 <div className="playlist-menu" ref={playlistMenuRef}>
                   <button

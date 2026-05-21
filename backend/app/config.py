@@ -31,6 +31,7 @@ class Settings:
     DISCORD_FASTDOWNLOAD_ROLE: str = os.getenv('DISCORD_FASTDOWNLOAD_ROLE', 'fastdownload')
     RELEASE_CATALOG_VIEWERS: List[str] = _parse_csv_env(os.getenv('RELEASE_CATALOG_VIEWERS', ''))
     WIP_CATALOG_VIEWERS: List[str] = _parse_csv_env(os.getenv('WIP_CATALOG_VIEWERS', ''))
+    MEDIA_CONTRIBUTORS: List[str] = _parse_csv_env(os.getenv('MEDIA_CONTRIBUTERS', ''))
     
     # Application settings
     GAMES_PATH: str = os.getenv('GAMES_PATH', '')

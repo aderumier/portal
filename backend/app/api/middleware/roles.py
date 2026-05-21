@@ -147,6 +147,76 @@ async def require_admin_role(
     """Require user to have the admin role."""
     return await require_role(request, settings.DISCORD_ADMIN_ROLE, current_user)
 
+async def require_media_contributor(
+    request: Request,
+    current_user: Optional[dict] = Depends(get_current_user)
+) -> dict:
+    """Require media contributor access.
+
+    If MEDIA_CONTRIBUTERS is empty, any authenticated guild member is allowed.
+    If non-empty, the user must have at least one of the configured Discord roles.
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+
+    auth_method = getattr(request.state, 'auth_method', None)
+    if auth_method == 'api_token':
+        return current_user
+
+    if not current_user.get('is_guild_member', False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Guild membership required"
+        )
+
+    allowed_roles = settings.MEDIA_CONTRIBUTORS
+    if not allowed_roles:
+        return current_user
+
+    if current_user.get('is_admin', False):
+        return current_user
+
+    cached_roles = current_user.get('media_contributor_roles', {})
+    if any(cached_roles.get(role_name, False) for role_name in allowed_roles):
+        return current_user
+
+    user_id = current_user.get('id')
+    logger.info(f"Checking media contributor access for user {user_id}: roles={allowed_roles}")
+
+    discord_service = None
+    try:
+        discord_service = DiscordService()
+        role_results = await discord_service.check_roles(user_id, allowed_roles)
+    except Exception as e:
+        logger.error(f"Error checking media contributor roles: {e}", exc_info=True)
+        role_results = {}
+    finally:
+        if discord_service:
+            await discord_service.close()
+
+    has_access = any(role_results.get(role_name, False) for role_name in allowed_roles)
+
+    if role_results and 'user' in request.session:
+        cached = request.session['user'].setdefault('media_contributor_roles', {})
+        cached.update(role_results)
+        request.session['user']['is_media_contributor'] = has_access
+        current_user['is_media_contributor'] = has_access
+        request.session.modified = True
+        current_user['media_contributor_roles'] = cached
+
+    if not has_access:
+        logger.warning(f"User {user_id} does not have any media contributor role: {allowed_roles}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Media contributor role required"
+        )
+
+    return current_user
+
+
 def get_catalog_viewer_roles(catalog_type: str) -> list:
     """Return configured viewer roles for the requested catalog."""
     if catalog_type == 'wip':

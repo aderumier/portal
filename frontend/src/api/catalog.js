@@ -57,6 +57,27 @@ export const getTopDownloads = async (limit = 100, catalogType = 'releases', sor
   return response.data
 }
 
+export const getContributeSystems = async () => {
+  const response = await client.get('/api/catalog/contribute/systems')
+  const data = response.data
+  if (data != null && data.media_version != null) {
+    setMediaVersion(data.media_version)
+  }
+  return data
+}
+
+export const getContributeGames = async (system) => {
+  const v = getMediaVersion()
+  const response = await client.get(`/api/catalog/contribute/games/${system}`, {
+    params: { v: v || undefined }
+  })
+  const data = response.data
+  if (data != null && data.media_version != null) {
+    setMediaVersion(data.media_version)
+  }
+  return data
+}
+
 export const getTopSystems = async (limit = 100, catalogType = 'releases', sortBy = 'download_count') => {
   const response = await client.get('/api/catalog/systems/top/downloads', {
     params: { limit, catalog_type: catalogType, sort_by: sortBy }

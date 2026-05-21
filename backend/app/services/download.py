@@ -463,6 +463,34 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
             except Exception as e:
                 logger.error(f"{system}: Error scanning directory {directory_name}: {e}", exc_info=True)
     
+    # Check for singe system: include framework directories alongside any singe game file
+    if system and system.lower() == 'singe':
+        source_dir = os.path.dirname(file_path)
+        framework_dirs = ['Framework', 'FrameworkCustom_1', 'FrameworkKimmy', 'KimmyScript']
+        files = [source_filename]
+
+        from app.config import settings as _cfg
+        for dir_name in framework_dirs:
+            dir_full_path = os.path.join(source_dir, dir_name)
+            if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                try:
+                    if os.path.commonpath([os.path.abspath(_cfg.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(_cfg.GAMES_PATH):
+                        for root, _, filenames in os.walk(dir_full_path):
+                            for fname in filenames:
+                                fpath = os.path.join(root, fname)
+                                rel = os.path.relpath(fpath, source_dir).replace('\\', '/')
+                                files.append(rel)
+                except Exception as e:
+                    logger.error(f"singe: Error scanning framework dir {dir_name}: {e}", exc_info=True)
+
+        if len(files) > 1:
+            logger.info(f"singe: {source_filename} — including {len(files) - 1} framework files")
+            return {
+                'files': files,
+                'base_path_type': 'file',
+                'source_file': source_filename
+            }
+
     return None
 
 class DownloadService:

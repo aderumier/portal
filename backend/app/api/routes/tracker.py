@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_TORRENT_IPS = 4
-TORRENT_IP_TTL = 7 * 24 * 3600  # 7 days in seconds
+TORRENT_IP_TTL = 6 * 3600  # 6 hours in seconds
 
 
 def parse_locked_ips(raw: str) -> dict[str, int]:
@@ -58,7 +58,7 @@ def check_passkey(
     _: None = Depends(_require_tracker_secret),
 ):
     """
-    Validate a passkey and enforce a per-user IP allowlist (max 4 IPs, 7-day TTL).
+    Validate a passkey and enforce a per-user IP allowlist (max 4 IPs, 6-hour TTL).
 
     - Unknown passkey → 403
     - Known IP → refresh its timestamp, allow
@@ -72,7 +72,7 @@ def check_passkey(
     now = int(time.time())
     locked = parse_locked_ips(user.torrent_locked_ip)
 
-    # Drop slots that haven't announced in 7 days
+    # Drop slots that haven't announced in 6 hours
     locked = {ip: ts for ip, ts in locked.items() if now - ts < TORRENT_IP_TTL}
 
     if req.ip in locked:

@@ -7,7 +7,7 @@ from app.database import get_db, System, User
 from app.services.game import GameService
 from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.guild import require_guild_member
-from app.api.middleware.roles import get_catalog_viewer_roles, require_admin_role, require_catalog_viewer
+from app.api.middleware.roles import get_catalog_viewer_roles, require_admin_role, require_catalog_viewer, require_media_contributor
 from app.services import torrent as torrent_service
 from app.config import settings
 import logging
@@ -314,11 +314,20 @@ async def get_catalog_preference(
         catalog_type = 'wip' if can_view_wip else 'releases'
     elif catalog_type == 'wip' and not can_view_wip:
         catalog_type = 'releases' if can_view_releases else 'wip'
-    
+
+    contributor_roles = settings.MEDIA_CONTRIBUTORS
+    can_contribute = (
+        current_user.get('is_admin', False)
+        or not contributor_roles
+        or current_user.get('is_media_contributor', False)
+        or any(current_user.get('media_contributor_roles', {}).get(r, False) for r in contributor_roles)
+    )
+
     return {
         "catalog_type": catalog_type,
         "can_view_releases": can_view_releases,
-        "can_view_wip": can_view_wip
+        "can_view_wip": can_view_wip,
+        "can_contribute": can_contribute,
     }
 
 @router.put("/preference")
@@ -393,6 +402,119 @@ async def download_system_torrent(
         media_type="application/x-bittorrent",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
+
+
+@router.get("/contribute/systems")
+async def get_contribute_systems(
+    request: Request,
+    current_user: dict = Depends(require_media_contributor),
+    db: Session = Depends(get_db),
+    game_service: GameService = Depends(get_game_service)
+):
+    """Get systems with count of games missing fanart, marquee, or video (WIP catalog, any logged-in user)."""
+    if not game_service._gamelists_loaded:
+        game_service.preload_all_gamelists()
+
+    catalog = game_service.catalog_wip
+    gamelist_dates = game_service.system_gamelist_date_wip
+
+    db_systems = db.query(System).filter(System.enabled == True).order_by(System.name).all()
+
+    systems = []
+    for db_system in db_systems:
+        if db_system.id not in catalog:
+            continue
+        system_catalog = catalog[db_system.id]
+        missing_count = 0
+        for game_data in system_catalog.values():
+            fanart = game_data.get('fanart', '')
+            marquee = game_data.get('marquee', '')
+            video = game_data.get('video', '')
+            if not fanart or not marquee or not video:
+                missing_count += 1
+        if missing_count == 0:
+            continue
+        display_name = db_system.fullname or db_system.name
+        systems.append({
+            'id': db_system.id,
+            'name': display_name,
+            'missingMediaCount': missing_count,
+            'hardware': db_system.hardware or 'unknown',
+            'manufacturer': db_system.manufacturer or 'Unknown',
+            'release': db_system.release or 'Unknown',
+            'gamelistDate': gamelist_dates.get(db_system.id),
+        })
+
+    media_version = int(game_service._catalog_timestamp) if game_service._catalog_timestamp else 0
+    return ORJSONResponse(content={"systems": systems, "media_version": media_version})
+
+
+@router.get("/contribute/games/{system}")
+async def get_contribute_games(
+    system: str,
+    current_user: dict = Depends(require_media_contributor),
+    game_service: GameService = Depends(get_game_service),
+    db: Session = Depends(get_db)
+):
+    """Get games with missing fanart, marquee, or video for a system (WIP catalog, any logged-in user)."""
+    if not game_service._gamelists_loaded:
+        game_service.preload_all_gamelists()
+
+    catalog = game_service.catalog_wip
+    catalog_sorted_keys = game_service.catalog_sorted_keys_wip
+
+    if system not in catalog:
+        return ORJSONResponse(content={"games": []})
+
+    system_catalog = catalog[system]
+    sorted_rompaths = catalog_sorted_keys.get(system, [])
+
+    fullname = game_service.system_fullname.get(system)
+    system_name = fullname if fullname else game_service.get_system_name(system)
+
+    def _norm(path):
+        if not path:
+            return ''
+        p = path.lstrip('./')
+        if not p.startswith(f"{system}/"):
+            return f"{system}/{p}"
+        return p
+
+    games = []
+    for rompath in sorted_rompaths:
+        if rompath not in system_catalog:
+            continue
+        game_data = system_catalog[rompath]
+        fanart = game_data.get('fanart', '')
+        marquee = game_data.get('marquee', '')
+        video = game_data.get('video', '')
+        if fanart and marquee and video:
+            continue
+
+        catalog_image = game_data.get('catalog_image', '')
+        if catalog_image:
+            clean = catalog_image.lstrip('./')
+            if not clean.startswith(f"{system}/"):
+                catalog_image = f"{system}/{clean}"
+            else:
+                catalog_image = clean
+
+        games.append({
+            'id': rompath,
+            'name': game_data.get('name', ''),
+            'system': system,
+            'systemName': system_name,
+            'publisher': game_data.get('publisher', ''),
+            'releasedate': game_data.get('releasedate', ''),
+            'image': catalog_image,
+            'fanart': _norm(fanart),
+            'marquee': _norm(marquee),
+            'video': _norm(video),
+            'catalog_image': catalog_image,
+        })
+
+    media_version = int(game_service._catalog_timestamp) if game_service._catalog_timestamp else 0
+    return ORJSONResponse(content={"games": games, "media_version": media_version})
 
 
 @router.get("/systems/top/downloads")

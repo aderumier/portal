@@ -32,6 +32,8 @@ import Collections from './pages/Collections'
 import Collection from './pages/Collection'
 import CurrentTransfers from './pages/CurrentTransfers'
 import TorrentTrackerStats from './pages/TorrentTrackerStats'
+import Contribute from './pages/Contribute'
+import ContributeSystem from './pages/ContributeSystem'
 
 function App() {
   return (
@@ -45,6 +47,8 @@ function App() {
               <Route index element={<Home />} />
               <Route path="systems" element={<ProtectedRoute><Systems /></ProtectedRoute>} />
               <Route path="system/:id" element={<ProtectedRoute><System /></ProtectedRoute>} />
+              <Route path="contribute" element={<ProtectedRoute requireContribute><Contribute /></ProtectedRoute>} />
+              <Route path="contribute/system/:id" element={<ProtectedRoute requireContribute><ContributeSystem /></ProtectedRoute>} />
               <Route path="game/:system/:gameId" element={<ProtectedRoute><GameDetails /></ProtectedRoute>} />
               <Route path="playlist/collections" element={<ProtectedRoute><Collections /></ProtectedRoute>} />
               <Route path="collection/:id" element={<ProtectedRoute><Collection /></ProtectedRoute>} />

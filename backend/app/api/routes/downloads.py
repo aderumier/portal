@@ -5,7 +5,7 @@ from starlette.requests import Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
-from app.database import get_db, DownloadQueue, User, ApiToken
+from app.database import get_db, DownloadQueue, User, ApiToken, System
 from app.services.download import DownloadService
 from app.services.websocket_manager import get_websocket_manager
 from app.api.middleware.api_token import require_auth_user
@@ -493,7 +493,34 @@ async def discover_download_files(
                         'relative_path': rel_path,
                         'size': os.path.getsize(file_full_path)
                     })
-    
+
+        # Singe system: append shared framework directories, sent to the singe system root
+        if system and system.lower() == 'singe':
+            db_system = db.query(System).filter(System.id == system).first()
+            is_windows = platform and platform.lower() == 'windows'
+            target_system = ((db_system.retrobat_system if is_windows else db_system.batocera_system) if db_system else system) or system
+            singe_root = os.path.join(settings.GAMES_PATH, system)
+            for dir_name in ['Framework', 'FrameworkCustom_1', 'FrameworkKimmy', 'KimmyScript']:
+                dir_full_path = os.path.join(singe_root, dir_name)
+                if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                    try:
+                        if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                            for root, _, filenames in os.walk(dir_full_path):
+                                for filename in filenames:
+                                    file_full_path = os.path.join(root, filename)
+                                    rel_from_dir = os.path.relpath(file_full_path, dir_full_path).replace('\\', '/')
+                                    dest_rom_path = f'{dir_name}/{rel_from_dir}'
+                                    if requested_files is None or dest_rom_path in requested_files:
+                                        all_files_list.append({
+                                            'source_path': file_full_path,
+                                            'relative_path': dest_rom_path,
+                                            'destination_rom_path': dest_rom_path,
+                                            'destination_system': target_system,
+                                            'size': os.path.getsize(file_full_path)
+                                        })
+                    except Exception as e:
+                        logger.error(f"singe: Error scanning framework dir {dir_name}: {e}", exc_info=True)
+
     return all_files_list, system, resolved_game_id
 
 async def stream_archive_via_websocket(
@@ -2623,7 +2650,32 @@ async def download_file(
                         'relative_path': rel_path.replace('\\', '/'),  # Normalize path separators
                         'size': file_size
                     })
-            
+
+            # Singe system: append shared framework directories to the same download
+            if system and system.lower() == 'singe':
+                db_system = db.query(System).filter(System.id == system).first()
+                is_windows = platform and platform.lower() == 'windows'
+                target_system = ((db_system.retrobat_system if is_windows else db_system.batocera_system) if db_system else system) or system
+                singe_root = os.path.join(settings.GAMES_PATH, system)
+                for dir_name in ['Framework', 'FrameworkCustom_1', 'FrameworkKimmy', 'KimmyScript']:
+                    dir_full_path = os.path.join(singe_root, dir_name)
+                    if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                        try:
+                            if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                for fw_root, _, fw_files in os.walk(dir_full_path):
+                                    for fw_file in fw_files:
+                                        fw_path = os.path.join(fw_root, fw_file)
+                                        rel_from_dir = os.path.relpath(fw_path, dir_full_path).replace('\\', '/')
+                                        dest_rom_path = f'{dir_name}/{rel_from_dir}'
+                                        files_list.append({
+                                            'relative_path': dest_rom_path,
+                                            'destination_rom_path': dest_rom_path,
+                                            'destination_system': target_system,
+                                            'size': os.path.getsize(fw_path)
+                                        })
+                        except Exception as e:
+                            logger.error(f"singe: Error scanning framework dir {dir_name}: {e}", exc_info=True)
+
             return ORJSONResponse({
                 'is_directory': True,
                 'files': files_list,

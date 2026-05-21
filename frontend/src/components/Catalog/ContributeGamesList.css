@@ -1,0 +1,52 @@
+.contribute-breadcrumb {
+  margin-bottom: 0.5rem;
+}
+
+.contribute-back-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.9rem;
+  transition: color 0.2s;
+}
+
+.contribute-back-link:hover {
+  color: var(--accent);
+}
+
+.contribute-games-table .contribute-media-cell {
+  text-align: center;
+  vertical-align: middle;
+  min-width: 90px;
+  padding: 0.4rem 0.5rem;
+}
+
+.contribute-media-thumb {
+  width: 80px;
+  height: 60px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  display: block;
+  margin: 0 auto;
+}
+
+.contribute-media-missing {
+  background: rgba(255, 80, 80, 0.06);
+}
+
+.media-none {
+  color: var(--text-secondary);
+  opacity: 0.5;
+  font-size: 0.85rem;
+}
+
+.contribute-video-icon {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  color: var(--accent);
+}
+
+.contribute-games-table th {
+  white-space: nowrap;
+}

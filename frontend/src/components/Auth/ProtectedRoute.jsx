@@ -1,11 +1,13 @@
 import React from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
+import { useCatalog } from '../../context/CatalogContext'
 
-const ProtectedRoute = ({ children, requireDownload = false, requireAdmin = false }) => {
+const ProtectedRoute = ({ children, requireDownload = false, requireAdmin = false, requireContribute = false }) => {
   const { isAuthenticated, isGuildMember, isDownload, isFastDownload, isAdmin, loading } = useAuth()
+  const { canContribute, loading: catalogLoading } = useCatalog()
 
-  if (loading) {
+  if (loading || (requireContribute && catalogLoading)) {
     return (
       <div style={{
         display: 'flex',
@@ -27,6 +29,10 @@ const ProtectedRoute = ({ children, requireDownload = false, requireAdmin = fals
   }
 
   if (requireAdmin && !isAdmin) {
+    return <Navigate to="/unauthorized" replace />
+  }
+
+  if (requireContribute && !canContribute) {
     return <Navigate to="/unauthorized" replace />
   }
 
