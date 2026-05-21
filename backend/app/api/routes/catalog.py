@@ -506,11 +506,12 @@ async def get_contribute_games(
             'systemName': system_name,
             'publisher': game_data.get('publisher', ''),
             'releasedate': game_data.get('releasedate', ''),
-            'image': catalog_image,
+            'catalog_image': catalog_image,
+            'thumbnail': _norm(game_data.get('thumbnail', '')),
+            'boxart': _norm(game_data.get('boxart', '')),
             'fanart': _norm(fanart),
             'marquee': _norm(marquee),
             'video': _norm(video),
-            'catalog_image': catalog_image,
         })
 
     media_version = int(game_service._catalog_timestamp) if game_service._catalog_timestamp else 0
