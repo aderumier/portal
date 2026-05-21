@@ -115,6 +115,34 @@ const MissingPlaceholder = ({ label }) => (
   </div>
 )
 
+const MediaThumbCell = ({ path, label, uploadProps, onLightboxOpen }) => {
+  if (path) {
+    return (
+      <td className="contribute-media-cell">
+        <img
+          src={getMediaUrl(path)}
+          alt={label}
+          className="contribute-media-thumb contribute-media-clickable"
+          loading="lazy"
+          onClick={() => onLightboxOpen(getMediaUrl(path), label)}
+        />
+      </td>
+    )
+  }
+  if (uploadProps) {
+    return (
+      <td className="contribute-media-cell contribute-media-missing">
+        <UploadPlaceholder {...uploadProps} />
+      </td>
+    )
+  }
+  return (
+    <td className="contribute-media-cell contribute-media-missing">
+      <MissingPlaceholder label={label} />
+    </td>
+  )
+}
+
 const ContributeGamesList = ({ systemId }) => {
   const [allGames, setAllGames] = useState([])
   const [loading, setLoading] = useState(true)
@@ -202,35 +230,6 @@ const ContributeGamesList = ({ systemId }) => {
     </th>
   )
 
-  // Renders a media cell: existing image (clickable for lightbox) or placeholder/upload
-  const MediaThumbCell = ({ path, label, uploadProps }) => {
-    if (path) {
-      return (
-        <td className="contribute-media-cell">
-          <img
-            src={getMediaUrl(path)}
-            alt={label}
-            className="contribute-media-thumb contribute-media-clickable"
-            loading="lazy"
-            onClick={() => openLightbox(getMediaUrl(path), label)}
-          />
-        </td>
-      )
-    }
-    if (uploadProps) {
-      return (
-        <td className="contribute-media-cell contribute-media-missing">
-          <UploadPlaceholder {...uploadProps} onUploadSuccess={loadGames} />
-        </td>
-      )
-    }
-    return (
-      <td className="contribute-media-cell contribute-media-missing">
-        <MissingPlaceholder label={label} />
-      </td>
-    )
-  }
-
   if (loading && allGames.length === 0) return <div className="loading">Loading games...</div>
   if (error && allGames.length === 0) return <div className="error">{error}</div>
 
@@ -301,18 +300,20 @@ const ContributeGamesList = ({ systemId }) => {
                     <td className="game-publisher-cell">{game.publisher || '-'}</td>
                     <td className="game-releaseyear-cell">{formatReleaseYear(game.releasedate) || '-'}</td>
 
-                    <MediaThumbCell path={game.thumbnail} label="Thumbnail" />
-                    <MediaThumbCell path={game.boxart} label="Boxart" />
+                    <MediaThumbCell path={game.thumbnail} label="Thumbnail" onLightboxOpen={openLightbox} />
+                    <MediaThumbCell path={game.boxart} label="Boxart" onLightboxOpen={openLightbox} />
 
                     <MediaThumbCell
                       path={game.fanart}
                       label="Fanart"
-                      uploadProps={isAdmin ? { system: game.system, gameId: game.id, mediaType: 'fanart', label: 'Fanart' } : null}
+                      onLightboxOpen={openLightbox}
+                      uploadProps={isAdmin ? { system: game.system, gameId: game.id, mediaType: 'fanart', label: 'Fanart', onUploadSuccess: loadGames } : null}
                     />
                     <MediaThumbCell
                       path={game.marquee}
                       label="Marquee"
-                      uploadProps={isAdmin ? { system: game.system, gameId: game.id, mediaType: 'marquee', label: 'Marquee' } : null}
+                      onLightboxOpen={openLightbox}
+                      uploadProps={isAdmin ? { system: game.system, gameId: game.id, mediaType: 'marquee', label: 'Marquee', onUploadSuccess: loadGames } : null}
                     />
 
                     <td className="contribute-media-cell">
