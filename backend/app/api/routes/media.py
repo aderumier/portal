@@ -28,10 +28,14 @@ async def upload_media(
 ):
     """Upload media file for a game."""
     try:
-        # Validate file type (images only for now)
-        allowed_extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp']
+        # Validate file type
+        image_extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp']
+        video_extensions = ['mp4', 'mkv', 'avi', 'webm']
         file_extension = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
-        
+
+        is_video_upload = media_type == 'video'
+        allowed_extensions = video_extensions if is_video_upload else image_extensions
+
         if file_extension not in allowed_extensions:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -50,12 +54,12 @@ async def upload_media(
         # Read file content
         file_content = await file.read()
         
-        # Check file size (max 10MB)
-        max_size = 10 * 1024 * 1024  # 10MB
+        # Check file size (10 MB for images, 200 MB for video)
+        max_size = 200 * 1024 * 1024 if is_video_upload else 10 * 1024 * 1024
         if len(file_content) > max_size:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File size exceeds 10MB limit"
+                detail=f"File size exceeds {'200MB' if is_video_upload else '10MB'} limit"
             )
         
         # Get user_id from current_user

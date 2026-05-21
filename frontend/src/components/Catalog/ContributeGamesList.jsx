@@ -47,6 +47,14 @@ const UploadArrowIcon = () => (
   </svg>
 )
 
+const VideoUploadIcon = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="2" y="5" width="15" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" fill="none" />
+    <path d="M17 9l5-3v12l-5-3V9z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" fill="none" />
+    <path d="M7 15v-5M4.5 12.5l2.5-2.5 2.5 2.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
 // ── Sub-components (module scope — stable references) ─────────────────────────
 
 const Lightbox = ({ url, alt, onClose }) => {
@@ -69,16 +77,22 @@ const Lightbox = ({ url, alt, onClose }) => {
   )
 }
 
-const UploadPlaceholder = ({ system, gameId, mediaType, label, onUploadSuccess }) => {
+const IMAGE_ACCEPT = 'image/png,image/jpeg,image/jpg,image/gif,image/webp'
+const VIDEO_ACCEPT = 'video/mp4,video/x-matroska,video/x-msvideo,video/webm'
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp']
+const VIDEO_TYPES = ['video/mp4', 'video/x-matroska', 'video/x-msvideo', 'video/webm']
+
+const UploadPlaceholder = ({ system, gameId, mediaType, label, onUploadSuccess, isVideo }) => {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(false)
   const fileInputRef = useRef(null)
 
   const uploadFile = async (file) => {
-    const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp']
+    const allowedTypes = isVideo ? VIDEO_TYPES : IMAGE_TYPES
+    const maxSize = isVideo ? 200 * 1024 * 1024 : 10 * 1024 * 1024
     if (!allowedTypes.includes(file.type)) { setError('Invalid type'); return }
-    if (file.size > 10 * 1024 * 1024) { setError('Too large'); return }
+    if (file.size > maxSize) { setError('Too large'); return }
     setUploading(true)
     setError(null)
     try {
@@ -115,13 +129,13 @@ const UploadPlaceholder = ({ system, gameId, mediaType, label, onUploadSuccess }
       ) : uploading ? (
         <span className="placeholder-loading">…</span>
       ) : (
-        <><ImagePlaceholderIcon /><UploadArrowIcon /></>
+        <>{isVideo ? <VideoUploadIcon /> : <><ImagePlaceholderIcon /><UploadArrowIcon /></>}</>
       )}
       {error && <span className="placeholder-error">{error}</span>}
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
+        accept={isVideo ? VIDEO_ACCEPT : IMAGE_ACCEPT}
         style={{ display: 'none' }}
         onChange={handleChange}
       />
@@ -129,9 +143,9 @@ const UploadPlaceholder = ({ system, gameId, mediaType, label, onUploadSuccess }
   )
 }
 
-const MissingPlaceholder = ({ label }) => (
+const MissingPlaceholder = ({ label, isVideo }) => (
   <div className="contribute-upload-placeholder contribute-upload-placeholder--readonly" title={`${label} missing`}>
-    <ImagePlaceholderIcon />
+    {isVideo ? <VideoUploadIcon /> : <ImagePlaceholderIcon />}
   </div>
 )
 
@@ -219,7 +233,9 @@ const ContributeGamesTable = React.memo(({
                 <td className="contribute-media-cell">
                   {game.video
                     ? <span className="contribute-video-icon" title="Video available"><VideoIcon /></span>
-                    : <MissingPlaceholder label="Video" />
+                    : isAdmin
+                      ? <UploadPlaceholder system={game.system} gameId={game.id} mediaType="video" label="Video" onUploadSuccess={onUploadSuccess} isVideo />
+                      : <MissingPlaceholder label="Video" isVideo />
                   }
                 </td>
               </tr>
