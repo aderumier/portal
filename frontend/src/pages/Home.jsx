@@ -8,7 +8,7 @@ import './Home.css'
 
 const Home = () => {
   const { isAuthenticated } = useAuth()
-  const { canViewReleases, canViewWip } = useCatalog()
+  const { canViewReleases } = useCatalog()
   const [outdatedDevices, setOutdatedDevices] = React.useState([])
   const [showWarningModal, setShowWarningModal] = React.useState(false)
   const [minClientVersion, setMinClientVersion] = React.useState(null)
@@ -48,8 +48,6 @@ const Home = () => {
             <Link to="/login" className="hero-cta">Login with Discord</Link>
           ) : canViewReleases ? (
             <Link to="/releases" className="hero-cta">Show Releases</Link>
-          ) : canViewWip ? (
-            <Link to="/wip" className="hero-cta">Browse WIP</Link>
           ) : null}
         </div>
       </div>
