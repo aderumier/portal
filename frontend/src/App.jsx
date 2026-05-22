@@ -1,5 +1,5 @@
 import React from 'react'
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { CatalogProvider } from './context/CatalogContext'
 import Layout from './components/Layout/Layout'
@@ -45,7 +45,9 @@ function App() {
             <Route path="/unauthorized" element={<Unauthorized />} />
             <Route path="/" element={<Layout />}>
               <Route index element={<Home />} />
-              <Route path="systems" element={<ProtectedRoute><Systems /></ProtectedRoute>} />
+              <Route path="systems" element={<Navigate to="/releases" replace />} />
+              <Route path="releases" element={<ProtectedRoute requireReleases><Systems catalogType="releases" /></ProtectedRoute>} />
+              <Route path="wip" element={<ProtectedRoute requireWip><Systems catalogType="wip" /></ProtectedRoute>} />
               <Route path="system/:id" element={<ProtectedRoute><System /></ProtectedRoute>} />
               <Route path="contribute" element={<ProtectedRoute requireContribute><Contribute /></ProtectedRoute>} />
               <Route path="contribute/system/:id" element={<ProtectedRoute requireContribute><ContributeSystem /></ProtectedRoute>} />

@@ -5,12 +5,11 @@ import { useCatalog } from '../../context/CatalogContext'
 
 import './Layout.css'
 import HeaderSearch from './HeaderSearch'
-import CatalogTypeSelector from './CatalogTypeSelector'
 import { refreshCatalog } from '../../api/catalog'
 
 const Layout = () => {
   const { user, isAuthenticated, isAdmin, isDownload, isFastDownload, logout } = useAuth()
-  const { canContribute } = useCatalog()
+  const { canContribute, canViewReleases, canViewWip } = useCatalog()
   const navigate = useNavigate()
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [playlistMenuOpen, setPlaylistMenuOpen] = useState(false)
@@ -64,16 +63,12 @@ const Layout = () => {
           <Link to="/" className="logo">
             <img src="/logo.png" alt="Team Pixel Nostalgia" className="logo-image" />
           </Link>
-          {isAuthenticated && (
-            <>
-              <HeaderSearch />
-              <CatalogTypeSelector />
-            </>
-          )}
+          {isAuthenticated && <HeaderSearch />}
           <nav className="nav">
             {isAuthenticated ? (
               <>
-                <Link to="/systems">Systems</Link>
+                {canViewWip && <Link to="/wip">WIP</Link>}
+                {canViewReleases && <Link to="/releases">Releases</Link>}
                 {canContribute && <Link to="/contribute">Contribute</Link>}
 
                 <div className="playlist-menu" ref={playlistMenuRef}>

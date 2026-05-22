@@ -1,12 +1,14 @@
 import React from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { useCatalog } from '../context/CatalogContext'
 import WarningModal from '../components/WarningModal/WarningModal'
 import client from '../api/client'
 import './Home.css'
 
 const Home = () => {
   const { isAuthenticated } = useAuth()
+  const { canViewReleases, canViewWip } = useCatalog()
   const [outdatedDevices, setOutdatedDevices] = React.useState([])
   const [showWarningModal, setShowWarningModal] = React.useState(false)
   const [minClientVersion, setMinClientVersion] = React.useState(null)
@@ -44,9 +46,11 @@ const Home = () => {
           <p>Your retro game library for Team Pixel Nostalgia members</p>
           {!isAuthenticated ? (
             <Link to="/login" className="hero-cta">Login with Discord</Link>
-          ) : (
-            <Link to="/systems" className="hero-cta">Browse Games</Link>
-          )}
+          ) : canViewReleases ? (
+            <Link to="/releases" className="hero-cta">Show Releases</Link>
+          ) : canViewWip ? (
+            <Link to="/wip" className="hero-cta">Browse WIP</Link>
+          ) : null}
         </div>
       </div>
 

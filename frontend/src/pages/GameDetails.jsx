@@ -201,7 +201,7 @@ const GameDetails = () => {
     return (
       <div className="game-details-error">
         <p>{error || 'Game not found'}</p>
-        <Link to="/systems">Back to Systems</Link>
+        <Link to="/releases">Back to Systems</Link>
       </div>
     )
   }
