@@ -375,7 +375,7 @@ const SystemsList = ({ systems }) => {
                       >
                         View Games
                       </Link>
-                      {isAuthenticated && torrentSystems.has(system.id) && (
+                      {catalogType === 'releases' && isAuthenticated && torrentSystems.has(system.id) && (
                         <a
                           href={`/api/catalog/systems/${system.id}/torrent`}
                           className="torrent-icon-btn"
