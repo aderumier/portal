@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
 from typing import List
 from sqlalchemy.orm import Session
-from app.api.middleware.roles import require_admin_role
+from app.api.middleware.roles import require_admin_role, require_media_contributor
 from app.services.media import MediaService
 from app.database import get_db, User
 from sqlalchemy import text
@@ -22,7 +22,7 @@ async def upload_media(
     game_id: str = Form(...),
     media_type: str = Form(...),
     file: UploadFile = File(...),
-    current_user: dict = Depends(require_admin_role),
+    current_user: dict = Depends(require_media_contributor),
     media_service: MediaService = Depends(get_media_service),
     db: Session = Depends(get_db)
 ):

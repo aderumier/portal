@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
+import { useCatalog } from '../../context/CatalogContext'
 import { getMediaUrl } from '../../utils/constants'
 import { getContributeGames } from '../../api/catalog'
 import client from '../../api/client'
@@ -180,7 +181,7 @@ const MediaThumbCell = ({ path, label, uploadProps, onLightboxOpen }) => {
 // ── Memoized table — skipped entirely when only lightbox state changes ─────────
 
 const ContributeGamesTable = React.memo(({
-  filteredGames, sortColumn, sortDirection, onSort, isAdmin, onLightboxOpen, onUploadSuccess,
+  filteredGames, sortColumn, sortDirection, onSort, canUpload, onLightboxOpen, onUploadSuccess,
 }) => {
   const SortHeader = ({ column, label }) => (
     <th className="sortable" onClick={() => onSort(column)} style={{ cursor: 'pointer' }}>
@@ -222,18 +223,18 @@ const ContributeGamesTable = React.memo(({
                   path={game.fanart}
                   label="Fanart"
                   onLightboxOpen={onLightboxOpen}
-                  uploadProps={isAdmin ? { system: game.system, gameId: game.id, mediaType: 'fanart', label: 'Fanart', onUploadSuccess } : null}
+                  uploadProps={canUpload ? { system: game.system, gameId: game.id, mediaType: 'fanart', label: 'Fanart', onUploadSuccess } : null}
                 />
                 <MediaThumbCell
                   path={game.marquee}
                   label="Marquee"
                   onLightboxOpen={onLightboxOpen}
-                  uploadProps={isAdmin ? { system: game.system, gameId: game.id, mediaType: 'marquee', label: 'Marquee', onUploadSuccess } : null}
+                  uploadProps={canUpload ? { system: game.system, gameId: game.id, mediaType: 'marquee', label: 'Marquee', onUploadSuccess } : null}
                 />
                 <td className="contribute-media-cell">
                   {game.video
                     ? <span className="contribute-video-icon" title="Video available"><VideoIcon /></span>
-                    : isAdmin
+                    : canUpload
                       ? <UploadPlaceholder system={game.system} gameId={game.id} mediaType="video" label="Video" onUploadSuccess={onUploadSuccess} isVideo />
                       : <MissingPlaceholder label="Video" isVideo />
                   }
@@ -260,6 +261,8 @@ const ContributeGamesList = ({ systemId }) => {
   const [sortDirection, setSortDirection] = useState('asc')
   const [lightbox, setLightbox] = useState(null)
   const { isAdmin } = useAuth()
+  const { canContribute } = useCatalog()
+  const canUpload = isAdmin || canContribute
 
   const openLightbox = useCallback((url, alt) => setLightbox({ url, alt }), [])
   const closeLightbox = useCallback(() => setLightbox(null), [])
@@ -368,7 +371,7 @@ const ContributeGamesList = ({ systemId }) => {
           sortColumn={sortColumn}
           sortDirection={sortDirection}
           onSort={handleSort}
-          isAdmin={isAdmin}
+          canUpload={canUpload}
           onLightboxOpen={openLightbox}
           onUploadSuccess={loadGames}
         />
