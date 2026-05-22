@@ -60,7 +60,7 @@ const Home = () => {
         </div>
         <div className="feature">
           <i className="fas fa-download"></i>
-          <h2>Download Access</h2>
+          <h2>Downloads</h2>
           <p>download games directly through our secure download system</p>
         </div>
         <div className="feature">
