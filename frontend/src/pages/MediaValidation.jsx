@@ -1,8 +1,28 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { API_URL } from '../utils/constants'
 import client from '../api/client'
 import './MediaValidation.css'
+
+const Lightbox = ({ url, alt, onClose }) => {
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  return (
+    <div className="mv-lightbox-overlay" onClick={onClose}>
+      <img
+        src={url}
+        alt={alt}
+        className="mv-lightbox-image"
+        onClick={(e) => e.stopPropagation()}
+      />
+      <button className="mv-lightbox-close" onClick={onClose}>✕</button>
+    </div>
+  )
+}
 
 const MediaValidation = () => {
   const { isAdmin } = useAuth()
@@ -11,6 +31,18 @@ const MediaValidation = () => {
   const [error, setError] = useState(null)
   const [filterSystem, setFilterSystem] = useState('')
   const [filterFieldname, setFilterFieldname] = useState('')
+  const [lightbox, setLightbox] = useState(null)
+  const [dimensions, setDimensions] = useState({})
+
+  const openLightbox = useCallback((url, alt) => setLightbox({ url, alt }), [])
+  const closeLightbox = useCallback(() => setLightbox(null), [])
+
+  const handleImageLoad = useCallback((key, e) => {
+    const { naturalWidth, naturalHeight } = e.target
+    if (naturalWidth && naturalHeight) {
+      setDimensions(prev => ({ ...prev, [key]: { w: naturalWidth, h: naturalHeight } }))
+    }
+  }, [])
 
   useEffect(() => {
     if (isAdmin) {
@@ -134,6 +166,7 @@ const MediaValidation = () => {
 
   return (
     <div className="media-validation-page">
+      {lightbox && <Lightbox url={lightbox.url} alt={lightbox.alt} onClose={closeLightbox} />}
       <h1>Media Validation</h1>
       <p className="media-validation-description">
         Review and validate user-uploaded media files. Validated files will be moved to the game media directories.
@@ -187,54 +220,63 @@ const MediaValidation = () => {
                   {system} / {fieldname} ({mediaList.length} file{mediaList.length !== 1 ? 's' : ''})
                 </h2>
                 <div className="media-list">
-                  {mediaList.map((media, index) => (
-                    <div key={index} className="media-item">
-                      <div className="media-item-preview">
-                        <img
-                          src={`${API_URL}/api/media/pending-preview/${media.user_id || 'unknown'}/${media.system}/${media.fieldname}/${encodeURIComponent(media.filename)}`}
-                          alt={media.filename}
-                          onError={(e) => {
-                            e.target.style.display = 'none'
-                            const placeholder = e.target.nextElementSibling
-                            if (placeholder) {
-                              placeholder.style.display = 'flex'
-                            }
-                          }}
-                        />
-                        <div className="media-item-placeholder" style={{ display: 'none' }}>
-                          <i className="fas fa-image"></i>
-                        </div>
-                      </div>
-                      <div className="media-item-info">
-                        <div className="media-item-filename">{media.filename}</div>
-                        {media.username && (
-                          <div className="media-item-meta">
-                            Uploaded by: <strong>{media.username}</strong>
+                  {mediaList.map((media, index) => {
+                    const previewUrl = `${API_URL}/api/media/pending-preview/${media.user_id || 'unknown'}/${media.system}/${media.fieldname}/${encodeURIComponent(media.filename)}`
+                    const dimKey = `${media.user_id}/${media.system}/${media.fieldname}/${media.filename}`
+                    const dim = dimensions[dimKey]
+                    return (
+                      <div key={index} className="media-item">
+                        <div className="media-item-preview">
+                          <img
+                            src={previewUrl}
+                            alt={media.filename}
+                            className="media-item-preview-img"
+                            onClick={() => openLightbox(previewUrl, media.filename)}
+                            onLoad={(e) => handleImageLoad(dimKey, e)}
+                            onError={(e) => {
+                              e.target.style.display = 'none'
+                              const placeholder = e.target.nextElementSibling
+                              if (placeholder) placeholder.style.display = 'flex'
+                            }}
+                          />
+                          <div className="media-item-placeholder" style={{ display: 'none' }}>
+                            <i className="fas fa-image"></i>
                           </div>
-                        )}
-                        <div className="media-item-meta">
-                          Uploaded: {new Date(media.upload_date).toLocaleString()}
                         </div>
-                        <div className="media-item-meta">
-                          Size: {(media.size / 1024).toFixed(2)} KB
+                        <div className="media-item-info">
+                          <div className="media-item-filename">{media.filename}</div>
+                          {dim && (
+                            <div className="media-item-meta">{dim.w} × {dim.h} px</div>
+                          )}
+                          {media.username && (
+                            <div className="media-item-meta">
+                              Uploaded by: <strong>{media.username}</strong>
+                            </div>
+                          )}
+                          <div className="media-item-meta">
+                            Uploaded: {new Date(media.upload_date).toLocaleString()}
+                          </div>
+                          <div className="media-item-meta">
+                            Size: {(media.size / 1024).toFixed(2)} KB
+                          </div>
+                        </div>
+                        <div className="media-item-actions">
+                          <button
+                            className="validate-button"
+                            onClick={() => handleValidate(media.system, media.fieldname, media.filename, media.user_id)}
+                          >
+                            Validate
+                          </button>
+                          <button
+                            className="delete-button"
+                            onClick={() => handleDelete(media.system, media.fieldname, media.filename, media.user_id)}
+                          >
+                            Delete
+                          </button>
                         </div>
                       </div>
-                      <div className="media-item-actions">
-                        <button
-                          className="validate-button"
-                          onClick={() => handleValidate(media.system, media.fieldname, media.filename, media.user_id)}
-                        >
-                          Validate
-                        </button>
-                        <button
-                          className="delete-button"
-                          onClick={() => handleDelete(media.system, media.fieldname, media.filename, media.user_id)}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             )
