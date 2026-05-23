@@ -29,12 +29,20 @@ async def upload_media(
     """Upload media file for a game."""
     try:
         # Validate file type
-        image_extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp']
-        video_extensions = ['mp4', 'mkv', 'avi', 'webm']
+        restricted_extensions = {
+            'marquee': ['png'],
+            'fanart':  ['jpg', 'jpeg'],
+            'video':   ['mp4'],
+        }
+        default_image_extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp']
+        default_video_extensions = ['mp4', 'mkv', 'avi', 'webm']
         file_extension = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
 
         is_video_upload = media_type == 'video'
-        allowed_extensions = video_extensions if is_video_upload else image_extensions
+        allowed_extensions = restricted_extensions.get(
+            media_type,
+            default_video_extensions if is_video_upload else default_image_extensions
+        )
 
         if file_extension not in allowed_extensions:
             raise HTTPException(
@@ -240,6 +248,43 @@ async def delete_pending_media(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while deleting pending media"
         )
+
+@router.get("/my-pending")
+async def get_my_pending_media(
+    system: str = Query(None),
+    current_user: dict = Depends(require_media_contributor),
+    media_service: MediaService = Depends(get_media_service)
+):
+    """Get pending media for the current authenticated user."""
+    user_id = current_user.get('id')
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
+    pending = media_service.get_pending_media_for_user(user_id, system)
+    return {"pending_media": pending}
+
+@router.get("/my-pending-preview/{system}/{fieldname}/{filename:path}")
+async def get_my_pending_preview(
+    system: str,
+    fieldname: str,
+    filename: str,
+    current_user: dict = Depends(require_media_contributor),
+    media_service: MediaService = Depends(get_media_service)
+):
+    """Serve a pending media file for the current authenticated user."""
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+
+    user_id = current_user.get('id')
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
+    if not media_service.users_media_path:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="USERS_MEDIA_PATH not configured")
+
+    file_path = Path(media_service.users_media_path) / user_id / system / fieldname / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    return FileResponse(path=str(file_path))
 
 @router.get("/pending-preview/{user_id}/{system}/{fieldname}/{filename:path}")
 async def get_pending_media_preview(

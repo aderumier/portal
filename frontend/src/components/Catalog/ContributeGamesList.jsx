@@ -10,6 +10,12 @@ import './ContributeGamesList.css'
 
 // ── Pure helpers (module scope — stable references) ──────────────────────────
 
+const getRomFilename = (gameId) => {
+  const clean = gameId.replace(/^\.\//, '')
+  const basename = clean.split('/').pop()
+  return basename.replace(/\.[^.]+$/, '')
+}
+
 const formatReleaseYear = (dateString) => {
   if (!dateString) return null
   const str = String(dateString)
@@ -78,22 +84,23 @@ const Lightbox = ({ url, alt, onClose }) => {
   )
 }
 
-const IMAGE_ACCEPT = 'image/png,image/jpeg,image/jpg,image/gif,image/webp'
-const VIDEO_ACCEPT = 'video/mp4,video/x-matroska,video/x-msvideo,video/webm'
-const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp']
-const VIDEO_TYPES = ['video/mp4', 'video/x-matroska', 'video/x-msvideo', 'video/webm']
+const MEDIA_TYPE_CONFIG = {
+  marquee: { accept: 'image/png', types: ['image/png'], maxSize: 10 * 1024 * 1024, hint: 'PNG only' },
+  fanart:  { accept: 'image/jpeg,image/jpg', types: ['image/jpeg', 'image/jpg'], maxSize: 10 * 1024 * 1024, hint: 'JPG only' },
+  video:   { accept: 'video/mp4', types: ['video/mp4'], maxSize: 200 * 1024 * 1024, hint: 'MP4 only' },
+}
+const DEFAULT_IMAGE_CONFIG = { accept: 'image/png,image/jpeg,image/jpg,image/gif,image/webp', types: ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'], maxSize: 10 * 1024 * 1024, hint: 'Invalid type' }
 
 const UploadPlaceholder = ({ system, gameId, mediaType, label, onUploadSuccess, isVideo }) => {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(false)
   const fileInputRef = useRef(null)
+  const config = MEDIA_TYPE_CONFIG[mediaType] ?? DEFAULT_IMAGE_CONFIG
 
   const uploadFile = async (file) => {
-    const allowedTypes = isVideo ? VIDEO_TYPES : IMAGE_TYPES
-    const maxSize = isVideo ? 200 * 1024 * 1024 : 10 * 1024 * 1024
-    if (!allowedTypes.includes(file.type)) { setError('Invalid type'); return }
-    if (file.size > maxSize) { setError('Too large'); return }
+    if (!config.types.includes(file.type)) { setError(config.hint); return }
+    if (file.size > config.maxSize) { setError('Too large'); return }
     setUploading(true)
     setError(null)
     try {
@@ -105,7 +112,13 @@ const UploadPlaceholder = ({ system, gameId, mediaType, label, onUploadSuccess, 
       const response = await client.post('/api/media/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
-      if (response.data.success) { setSuccess(true); onUploadSuccess?.() }
+      if (response.data.success) {
+        setSuccess(true)
+        const ext = file.name.split('.').pop().toLowerCase()
+        const romFilename = getRomFilename(gameId)
+        const previewUrl = `/api/media/my-pending-preview/${system}/${mediaType}/${romFilename}.${ext}`
+        onUploadSuccess?.({ romFilename, mediaType, previewUrl })
+      }
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed')
     } finally {
@@ -136,7 +149,7 @@ const UploadPlaceholder = ({ system, gameId, mediaType, label, onUploadSuccess, 
       <input
         ref={fileInputRef}
         type="file"
-        accept={isVideo ? VIDEO_ACCEPT : IMAGE_ACCEPT}
+        accept={config.accept}
         style={{ display: 'none' }}
         onChange={handleChange}
       />
@@ -150,7 +163,7 @@ const MissingPlaceholder = ({ label, isVideo }) => (
   </div>
 )
 
-const MediaThumbCell = ({ path, label, uploadProps, onLightboxOpen }) => {
+const MediaThumbCell = ({ path, label, uploadProps, onLightboxOpen, pendingUrl }) => {
   if (path) {
     return (
       <td className="contribute-media-cell">
@@ -161,6 +174,22 @@ const MediaThumbCell = ({ path, label, uploadProps, onLightboxOpen }) => {
           loading="lazy"
           onClick={() => onLightboxOpen(getMediaUrl(path), label)}
         />
+      </td>
+    )
+  }
+  if (pendingUrl) {
+    return (
+      <td className="contribute-media-cell">
+        <div className="contribute-pending-wrap">
+          <img
+            src={pendingUrl}
+            alt={label}
+            className="contribute-media-thumb contribute-media-clickable"
+            loading="lazy"
+            onClick={() => onLightboxOpen(pendingUrl, label)}
+          />
+          <span className="contribute-pending-badge" title="Pending validation">⏳</span>
+        </div>
       </td>
     )
   }
@@ -181,7 +210,7 @@ const MediaThumbCell = ({ path, label, uploadProps, onLightboxOpen }) => {
 // ── Memoized table — skipped entirely when only lightbox state changes ─────────
 
 const ContributeGamesTable = React.memo(({
-  filteredGames, sortColumn, sortDirection, onSort, canUpload, onLightboxOpen, onUploadSuccess,
+  filteredGames, sortColumn, sortDirection, onSort, canUpload, onLightboxOpen, onUploadSuccess, pendingMedia,
 }) => {
   const SortHeader = ({ column, label }) => (
     <th className="sortable" onClick={() => onSort(column)} style={{ cursor: 'pointer' }}>
@@ -207,6 +236,8 @@ const ContributeGamesTable = React.memo(({
         <tbody>
           {filteredGames.map((game) => {
             const gameUrl = getGameUrl(game)
+            const romFilename = getRomFilename(game.id)
+            const gamePending = pendingMedia[romFilename] || {}
             return (
               <tr key={game.id} className="game-table-row">
                 <td className="game-name-cell">
@@ -223,20 +254,29 @@ const ContributeGamesTable = React.memo(({
                   path={game.fanart}
                   label="Fanart"
                   onLightboxOpen={onLightboxOpen}
-                  uploadProps={canUpload ? { system: game.system, gameId: game.id, mediaType: 'fanart', label: 'Fanart', onUploadSuccess } : null}
+                  pendingUrl={gamePending.fanart}
+                  uploadProps={canUpload && !gamePending.fanart ? { system: game.system, gameId: game.id, mediaType: 'fanart', label: 'Fanart', onUploadSuccess } : null}
                 />
                 <MediaThumbCell
                   path={game.marquee}
                   label="Marquee"
                   onLightboxOpen={onLightboxOpen}
-                  uploadProps={canUpload ? { system: game.system, gameId: game.id, mediaType: 'marquee', label: 'Marquee', onUploadSuccess } : null}
+                  pendingUrl={gamePending.marquee}
+                  uploadProps={canUpload && !gamePending.marquee ? { system: game.system, gameId: game.id, mediaType: 'marquee', label: 'Marquee', onUploadSuccess } : null}
                 />
                 <td className="contribute-media-cell">
                   {game.video
                     ? <span className="contribute-video-icon" title="Video available"><VideoIcon /></span>
-                    : canUpload
-                      ? <UploadPlaceholder system={game.system} gameId={game.id} mediaType="video" label="Video" onUploadSuccess={onUploadSuccess} isVideo />
-                      : <MissingPlaceholder label="Video" isVideo />
+                    : gamePending.video
+                      ? (
+                        <div className="contribute-pending-wrap contribute-video-pending" title="Video pending validation">
+                          <VideoIcon />
+                          <span className="contribute-pending-badge">⏳</span>
+                        </div>
+                      )
+                      : canUpload
+                        ? <UploadPlaceholder system={game.system} gameId={game.id} mediaType="video" label="Video" onUploadSuccess={onUploadSuccess} isVideo />
+                        : <MissingPlaceholder label="Video" isVideo />
                   }
                 </td>
               </tr>
@@ -260,6 +300,7 @@ const ContributeGamesList = ({ systemId }) => {
   const [sortColumn, setSortColumn] = useState('name')
   const [sortDirection, setSortDirection] = useState('asc')
   const [lightbox, setLightbox] = useState(null)
+  const [pendingMedia, setPendingMedia] = useState({})
   const { isAdmin } = useAuth()
   const { canContribute } = useCatalog()
   const canUpload = isAdmin || canContribute
@@ -282,7 +323,32 @@ const ContributeGamesList = ({ systemId }) => {
     }
   }, [systemId])
 
+  const loadPendingMedia = useCallback(async () => {
+    try {
+      const response = await client.get('/api/media/my-pending', { params: { system: systemId } })
+      const pending = response.data.pending_media || []
+      const map = {}
+      for (const item of pending) {
+        const romName = item.filename.replace(/\.[^.]+$/, '')
+        if (!map[romName]) map[romName] = {}
+        map[romName][item.fieldname] = `/api/media/my-pending-preview/${item.system}/${item.fieldname}/${item.filename}`
+      }
+      setPendingMedia(map)
+    } catch {
+      // non-critical — contributors without pending files will get 200 with empty list,
+      // non-contributors will get 403 which we silently ignore
+    }
+  }, [systemId])
+
+  const handleUploadSuccess = useCallback(({ romFilename, mediaType, previewUrl }) => {
+    setPendingMedia(prev => ({
+      ...prev,
+      [romFilename]: { ...(prev[romFilename] || {}), [mediaType]: previewUrl },
+    }))
+  }, [])
+
   useEffect(() => { loadGames() }, [loadGames])
+  useEffect(() => { loadPendingMedia() }, [loadPendingMedia])
 
   const handleSort = useCallback((column) => {
     setSortColumn(prev => {
@@ -373,7 +439,8 @@ const ContributeGamesList = ({ systemId }) => {
           onSort={handleSort}
           canUpload={canUpload}
           onLightboxOpen={openLightbox}
-          onUploadSuccess={loadGames}
+          onUploadSuccess={handleUploadSuccess}
+          pendingMedia={pendingMedia}
         />
       )}
     </div>

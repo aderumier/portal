@@ -162,3 +162,30 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Pending validation media */
+.contribute-pending-wrap {
+  position: relative;
+  width: 80px;
+  margin: 0 auto;
+}
+
+.contribute-pending-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 0.7rem;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.contribute-video-pending {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--accent);
+  opacity: 0.7;
+  cursor: default;
+}

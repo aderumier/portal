@@ -241,6 +241,35 @@ class MediaService:
             logger.error(f"Error deleting pending media: {e}", exc_info=True)
             return False
     
+    def get_pending_media_for_user(self, user_id: str, system: str = None) -> List[Dict]:
+        """Get pending media files for a specific user, optionally filtered by system."""
+        pending = []
+        if not self.users_media_path or not os.path.exists(self.users_media_path):
+            return pending
+        try:
+            user_dir = Path(self.users_media_path) / user_id
+            if not user_dir.exists():
+                return pending
+            if system:
+                system_dirs = [user_dir / system] if (user_dir / system).is_dir() else []
+            else:
+                system_dirs = [d for d in user_dir.iterdir() if d.is_dir()]
+            for system_dir in system_dirs:
+                for fieldname_dir in system_dir.iterdir():
+                    if not fieldname_dir.is_dir():
+                        continue
+                    for file_path in fieldname_dir.iterdir():
+                        if file_path.is_file():
+                            pending.append({
+                                'system': system_dir.name,
+                                'fieldname': fieldname_dir.name,
+                                'filename': file_path.name,
+                            })
+            return pending
+        except Exception as e:
+            logger.error(f"Error getting pending media for user {user_id}: {e}", exc_info=True)
+            return []
+
     def get_media_mapping(self) -> dict:
         """Get media field name to directory mapping."""
         return self.media_mapping.copy()
