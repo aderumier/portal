@@ -69,7 +69,15 @@ const Layout = () => {
               <>
                 {canViewWip && <Link to="/wip">WIP</Link>}
                 {canViewReleases && <Link to="/releases">Releases</Link>}
-                {canContribute && <Link to="/contribute">Contribute</Link>}
+                {canContribute && (
+                  <div className="contribute-menu">
+                    <Link to="/contribute" className="contribute-menu-trigger">Contribute</Link>
+                    <div className="contribute-menu-dropdown">
+                      <Link to="/contribute" className="contribute-menu-item">Game List</Link>
+                      <Link to="/contribute/my-pending" className="contribute-menu-item">My Pending Media</Link>
+                    </div>
+                  </div>
+                )}
 
                 <div className="playlist-menu" ref={playlistMenuRef}>
                   <button

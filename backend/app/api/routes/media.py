@@ -273,12 +273,47 @@ async def get_my_pending_media(
     current_user: dict = Depends(require_media_contributor),
     media_service: MediaService = Depends(get_media_service)
 ):
-    """Get pending media for the current authenticated user."""
+    """Get pending media for the current authenticated user, enriched with game info."""
+    from app.api.routes.catalog import get_game_service
     user_id = current_user.get('id')
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
     pending = media_service.get_pending_media_for_user(user_id, system)
+
+    # Enrich with game_name and game_id from WIP catalog
+    game_service = get_game_service()
+    stem_name_cache: dict[str, dict] = {}
+    for item in pending:
+        sys = item.get('system', '')
+        if sys not in stem_name_cache:
+            system_catalog = game_service.catalog_wip.get(sys, {})
+            stem_name_cache[sys] = {
+                os.path.splitext(os.path.basename(k))[0]: {'name': v.get('name', ''), 'rompath': k}
+                for k, v in system_catalog.items()
+            }
+        stem = os.path.splitext(item.get('filename', ''))[0]
+        info = stem_name_cache[sys].get(stem, {})
+        item['game_name'] = info.get('name', stem)
+        item['game_id'] = info.get('rompath', '')
+
     return {"pending_media": pending}
+
+@router.delete("/my-pending")
+async def delete_my_pending_media(
+    system: str = Query(...),
+    fieldname: str = Query(...),
+    filename: str = Query(...),
+    current_user: dict = Depends(require_media_contributor),
+    media_service: MediaService = Depends(get_media_service)
+):
+    """Delete a pending media file belonging to the current user."""
+    user_id = current_user.get('id')
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
+    success = media_service.delete_pending_media(system, fieldname, filename, user_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending media file not found")
+    return {"success": True, "message": "Pending media deleted successfully"}
 
 @router.get("/my-pending-preview/{system}/{fieldname}/{filename:path}")
 async def get_my_pending_preview(

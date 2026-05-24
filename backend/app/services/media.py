@@ -260,10 +260,13 @@ class MediaService:
                         continue
                     for file_path in fieldname_dir.iterdir():
                         if file_path.is_file():
+                            stat = file_path.stat()
                             pending.append({
                                 'system': system_dir.name,
                                 'fieldname': fieldname_dir.name,
                                 'filename': file_path.name,
+                                'upload_date': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                                'size': stat.st_size,
                             })
             return pending
         except Exception as e:
