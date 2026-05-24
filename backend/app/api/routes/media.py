@@ -6,6 +6,7 @@ from app.api.middleware.roles import require_admin_role, require_media_contribut
 from app.services.media import MediaService
 from app.database import get_db, User
 from sqlalchemy import text
+import os
 import logging
 
 logger = logging.getLogger(__name__)
@@ -136,10 +137,27 @@ async def get_pending_media(
     media_service: MediaService = Depends(get_media_service),
     db: Session = Depends(get_db)
 ):
-    """Get list of pending media uploads with username information."""
+    """Get list of pending media uploads with username and game name information."""
+    from app.api.routes.catalog import get_game_service
     try:
         pending = media_service.get_pending_media()
-        
+
+        # Build per-system stem→{name, rompath} lookup from the WIP catalog
+        game_service = get_game_service()
+        stem_name_cache: dict[str, dict] = {}
+        for item in pending:
+            system = item.get('system', '')
+            if system not in stem_name_cache:
+                system_catalog = game_service.catalog_wip.get(system, {})
+                stem_name_cache[system] = {
+                    os.path.splitext(os.path.basename(k))[0]: {'name': v.get('name', ''), 'rompath': k}
+                    for k, v in system_catalog.items()
+                }
+            stem = os.path.splitext(item.get('filename', ''))[0]
+            info = stem_name_cache[system].get(stem, {})
+            item['game_name'] = info.get('name', stem)
+            item['game_id'] = info.get('rompath', '')
+
         # Enrich with username information
         for item in pending:
             user_id = item.get('user_id')
@@ -151,7 +169,7 @@ async def get_pending_media(
                     item['username'] = None
             else:
                 item['username'] = None
-        
+
         return {"pending_media": pending}
     except Exception as e:
         logger.error(f"Error getting pending media: {e}", exc_info=True)

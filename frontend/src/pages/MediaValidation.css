@@ -197,9 +197,114 @@
   flex: 1;
 }
 
-.media-item-filename {
+.media-item-gamename {
   font-weight: 600;
   color: var(--text-primary);
+  margin-bottom: 0.1rem;
+}
+
+.media-item-gamename--link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: color 0.15s, text-decoration-color 0.15s;
+}
+
+.media-item-gamename--link:hover {
+  color: var(--accent);
+  text-decoration-color: var(--accent);
+}
+
+/* Game info modal */
+.mv-game-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+.mv-game-modal {
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(1100px, 96vw);
+  padding: 2rem 2rem 1.75rem;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  margin: auto;
+}
+
+.mv-game-modal-loading,
+.mv-game-modal-error {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--text-secondary);
+}
+
+.mv-game-modal-error { color: #dc3545; }
+
+.mv-game-modal-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 2.5rem 0.6rem 0;
+}
+
+.mv-game-modal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.25rem;
+  margin-bottom: 0.9rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.mv-game-modal-desc {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  margin: 0 0 1.5rem;
+}
+
+.mv-game-modal-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.mv-game-modal-image-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem;
+}
+
+.mv-game-modal-image {
+  width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.mv-game-modal-image-label {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.media-item-filename {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
   margin-bottom: 0.25rem;
   word-break: break-all;
 }
