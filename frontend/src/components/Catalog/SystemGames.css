@@ -36,6 +36,13 @@
   white-space: nowrap;
 }
 
+.system-gamelist-date {
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
 .system-games p {
   margin: 0;
   color: var(--text-secondary);

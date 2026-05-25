@@ -19,6 +19,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
   // systemName is derived from games response (all games have the same systemName)
   const [systemName, setSystemName] = useState(propSystemName || '')
   const [systemVersion, setSystemVersion] = useState(propSystemVersion || null)
+  const [gamelistDate, setGamelistDate] = useState(null)
   const [viewMode, setViewMode] = useState('grid') // 'grid' or 'table'
   const [selectedSubdirectory, setSelectedSubdirectory] = useState(null) // null = all, or specific subdirectory
   const [subdirectoryCounts, setSubdirectoryCounts] = useState({}) // Pre-computed counts from backend
@@ -129,7 +130,7 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
 
       let currentSystemVersion = propSystemVersion
 
-      // Fetch system info to get version if not provided as prop
+      // Fetch system info to get version and gamelist date
       if (!currentSystemVersion) {
         try {
           const systemsResponse = await getSystems(catalogType)
@@ -137,6 +138,9 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
           if (systemInfo?.version) {
             currentSystemVersion = systemInfo.version
             setSystemVersion(currentSystemVersion)
+          }
+          if (systemInfo?.gamelistDate) {
+            setGamelistDate(systemInfo.gamelistDate)
           }
         } catch (err) {
           console.error('Error fetching system version:', err)
@@ -602,6 +606,9 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
       <div className="system-games-header">
         <div className="system-games-title-section">
           <h1>{systemName}</h1>
+          {catalogType === 'wip' && gamelistDate && (
+            <span className="system-gamelist-date">Updated: {gamelistDate}</span>
+          )}
           <button
             className={`favorite-filter-btn ${showFavoritesOnly ? 'active' : ''}`}
             onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
