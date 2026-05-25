@@ -18,6 +18,7 @@ const Layout = () => {
   const playlistMenuRef = useRef(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [pendingMediaCount, setPendingMediaCount] = useState(0)
+  const [showPendingModal, setShowPendingModal] = useState(false)
 
   const handleLogout = () => {
     logout()
@@ -60,18 +61,32 @@ const Layout = () => {
 
   useEffect(() => {
     if (!isAdmin) return
+    let firstFetch = true
     const fetchCount = async () => {
       try {
         const res = await client.get('/api/media/pending-count')
-        setPendingMediaCount(res.data.count || 0)
+        const count = res.data.count || 0
+        setPendingMediaCount(count)
+        if (firstFetch && count > 0) {
+          setShowPendingModal(true)
+        }
       } catch {
         // silently ignore
+      } finally {
+        firstFetch = false
       }
     }
     fetchCount()
     const interval = setInterval(fetchCount, 60000)
     return () => clearInterval(interval)
   }, [isAdmin])
+
+  const handlePendingModalClose = () => setShowPendingModal(false)
+
+  const handlePendingModalValidate = () => {
+    setShowPendingModal(false)
+    navigate('/media-validation')
+  }
 
   return (
     <div className="layout">
@@ -257,6 +272,26 @@ const Layout = () => {
       <main className="main">
         <Outlet />
       </main>
+
+      {showPendingModal && (
+        <div className="pending-modal-overlay" onClick={handlePendingModalClose}>
+          <div className="pending-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="pending-modal-header">
+              <h2>Pending Media Validation</h2>
+              <button className="pending-modal-close" onClick={handlePendingModalClose}>&times;</button>
+            </div>
+            <div className="pending-modal-body">
+              <p>
+                There {pendingMediaCount === 1 ? 'is' : 'are'} <strong>{pendingMediaCount}</strong> media file{pendingMediaCount !== 1 ? 's' : ''} waiting for validation.
+              </p>
+            </div>
+            <div className="pending-modal-footer">
+              <button className="pending-modal-btn-secondary" onClick={handlePendingModalClose}>Dismiss</button>
+              <button className="pending-modal-btn-primary" onClick={handlePendingModalValidate}>Go to Medias Validation</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
