@@ -138,6 +138,26 @@ class MediaService:
             logger.error(f"Error getting pending media: {e}", exc_info=True)
             return []
     
+    def get_pending_media_count(self) -> int:
+        """Return the total number of pending media files without building full item dicts."""
+        if not self.users_media_path or not os.path.exists(self.users_media_path):
+            return 0
+        count = 0
+        try:
+            for user_dir in Path(self.users_media_path).iterdir():
+                if not user_dir.is_dir():
+                    continue
+                for system_dir in user_dir.iterdir():
+                    if not system_dir.is_dir():
+                        continue
+                    for fieldname_dir in system_dir.iterdir():
+                        if not fieldname_dir.is_dir():
+                            continue
+                        count += sum(1 for f in fieldname_dir.iterdir() if f.is_file())
+        except Exception as e:
+            logger.error(f"Error counting pending media: {e}", exc_info=True)
+        return count
+
     def validate_media(self, system: str, fieldname: str, filename: str, user_id: str = None) -> Tuple[bool, Optional[str]]:
         """Validate and move media from pending to final location.
         

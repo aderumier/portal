@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Outlet, Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useCatalog } from '../../context/CatalogContext'
+import client from '../../api/client'
 
 import './Layout.css'
 import HeaderSearch from './HeaderSearch'
@@ -16,6 +17,7 @@ const Layout = () => {
   const accountMenuRef = useRef(null)
   const playlistMenuRef = useRef(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [pendingMediaCount, setPendingMediaCount] = useState(0)
 
   const handleLogout = () => {
     logout()
@@ -55,6 +57,21 @@ const Layout = () => {
       document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [accountMenuOpen, playlistMenuOpen])
+
+  useEffect(() => {
+    if (!isAdmin) return
+    const fetchCount = async () => {
+      try {
+        const res = await client.get('/api/media/pending-count')
+        setPendingMediaCount(res.data.count || 0)
+      } catch {
+        // silently ignore
+      }
+    }
+    fetchCount()
+    const interval = setInterval(fetchCount, 60000)
+    return () => clearInterval(interval)
+  }, [isAdmin])
 
   return (
     <div className="layout">
@@ -159,6 +176,9 @@ const Layout = () => {
                             onClick={() => setAccountMenuOpen(false)}
                           >
                             Medias Validation
+                            {pendingMediaCount > 0 && (
+                              <span className="nav-badge">{pendingMediaCount}</span>
+                            )}
                           </Link>
                           <Link
                             to="/download-queues"

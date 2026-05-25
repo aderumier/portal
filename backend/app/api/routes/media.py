@@ -5,9 +5,11 @@ from sqlalchemy.orm import Session
 from app.api.middleware.roles import require_admin_role, require_media_contributor
 from app.services.media import MediaService
 from app.database import get_db, User
+from app.config import settings
 from sqlalchemy import text
 import os
 import logging
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,14 @@ async def upload_media(
             detail="An error occurred while uploading media"
         )
 
+@router.get("/pending-count")
+async def get_pending_media_count(
+    current_user: dict = Depends(require_admin_role),
+    media_service: MediaService = Depends(get_media_service),
+):
+    """Return the count of all pending media uploads (admin only, lightweight)."""
+    return {"count": media_service.get_pending_media_count()}
+
 @router.get("/pending")
 async def get_pending_media(
     current_user: dict = Depends(require_admin_role),
@@ -219,7 +229,38 @@ async def validate_media(
             except Exception as e:
                 logger.error(f"Error updating medias_validated counter: {e}", exc_info=True)
                 db.rollback()
-        
+
+        # Notify external gamelist service
+        if settings.GAMELIST_SERVICE_URL:
+            try:
+                from app.api.routes.catalog import get_game_service
+                game_service = get_game_service()
+                stem = os.path.splitext(filename)[0]
+                system_catalog = game_service.catalog_wip.get(system, {})
+                rompath = next(
+                    (k for k in system_catalog if os.path.splitext(os.path.basename(k))[0] == stem),
+                    None
+                )
+                if rompath:
+                    romfile = rompath if rompath.startswith('./') else f'./{rompath}'
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.post(
+                            f"{settings.GAMELIST_SERVICE_URL}/api/external/add-media",
+                            json={
+                                "system": system,
+                                "romfile": romfile,
+                                "mediatype": fieldname,
+                                "mediafilename": filename,
+                            },
+                            headers={"X-API-Token": settings.GAMELIST_API_TOKEN},
+                        )
+                        resp.raise_for_status()
+                        logger.info(f"Notified gamelist service for {system}/{romfile} {fieldname}/{filename}")
+                else:
+                    logger.warning(f"Could not find rompath for stem '{stem}' in system '{system}' catalog")
+            except Exception as e:
+                logger.error(f"Error notifying gamelist service: {e}", exc_info=True)
+
         return {
             "success": True,
             "message": "Media validated and moved successfully"

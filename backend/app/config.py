@@ -80,6 +80,10 @@ class Settings:
     # ROM storage path (used for ZFS snapshot torrent generation)
     ROMS_PATH: str = os.getenv('ROMS_PATH', '/pixn/roms')
 
+    # External gamelist service settings
+    GAMELIST_SERVICE_URL: str = os.getenv('GAMELIST_SERVICE_URL', '')  # e.g. http://gamelist-service:5000
+    GAMELIST_API_TOKEN: str = os.getenv('GAMELIST_API_TOKEN', 'na2KJuBQAS3LtW9wnN-62OQf4QjYfIXZQz1bti0_39Q')
+
     # Torrent tracker settings
     TRACKER_ANNOUNCE_URL: str = os.getenv('TRACKER_ANNOUNCE_URL', '')  # e.g. https://tracker.example.com
     TRACKER_API_SECRET: str = os.getenv('TRACKER_API_SECRET', '')  # Shared secret between tracker and backend
