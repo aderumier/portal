@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
+import httpx
 import torf
 
 from app.config import settings
@@ -129,8 +130,56 @@ def generate_torrent_from_snapshot(system_id: str, snapshot_name: str) -> bytes:
             f"[torrent-gen] {system_id}: torrent written "
             f"({len(file_paths)} files, {len(data)} bytes)"
         )
+
+    base = settings.QBITTORRENT_SAVE_BASE or settings.ROMS_PATH
+    save_path = str(Path(base) / system_id / ".zfs" / "snapshot")
+    push_torrent_to_qbittorrent(system_id, data, save_path)
     return data
 
+
+def push_torrent_to_qbittorrent(system_id: str, torrent_data: bytes, save_path: str) -> None:
+    """Upload a torrent file to the configured qBittorrent instance via its Web API.
+
+    The announce URL is rewritten to QBITTORRENT_ANNOUNCE_URL before uploading
+    so the seeding client uses the correct passkey.
+    """
+    url = settings.QBITTORRENT_URL.rstrip("/")
+    if not url:
+        logger.debug("[qbt] QBITTORRENT_URL not configured, skipping push")
+        return
+
+    announce_url = settings.QBITTORRENT_ANNOUNCE_URL
+    if not announce_url:
+        logger.warning("[qbt] QBITTORRENT_ANNOUNCE_URL not configured, skipping push")
+        return
+
+    try:
+        t = torf.Torrent.read_stream(torrent_data)
+        t.trackers = [[announce_url]]
+        payload = t.dump()
+    except Exception as exc:
+        logger.error(f"[qbt] {system_id}: failed to rewrite announce URL: {exc}")
+        return
+
+    try:
+        with httpx.Client(base_url=url, timeout=30) as client:
+            resp = client.post(
+                "/api/v2/auth/login",
+                data={"username": settings.QBITTORRENT_USERNAME, "password": settings.QBITTORRENT_PASSWORD},
+            )
+            resp.raise_for_status()
+            if resp.text == "Fails.":
+                raise ValueError("qBittorrent login failed (invalid credentials)")
+
+            resp = client.post(
+                "/api/v2/torrents/add",
+                data={"savepath": save_path},
+                files={"torrents": (f"{system_id}.torrent", payload, "application/x-bittorrent")},
+            )
+            resp.raise_for_status()
+            logger.info(f"[qbt] {system_id}: torrent pushed to qBittorrent ({url})")
+    except Exception as exc:
+        logger.error(f"[qbt] {system_id}: failed to push torrent to qBittorrent: {exc}")
 
 
 def build_user_torrent(system_id: str, passkey: str) -> Optional[bytes]:

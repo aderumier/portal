@@ -90,6 +90,13 @@ class Settings:
     TRACKER_REDIS_KEY_PREFIX: str = os.getenv('TRACKER_REDIS_KEY_PREFIX', 'tracker:')  # Must match redis_key_prefix in Go tracker config
     TRACKER_REDIS_URL: str = os.getenv('TRACKER_REDIS_URL', '')  # Tracker's own Redis server
 
+    # qBittorrent Web API settings
+    QBITTORRENT_URL: str = os.getenv('QBITTORRENT_URL', '')  # e.g. http://10.162.10.101:8585
+    QBITTORRENT_USERNAME: str = os.getenv('QBITTORRENT_USERNAME', '')
+    QBITTORRENT_PASSWORD: str = os.getenv('QBITTORRENT_PASSWORD', '')
+    QBITTORRENT_ANNOUNCE_URL: str = os.getenv('QBITTORRENT_ANNOUNCE_URL', '')  # Announce URL with passkey for qBittorrent
+    QBITTORRENT_SAVE_BASE: str = os.getenv('QBITTORRENT_SAVE_BASE', '')  # Base path for torrent save location, e.g. /roms
+
     # Catalog settings
     # Note: Releases catalog is always enabled
     
