@@ -143,10 +143,6 @@ const MediaValidation = () => {
   }
 
   const handleValidate = async (system, fieldname, filename, userId) => {
-    if (!confirm(`Validate and move ${filename}?`)) {
-      return
-    }
-
     try {
       const formData = new FormData()
       formData.append('system', system)
@@ -162,7 +158,6 @@ const MediaValidation = () => {
         },
       })
 
-      alert('Media validated and moved successfully!')
       loadPendingMedia()
     } catch (err) {
       console.error('Error validating media:', err)
