@@ -36,8 +36,8 @@ const BugReportModal = ({ isOpen, onClose, gameInfo }) => {
       const activeTokens = response.data.tokens.filter(t => !t.revoked)
       setTokens(activeTokens)
     } catch (err) {
-      console.error('Error loading tokens:', err)
-      setError('Failed to load tokens')
+      // Non-guild members can't have tokens; device field is optional so just leave it empty
+      setTokens([])
     } finally {
       setLoading(false)
     }

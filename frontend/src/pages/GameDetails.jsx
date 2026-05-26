@@ -14,7 +14,7 @@ const GameDetails = () => {
   const { system, gameId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
-  const { isDownload, isFastDownload, isGuildMember } = useAuth()
+  const { isDownload, isFastDownload, isAuthenticated } = useAuth()
   const { catalogType } = useCatalog()
   const [game, setGame] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -224,15 +224,6 @@ const GameDetails = () => {
         <button className="back-btn" onClick={() => navigate(-1)}>
           ← Back
         </button>
-        {isGuildMember && (
-          <button
-            className="bug-report-button"
-            onClick={() => setShowBugReportModal(true)}
-            title="Report a bug"
-          >
-            🐛 Report Bug
-          </button>
-        )}
       </div>
 
       <div className="game-details-content">
@@ -273,6 +264,15 @@ const GameDetails = () => {
 
           <div className="game-details-info">
             <h1 className="game-title">{game.name}</h1>
+            {isAuthenticated && (
+              <button
+                className="bug-report-button"
+                onClick={() => setShowBugReportModal(true)}
+                title="Report a bug"
+              >
+                🐛 Report Bug
+              </button>
+            )}
 
             {game.marquee && (
               <div className="game-marquee-logo">
