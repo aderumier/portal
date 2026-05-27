@@ -351,7 +351,8 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
             }
     
     # Check for msu-md, nes-msu, and snes-msu1 systems: return all files from the ROM file's directory
-    if system and system.lower() in ('msu-md', 'nes-msu', 'snes-msu1'):
+    # Skip for .squashfs/.wsquashfs files — they are self-contained archives
+    if system and system.lower() in ('msu-md', 'nes-msu', 'snes-msu1') and not (file_lower.endswith('.squashfs') or file_lower.endswith('.wsquashfs')):
         source_dir = os.path.dirname(file_path)
         if os.path.exists(source_dir) and os.path.isdir(source_dir):
             try:
