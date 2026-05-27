@@ -64,20 +64,39 @@ class RedisDownloadTracker:
         system: Optional[str] = None,
         rom_path: Optional[str] = None
     ) -> bool:
-        """Store active download info in Redis."""
+        """Store active download info in Redis.
+
+        Preserves the original started_at if an entry already exists, so that
+        the zero-progress stuck-download detector can fire correctly even when
+        the download client repeatedly reconnects and calls this for the same
+        download without ever transferring any bytes.
+        """
         redis_client = get_redis_downloads_client()
         if not redis_client:
             return False
-        
+
         try:
             key = RedisDownloadTracker._get_key(download_id)
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            # Preserve started_at from the existing entry so repeated reconnects
+            # don't reset the clock used by the zero-progress cleanup check.
+            original_started_at = None
+            existing_raw = await redis_client.get(key)
+            if existing_raw:
+                try:
+                    existing = json.loads(existing_raw)
+                    original_started_at = existing.get('started_at')
+                except Exception:
+                    pass
+
             data = {
                 'download_id': download_id,
                 'status': status,
                 'bytes_transferred': bytes_transferred,
                 'bytes_per_second': bytes_per_second,
-                'last_progress_at': datetime.now(timezone.utc).isoformat(),
-                'started_at': datetime.now(timezone.utc).isoformat(),
+                'last_progress_at': now_iso,
+                'started_at': original_started_at if original_started_at else now_iso,
             }
             if file_size is not None:
                 data['file_size'] = file_size
@@ -89,7 +108,7 @@ class RedisDownloadTracker:
                 data['system'] = system
             if rom_path:
                 data['rom_path'] = rom_path
-            
+
             # Store with 24 hour expiration (downloads shouldn't take that long)
             await redis_client.setex(
                 key,

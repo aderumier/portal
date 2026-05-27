@@ -1176,11 +1176,11 @@ class GameService:
             catalog_type: 'wip' or 'releases' (default: 'wip')
             normalize_paths: If True, normalize media paths for frontend display. If False, preserve original paths from gamelist.xml (default: True)
         """
-        logger.info(f"Getting game by ID: {game_id}, system_id: {system_id}, catalog_type: {catalog_type}")
-        
+        logger.debug(f"Getting game by ID: {game_id}, system_id: {system_id}, catalog_type: {catalog_type}")
+
         # Clean up the game ID (remove leading ./ if present)
         clean_game_id = game_id.lstrip('./')
-        logger.info(f"Cleaned game ID: {clean_game_id}")
+        logger.debug(f"Cleaned game ID: {clean_game_id}")
         
         # Ensure catalog is loaded
         if not self._gamelists_loaded:
@@ -1206,10 +1206,10 @@ class GameService:
         # Try both with and without ./ prefix
         if clean_game_id in system_catalog:
             found_game_data = system_catalog[clean_game_id]
-            logger.info(f"Game found in system {system_id} with path: {clean_game_id}")
+            logger.debug(f"Game found in system {system_id} with path: {clean_game_id}")
         elif f'./{clean_game_id}' in system_catalog:
             found_game_data = system_catalog[f'./{clean_game_id}']
-            logger.info(f"Game found in system {system_id} with path: ./{clean_game_id}")
+            logger.debug(f"Game found in system {system_id} with path: ./{clean_game_id}")
         
         if not found_game_data:
             logger.warning(f"Game not found in system {system_id} with path: {clean_game_id} (catalog_type: {catalog_type})")
@@ -1275,7 +1275,7 @@ class GameService:
                 elif 'image' not in game_data:
                     game_data['image'] = ''
             
-            logger.info(f"Game data retrieved: {game_data.get('name', 'Unknown')} ({len(game_data)} fields)")
+            logger.debug(f"Game data retrieved: {game_data.get('name', 'Unknown')} ({len(game_data)} fields)")
             return game_data
         except Exception as e:
             logger.error(f"Failed to get game by ID: {e}")

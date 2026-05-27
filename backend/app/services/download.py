@@ -783,11 +783,11 @@ class DownloadService:
             # But preserve leading dot in snapshot paths like ".zfs/snapshot/..."
             if game_id.startswith('./'):
                 game_id = game_id[2:]  # Remove './' prefix only
-            logger.info(f"Cleaned game ID: {game_id}")
-            
+            logger.debug(f"Cleaned game ID: {game_id}")
+
             # Determine queue type based on user role (will be used when promoted to global queue)
             queue_type = 'fast' if user_has_fastdownload else 'slow'
-            logger.info(f"Queue type determined: {queue_type}")
+            logger.debug(f"Queue type determined: {queue_type}")
             
             # Determine catalog_type from catalog_version (if version exists, it's Releases, otherwise WIP)
             catalog_type = 'releases' if catalog_version else 'wip'
@@ -2014,8 +2014,8 @@ class DownloadService:
                 logger.info(f"Found resumable download: {resumable_download.id} (bytes_transferred: {resumable_download.bytes_transferred})")
                 # Update service assignment in case it changed
                 resumable_download.assigned_to_service = service_id
-                # Update last_progress_at to current time (download is being resumed)
-                resumable_download.last_progress_at = datetime.now(timezone.utc)
+                # Do NOT update last_progress_at here — no bytes have moved yet.
+                # Updating it would reset the stuck-download detector and prevent cleanup.
                 # Update client_version if provided
                 if client_version:
                     resumable_download.client_version = client_version

@@ -468,7 +468,7 @@ async def cleanup_p2p_index_periodically():
     """
     import os
     from app.services.p2p_inventory import P2PInventoryService
-    from app.services.redis_client import get_redis_ws_client
+    from app.services.websocket_manager import get_redis_ws_client
     
     lock_key = "lock:cleanup_p2p_index"
     lock_ttl = 3600  # Lock expires after 1 hour (task runs every 24h, cleanup takes time)
@@ -603,7 +603,7 @@ async def cleanup_stuck_downloads():
     import os
     from app.database import SessionLocal, DownloadQueue, DownloadArchive
     from app.services.redis_downloads import RedisDownloadTracker, get_redis_downloads_client
-    from app.services.redis_client import get_redis_ws_client
+    from app.services.websocket_manager import get_redis_ws_client
     from datetime import timedelta
 
     lock_key = "lock:cleanup_stuck_downloads"
@@ -611,30 +611,33 @@ async def cleanup_stuck_downloads():
 
     while True:
         try:
-            await asyncio.sleep(60)  # Run every minute
-
             # Try to acquire Redis lock - only one worker will succeed
             redis_ws_client = get_redis_ws_client()
             if not redis_ws_client:
                 logger.debug("Redis not available for cleanup_stuck_downloads lock, skipping")
+                await asyncio.sleep(60)
                 continue
 
             # SET NX (only if not exists) with expiry - atomic operation
             lock_acquired = await redis_ws_client.set(lock_key, os.getpid(), nx=True, ex=lock_ttl)
             if not lock_acquired:
                 # Another worker has the lock, skip this iteration
+                await asyncio.sleep(60)
                 continue
 
             redis_client = get_redis_downloads_client()
             if not redis_client:
                 logger.debug("Redis downloads client not available for cleanup_stuck_downloads, skipping")
+                await asyncio.sleep(60)
                 continue
 
             now = datetime.now(timezone.utc)
             stuck_threshold = now - timedelta(seconds=120)  # 2 minutes with no progress → retry
             cancel_threshold = now - timedelta(hours=settings.MAX_DOWNLOAD_AGE_HOURS)  # X hours with no progress → cancel
+            zero_progress_cancel_threshold = now - timedelta(minutes=5)  # 5 minutes at 0% → cancel
 
-            # Scan Redis for stuck downloads: {download_id: last_progress_utc}
+            # Scan Redis for stuck downloads.
+            # Each entry: {'last_progress': datetime|None, 'bytes_transferred': int, 'started_at': datetime|None}
             stuck_downloads_redis: dict = {}
 
             cursor = 0
@@ -657,9 +660,30 @@ async def cleanup_stuck_downloads():
                             except Exception as e:
                                 logger.warning(f"Failed to parse last_progress_at for download {download_id}: {e}")
 
-                        is_stuck = last_progress is None or last_progress < stuck_threshold
-                        if is_stuck:
-                            stuck_downloads_redis[download_id] = last_progress
+                        started_at_str = redis_status.get('started_at')
+                        started_at = None
+                        if started_at_str:
+                            try:
+                                started_at = datetime.fromisoformat(started_at_str.replace('Z', '+00:00'))
+                            except Exception:
+                                pass
+
+                        bytes_xfer = int(redis_status.get('bytes_transferred', 0))
+
+                        is_no_progress = last_progress is None or last_progress < stuck_threshold
+                        # Also flag downloads that have been active for 5+ min but transferred 0 bytes
+                        is_zero_progress_stuck = (
+                            bytes_xfer == 0
+                            and started_at is not None
+                            and started_at < zero_progress_cancel_threshold
+                        )
+
+                        if is_no_progress or is_zero_progress_stuck:
+                            stuck_downloads_redis[download_id] = {
+                                'last_progress': last_progress,
+                                'bytes_transferred': bytes_xfer,
+                                'started_at': started_at,
+                            }
 
                     except (ValueError, IndexError) as e:
                         logger.warning(f"Error processing download key {key}: {e}")
@@ -680,20 +704,111 @@ async def cleanup_stuck_downloads():
                     ).all()
 
                     for download in redis_stuck:
-                        await RedisDownloadTracker.remove_download(download.id)
-                        if download.bandwidth_used > 0:
-                            from app.services.bandwidth import BandwidthManager
-                            BandwidthManager(db).update_usage(download.queue_type, -download.bandwidth_used)
-                            download.bandwidth_used = 0
+                        try:
+                            await RedisDownloadTracker.remove_download(download.id)
+                            if download.bandwidth_used > 0:
+                                from app.services.bandwidth import BandwidthManager
+                                BandwidthManager(db).update_usage(download.queue_type, -download.bandwidth_used)
+                                download.bandwidth_used = 0
 
-                        # Cancel if last_progress_at is older than MAX_DOWNLOAD_AGE_HOURS
-                        last_progress = stuck_downloads_redis.get(download.id)
-                        too_old = last_progress is not None and last_progress < cancel_threshold
+                            info = stuck_downloads_redis.get(download.id, {})
+                            last_progress = info.get('last_progress')
+                            bytes_xfer = info.get('bytes_transferred', download.bytes_transferred or 0)
+                            started_at = info.get('started_at')
 
-                        if too_old:
+                            too_old = last_progress is not None and last_progress < cancel_threshold
+                            # 0 bytes transferred → cancel immediately on first 2-min timeout.
+                            # Retrying a download that never started a single byte just resets the
+                            # clock and creates an infinite retry loop.
+                            is_zero_bytes = bytes_xfer == 0
+
+                            if too_old or is_zero_bytes:
+                                reason = (
+                                    f"0 bytes transferred (stuck at start)"
+                                    if is_zero_bytes and not too_old
+                                    else f"no progress since {last_progress.isoformat() if last_progress else 'never'} (>{settings.MAX_DOWNLOAD_AGE_HOURS}h)"
+                                )
+                                logger.warning(
+                                    f"Download {download.id} (game: {download.game_id}) {reason}, cancelling permanently"
+                                )
+                                db.add(DownloadArchive(
+                                    download_id=download.id,
+                                    user_id=download.user_id,
+                                    game_name=download.game_id,
+                                    system=download.system_id,
+                                    rompath=download.game_id,
+                                    download_status='cancelled',
+                                    bytes_transferred=download.bytes_transferred or 0,
+                                    file_size=download.file_size,
+                                    catalog_version=download.catalog_version,
+                                    client_version=download.client_version,
+                                ))
+                                db.delete(download)
+                                cancelled_count += 1
+                            else:
+                                logger.warning(
+                                    f"Download {download.id} (game: {download.game_id}) no progress for 2+ min "
+                                    f"({bytes_xfer} bytes transferred), moving back to user_queue for retry"
+                                )
+                                download.status = 'user_queue'
+                                download.active_download = False
+                                download.assigned_to_service = None
+                                download.started_at = None
+                                retried_count += 1
+                            db.commit()
+                        except Exception as e:
+                            logger.error(f"Error processing stuck download {download.id} in Pass 1: {e}", exc_info=True)
+                            db.rollback()
+
+                # Pass 2: catch downloads stuck in DB with no Redis entry
+                # (Redis TTL expired after 24h but DB was never reset)
+                # Cross-check Redis: if a download has a recent Redis entry it is still active — skip it.
+                db_stuck = db.query(DownloadQueue).filter(
+                    DownloadQueue.status == 'downloading',
+                    DownloadQueue.active_download == True,
+                    DownloadQueue.id.notin_(list(stuck_downloads_redis.keys())),
+                ).all()
+
+                for download in db_stuck:
+                    try:
+                        # Always verify against Redis before touching an active download —
+                        # DB last_progress_at can lag minutes behind the actual Redis progress.
+                        redis_status = await RedisDownloadTracker.get_download_status(download.id)
+                        if redis_status:
+                            redis_last_str = redis_status.get('last_progress_at')
+                            redis_bytes = int(redis_status.get('bytes_transferred', 0))
+                            if redis_last_str:
+                                try:
+                                    redis_last = datetime.fromisoformat(redis_last_str.replace('Z', '+00:00'))
+                                    # Skip only if Redis shows recent activity AND bytes are being transferred
+                                    if redis_last >= stuck_threshold and redis_bytes > 0:
+                                        continue  # Redis shows recent activity with progress — download is alive
+                                except Exception:
+                                    pass
+
+                        last_prog = download.last_progress_at
+                        last_prog_utc = last_prog.replace(tzinfo=timezone.utc) if (last_prog and last_prog.tzinfo is None) else last_prog
+
+                        if last_prog_utc is not None and last_prog_utc >= stuck_threshold:
+                            continue  # Recently active per DB, skip
+
+                        db_bytes = download.bytes_transferred or 0
+                        started_at = download.started_at
+                        started_at_utc = started_at.replace(tzinfo=timezone.utc) if (started_at and started_at.tzinfo is None) else started_at
+
+                        # Cancel if last_progress_at (from DB) is older than MAX_DOWNLOAD_AGE_HOURS
+                        too_old = last_prog_utc is not None and last_prog_utc < cancel_threshold
+                        # 0 bytes → cancel immediately (same reasoning as Pass 1)
+                        is_zero_bytes = db_bytes == 0
+
+                        if too_old or is_zero_bytes:
+                            reason = (
+                                f"0 bytes transferred (stuck at start, no Redis entry)"
+                                if is_zero_bytes and not too_old
+                                else f"no Redis entry, no DB progress since {last_prog_utc.isoformat() if last_prog_utc else 'never'} (>{settings.MAX_DOWNLOAD_AGE_HOURS}h)"
+                            )
                             logger.warning(
-                                f"Download {download.id} (game: {download.game_id}) no progress since "
-                                f"{last_progress.isoformat()} (>{settings.MAX_DOWNLOAD_AGE_HOURS}h), cancelling permanently"
+                                f"Download {download.id} (game: {download.game_id}) {reason}, cancelling permanently"
                             )
                             db.add(DownloadArchive(
                                 download_id=download.id,
@@ -702,7 +817,7 @@ async def cleanup_stuck_downloads():
                                 system=download.system_id,
                                 rompath=download.game_id,
                                 download_status='cancelled',
-                                bytes_transferred=download.bytes_transferred or 0,
+                                bytes_transferred=0,
                                 file_size=download.file_size,
                                 catalog_version=download.catalog_version,
                                 client_version=download.client_version,
@@ -711,38 +826,36 @@ async def cleanup_stuck_downloads():
                             cancelled_count += 1
                         else:
                             logger.warning(
-                                f"Download {download.id} (game: {download.game_id}) no progress for 2+ min, "
-                                f"moving back to user_queue"
+                                f"Download {download.id} (game: {download.game_id}) no Redis entry, "
+                                f"{db_bytes} bytes in DB, no progress for 2+ min — moving back to user_queue"
                             )
+                            if download.bandwidth_used > 0:
+                                from app.services.bandwidth import BandwidthManager
+                                BandwidthManager(db).update_usage(download.queue_type, -download.bandwidth_used)
+                                download.bandwidth_used = 0
                             download.status = 'user_queue'
                             download.active_download = False
                             download.assigned_to_service = None
                             download.started_at = None
                             retried_count += 1
+                        db.commit()
+                    except Exception as e:
+                        logger.error(f"Error processing stuck download {download.id} in Pass 2: {e}", exc_info=True)
+                        db.rollback()
 
-                # Pass 2: catch downloads stuck in DB with no Redis entry
-                # (Redis TTL expired after 24h but DB was never reset)
-                db_stuck_threshold = now - timedelta(minutes=5)
-                db_stuck = db.query(DownloadQueue).filter(
-                    DownloadQueue.status == 'downloading',
-                    DownloadQueue.active_download == True,
-                    DownloadQueue.id.notin_(list(stuck_downloads_redis.keys())),
+                # Pass 3: cancel user_queue items that have been waiting too long without a client
+                # picking them up (client offline for MAX_USER_QUEUE_AGE_DAYS days).
+                user_queue_cancel_threshold = now - timedelta(days=settings.MAX_USER_QUEUE_AGE_DAYS)
+                old_user_queue = db.query(DownloadQueue).filter(
+                    DownloadQueue.status == 'user_queue',
+                    DownloadQueue.created_at < user_queue_cancel_threshold,
                 ).all()
 
-                for download in db_stuck:
-                    last_prog = download.last_progress_at
-                    last_prog_utc = last_prog.replace(tzinfo=timezone.utc) if (last_prog and last_prog.tzinfo is None) else last_prog
-
-                    if last_prog_utc is not None and last_prog_utc >= db_stuck_threshold:
-                        continue  # Recently active, skip
-
-                    # Cancel if last_progress_at (from DB) is older than MAX_DOWNLOAD_AGE_HOURS
-                    too_old = last_prog_utc is not None and last_prog_utc < cancel_threshold
-
-                    if too_old:
+                for download in old_user_queue:
+                    try:
                         logger.warning(
-                            f"Download {download.id} (game: {download.game_id}) no Redis entry, no DB progress since "
-                            f"{last_prog_utc.isoformat()} (>{settings.MAX_DOWNLOAD_AGE_HOURS}h), cancelling permanently"
+                            f"Download {download.id} (game: {download.game_id}) has been in user_queue since "
+                            f"{download.created_at.isoformat()} (>{settings.MAX_USER_QUEUE_AGE_DAYS} days), cancelling"
                         )
                         db.add(DownloadArchive(
                             download_id=download.id,
@@ -758,26 +871,15 @@ async def cleanup_stuck_downloads():
                         ))
                         db.delete(download)
                         cancelled_count += 1
-                    else:
-                        logger.warning(
-                            f"Download {download.id} (game: {download.game_id}) no Redis entry and "
-                            f"no DB progress for 5+ min, moving back to user_queue"
-                        )
-                        if download.bandwidth_used > 0:
-                            from app.services.bandwidth import BandwidthManager
-                            BandwidthManager(db).update_usage(download.queue_type, -download.bandwidth_used)
-                            download.bandwidth_used = 0
-                        download.status = 'user_queue'
-                        download.active_download = False
-                        download.assigned_to_service = None
-                        download.started_at = None
-                        retried_count += 1
+                        db.commit()
+                    except Exception as e:
+                        logger.error(f"Error cancelling stale user_queue download {download.id} in Pass 3: {e}", exc_info=True)
+                        db.rollback()
 
-                db.commit()
                 if retried_count > 0:
                     logger.info(f"Moved {retried_count} stuck downloads back to user_queue for retry")
                 if cancelled_count > 0:
-                    logger.info(f"Cancelled {cancelled_count} downloads stuck for >{settings.MAX_DOWNLOAD_AGE_HOURS}h")
+                    logger.info(f"Cancelled {cancelled_count} downloads (stuck active or stale user_queue)")
                 if retried_count == 0 and cancelled_count == 0:
                     logger.debug("No stuck downloads found")
 
@@ -786,7 +888,9 @@ async def cleanup_stuck_downloads():
                 db.rollback()
             finally:
                 db.close()
-                
+
+            await asyncio.sleep(60)  # Wait 60s before next cleanup cycle
+
         except Exception as e:
             logger.error(f"Error in cleanup_stuck_downloads loop: {e}", exc_info=True)
             await asyncio.sleep(60)  # Wait before retrying
