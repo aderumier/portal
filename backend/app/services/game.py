@@ -738,34 +738,41 @@ class GameService:
                 logger.debug(f"Skipping disabled system: {dir_name}")
                 continue
             
-            # Load WIP catalog (current gamelist.xml)
+            # Load WIP catalog (current gamelist.xml) — failure here must not block Releases loading
             gamelist_path = os.path.join(dir_path, 'gamelist.xml')
+            game_count_wip = 0
+            wip_loaded = False
+
             if not os.path.isfile(gamelist_path) or not os.access(gamelist_path, os.R_OK):
                 logger.warning(f"No gamelist.xml found for system: {dir_name}")
-                continue
-            
+            else:
+                try:
+                    game_count_wip = self._load_catalog_from_gamelist(dir_name, gamelist_path, 'wip')
+                    logger.debug(f"Loaded WIP catalog for {dir_name}: {game_count_wip} games")
+                    wip_loaded = True
+
+                    # Extract gamelist modification date for WIP
+                    from datetime import datetime
+                    mtime_wip = os.path.getmtime(gamelist_path)
+                    self.system_gamelist_date_wip[dir_name] = datetime.fromtimestamp(mtime_wip).strftime('%d-%m-%Y')
+
+                    # Merge games with extensions if both extensions are defined for this system
+                    if dir_name in system_extensions:
+                        ext_info = system_extensions[dir_name]
+                        merged_count = self._merge_games_with_extensions(
+                            dir_name, 'wip',
+                            ext_info['batocera_extension'],
+                            ext_info['retrobat_extension']
+                        )
+                        if merged_count > 0:
+                            logger.info(f"Merged {merged_count} WIP game pairs for {dir_name}")
+                except Exception as e:
+                    logger.error(f"Error parsing WIP gamelist for {dir_name}: {e}")
+
+            # Load Releases catalog (versioned gamelist.xml) — independent of WIP result
+            game_count_releases = 0
+            releases_loaded = False
             try:
-                # Load WIP catalog
-                game_count_wip = self._load_catalog_from_gamelist(dir_name, gamelist_path, 'wip')
-                logger.debug(f"Loaded WIP catalog for {dir_name}: {game_count_wip} games")
-                
-                # Extract gamelist modification date for WIP
-                from datetime import datetime
-                mtime_wip = os.path.getmtime(gamelist_path)
-                self.system_gamelist_date_wip[dir_name] = datetime.fromtimestamp(mtime_wip).strftime('%d-%m-%Y')
-                
-                # Merge games with extensions if both extensions are defined for this system
-                if dir_name in system_extensions:
-                    ext_info = system_extensions[dir_name]
-                    merged_count = self._merge_games_with_extensions(
-                        dir_name, 'wip',
-                        ext_info['batocera_extension'],
-                        ext_info['retrobat_extension']
-                    )
-                    if merged_count > 0:
-                        logger.info(f"Merged {merged_count} WIP game pairs for {dir_name}")
-                
-                # Try to find and load Releases catalog (versioned gamelist.xml)
                 version_result = self._find_latest_versioned_gamelist(dir_path)
                 if version_result:
                     version_str, snapshot_dir_path, versioned_gamelist_path = version_result
@@ -773,14 +780,15 @@ class GameService:
                         game_count_releases = self._load_catalog_from_gamelist(dir_name, versioned_gamelist_path, 'releases', snapshot_dir_path)
                         self.system_versions[dir_name] = version_str
                         self.system_snapshot_paths[dir_name] = snapshot_dir_path
-                        
+                        releases_loaded = True
+
                         # Extract gamelist modification date for Releases
                         from datetime import datetime
                         mtime_releases = os.path.getmtime(versioned_gamelist_path)
                         self.system_gamelist_date_releases[dir_name] = datetime.fromtimestamp(mtime_releases).strftime('%d-%m-%Y')
-                        
+
                         logger.info(f"Loaded Releases catalog for {dir_name} (version {version_str}, snapshot: {snapshot_dir_path}): {game_count_releases} games")
-                        
+
                         # Merge games with extensions if both extensions are defined for this system
                         if dir_name in system_extensions:
                             ext_info = system_extensions[dir_name]
@@ -793,60 +801,63 @@ class GameService:
                                 logger.info(f"Merged {merged_count} Releases game pairs for {dir_name}")
                     except Exception as e:
                         logger.error(f"Error loading Releases catalog for {dir_name} (version {version_str}): {e}")
-                        # Continue with WIP catalog only
                 else:
                     logger.debug(f"No versioned gamelist found for {dir_name}")
-                
-                # Use WIP game count for system list display
-                game_count = game_count_wip
-                
-                # Get hardware category, manufacturer, release year, and full name from in-memory mapping
-                hardware = self.system_hardware.get(dir_name, 'unknown')
-                manufacturer = self.system_manufacturer.get(dir_name, 'Unknown')
-                release = self.system_release.get(dir_name, 'Unknown')
-                fullname = self.system_fullname.get(dir_name, None)
-                
-                # Log if hardware not found (for debugging)
-                if hardware == 'unknown' and len(self.system_hardware) > 0:
-                    # Check if there's a similar name (case-insensitive)
-                    dir_name_lower = dir_name.lower()
-                    matching_systems = [k for k in self.system_hardware.keys() if k.lower() == dir_name_lower]
-                    if matching_systems:
-                        matched_id = matching_systems[0]
-                        logger.warning(f"System '{dir_name}' not found in hardware map, but found case-insensitive match: {matched_id}")
-                        hardware = self.system_hardware[matched_id]
-                        manufacturer = self.system_manufacturer.get(matched_id, 'Unknown')
-                        release = self.system_release.get(matched_id, 'Unknown')
-                        fullname = self.system_fullname.get(matched_id, None)
-                    else:
-                        logger.debug(f"Hardware not found for system '{dir_name}'. Available systems (first 20): {list(self.system_hardware.keys())[:20]}")
-                
-                # Use fullname if available, otherwise fall back to get_system_name
-                display_name = fullname if fullname else self.get_system_name(dir_name)
-                
-                # Skip systems with hardware category "library"
-                if hardware.lower() == 'library':
-                    logger.debug(f"Skipping system with library hardware category: {dir_name}")
-                    continue
-                
-                # Get version if available
-                version = self.system_versions.get(dir_name)
-                
-                system = {
-                    'id': dir_name,
-                    'name': display_name,
-                    'gameCount': game_count,
-                    'hardware': hardware,
-                    'manufacturer': manufacturer,
-                    'release': release,
-                    'version': version  # Add version to system info
-                }
-                
-                systems.append(system)
-                logger.debug(f"Loaded {dir_name}: {game_count} games (WIP), version: {version or 'none'}")
             except Exception as e:
-                logger.error(f"Error parsing gamelist for {dir_name}: {e}")
+                logger.error(f"Error finding versioned gamelist for {dir_name}: {e}")
+
+            # Skip system only if neither catalog loaded successfully
+            if not wip_loaded and not releases_loaded:
+                logger.warning(f"No catalog loaded for system {dir_name}, skipping")
                 continue
+
+            # Use WIP game count for display; 0 if WIP gamelist is broken
+            game_count = game_count_wip
+
+            # Get hardware category, manufacturer, release year, and full name from in-memory mapping
+            hardware = self.system_hardware.get(dir_name, 'unknown')
+            manufacturer = self.system_manufacturer.get(dir_name, 'Unknown')
+            release = self.system_release.get(dir_name, 'Unknown')
+            fullname = self.system_fullname.get(dir_name, None)
+
+            # Log if hardware not found (for debugging)
+            if hardware == 'unknown' and len(self.system_hardware) > 0:
+                # Check if there's a similar name (case-insensitive)
+                dir_name_lower = dir_name.lower()
+                matching_systems = [k for k in self.system_hardware.keys() if k.lower() == dir_name_lower]
+                if matching_systems:
+                    matched_id = matching_systems[0]
+                    logger.warning(f"System '{dir_name}' not found in hardware map, but found case-insensitive match: {matched_id}")
+                    hardware = self.system_hardware[matched_id]
+                    manufacturer = self.system_manufacturer.get(matched_id, 'Unknown')
+                    release = self.system_release.get(matched_id, 'Unknown')
+                    fullname = self.system_fullname.get(matched_id, None)
+                else:
+                    logger.debug(f"Hardware not found for system '{dir_name}'. Available systems (first 20): {list(self.system_hardware.keys())[:20]}")
+
+            # Use fullname if available, otherwise fall back to get_system_name
+            display_name = fullname if fullname else self.get_system_name(dir_name)
+
+            # Skip systems with hardware category "library"
+            if hardware.lower() == 'library':
+                logger.debug(f"Skipping system with library hardware category: {dir_name}")
+                continue
+
+            # Get version if available
+            version = self.system_versions.get(dir_name)
+
+            system = {
+                'id': dir_name,
+                'name': display_name,
+                'gameCount': game_count,
+                'hardware': hardware,
+                'manufacturer': manufacturer,
+                'release': release,
+                'version': version  # Add version to system info
+            }
+
+            systems.append(system)
+            logger.debug(f"Loaded {dir_name}: {game_count} games (WIP), version: {version or 'none'}")
         
         self.systems_list = systems
         self._gamelists_loaded = True

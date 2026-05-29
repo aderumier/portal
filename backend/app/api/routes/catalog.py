@@ -64,17 +64,15 @@ async def get_systems(
     # Build systems list with game counts
     systems = []
     for db_system in db_systems:
+        # Skip systems whose gamelist failed to load for the requested catalog
+        if db_system.id not in catalog:
+            continue
+
         # Get version if available
         version = game_service.system_versions.get(db_system.id)
-        
-        # If catalog_type is 'releases', only include systems that have a releases catalog (version exists)
-        if catalog_type == 'releases' and not version:
-            continue
-        
+
         # Count games for this system using the appropriate catalog
-        game_count = 0
-        if db_system.id in catalog:
-            game_count = len(catalog[db_system.id])
+        game_count = len(catalog[db_system.id])
         
         # Use fullname from database, fallback to name
         display_name = db_system.fullname or db_system.name
