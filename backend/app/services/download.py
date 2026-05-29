@@ -204,6 +204,31 @@ def parse_xbox360_file(xbox360_file_path: str) -> str:
         return None
 
 
+def parse_xbox360_save_id(xbox360_file_path: str) -> Optional[str]:
+    """Parse a .xbox360 file and return the save/title ID (second path component).
+
+    For a line like /Minecraft - Xbox 360 Edition (World)/584111F7/000D0000/...,
+    returns '584111F7' which maps to _saves_/xbox360/xenia/content/0000000000000000/584111F7.
+    """
+    try:
+        if not os.path.exists(xbox360_file_path):
+            return None
+        with open(xbox360_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if not line or not line.startswith('/'):
+                    continue
+                parts = line[1:].split('/')
+                if len(parts) >= 2:
+                    save_id = parts[1]
+                    logger.info(f"Parsed .xbox360 file {xbox360_file_path}: found save ID '{save_id}'")
+                    return save_id
+        return None
+    except Exception as e:
+        logger.error(f"Error parsing .xbox360 file for save ID {xbox360_file_path}: {e}", exc_info=True)
+        return None
+
+
 def parse_psvita_file(psvita_file_path: str) -> str:
     """Parse a .psvita file and return the directory name to download.
     
@@ -949,6 +974,22 @@ class DownloadService:
                                     # Include the .xbox360 file itself in the total size
                                     if os.path.exists(game_path) and os.path.isfile(game_path):
                                         total_size += os.path.getsize(game_path)
+
+                                    # Include saves directory if it exists
+                                    save_id = parse_xbox360_save_id(game_path)
+                                    if save_id:
+                                        save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'xbox360', 'xenia', 'content', '0000000000000000', save_id)
+                                        save_dir_full_path = os.path.normpath(save_dir_path)
+                                        if os.path.exists(save_dir_full_path) and os.path.isdir(save_dir_full_path):
+                                            try:
+                                                if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(save_dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                                    for root, dirs, files in os.walk(save_dir_full_path):
+                                                        for filename in files:
+                                                            file_full_path = os.path.join(root, filename)
+                                                            if os.path.isfile(file_full_path):
+                                                                total_size += os.path.getsize(file_full_path)
+                                            except ValueError:
+                                                logger.warning(f"Xbox360 save directory path validation failed: {save_dir_full_path}")
                             elif source_file.lower().endswith('.psvita'):
                                 # For .psvita files: parsed_files contains the directory name
                                 # Source directory is at {GAMES_PATH}/_saves_/psvita/vita3k/ux0/app/{directory_name}
@@ -2200,13 +2241,25 @@ class DownloadService:
                         # Build save_location path (same for both Linux and Windows, uses SAVEDIR)
                         save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
                         logger.info(f"Detected PS3 .m3u file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
-                
+
+                # Check if this is a .xbox360 file and saves exist
+                if resolved_game_id.lower().endswith('.xbox360'):
+                    save_id = parse_xbox360_save_id(file_path)
+                    if save_id:
+                        save_dir = os.path.join(settings.GAMES_PATH, '_saves_', 'xbox360', 'xenia', 'content', '0000000000000000', save_id)
+                        if os.path.isdir(save_dir):
+                            if is_windows:
+                                save_location = f"xbox360/xenia/content/0000000000000000/{save_id}"
+                            else:
+                                save_location = f"xbox360/0000000000000000/{save_id}"
+                            logger.info(f"Detected .xbox360 file with saves, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
+
                 # Check if this is a win98 .zip file and calculate save_location
                 if system and system.lower() == 'win98' and resolved_game_id.lower().endswith('.zip'):
                     # For win98 .zip files, save files go to SAVEDIR/win98/
                     save_location = "win98"
                     logger.info(f"Detected win98 .zip file, save_location: {save_location}")
-                
+
                 download_info = {
                     'download_id': resumable_download.id,
                     'game_id': resolved_game_id,  # Use resolved game_id (unified key already resolved)
@@ -2479,9 +2532,20 @@ class DownloadService:
                 if directory_name:
                     # Build save_location path (same for both Linux and Windows, uses SAVEDIR)
                     save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
-                    is_windows_platform = is_windows
-                    logger.info(f"Detected PS3 .m3u file, save_location: {save_location} (platform: {'windows' if is_windows_platform else 'linux'})")
-            
+                    logger.info(f"Detected PS3 .m3u file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
+
+            # Check if this is a .xbox360 file and saves exist
+            if resolved_game_id.lower().endswith('.xbox360'):
+                save_id = parse_xbox360_save_id(file_path)
+                if save_id:
+                    save_dir = os.path.join(settings.GAMES_PATH, '_saves_', 'xbox360', 'xenia', 'content', '0000000000000000', save_id)
+                    if os.path.isdir(save_dir):
+                        if is_windows:
+                            save_location = f"xbox360/xenia/content/0000000000000000/{save_id}"
+                        else:
+                            save_location = f"xbox360/0000000000000000/{save_id}"
+                        logger.info(f"Detected .xbox360 file with saves, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
+
             # Check if this is a win98 .zip file and calculate save_location
             if system and system.lower() == 'win98' and resolved_game_id.lower().endswith('.zip'):
                 # For win98 .zip files, save files go to SAVEDIR/win98/
