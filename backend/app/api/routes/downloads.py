@@ -376,27 +376,6 @@ async def discover_download_files(
                                         })
                             except ValueError:
                                 pass
-                        # Include saves directory if it exists
-                        from app.services.download import parse_xbox360_save_id
-                        save_id = parse_xbox360_save_id(base_path)
-                        if save_id:
-                            save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'xbox360', 'xenia', 'content', '0000000000000000', save_id)
-                            save_dir_full_path = os.path.normpath(save_dir_path)
-                            if os.path.exists(save_dir_full_path) and os.path.isdir(save_dir_full_path):
-                                try:
-                                    if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(save_dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
-                                        for root, dirs, files in os.walk(save_dir_full_path):
-                                            for filename in files:
-                                                file_full_path = os.path.join(root, filename)
-                                                rel_path = os.path.relpath(file_full_path, save_dir_full_path).replace('\\', '/')
-                                                if requested_files is None or rel_path in requested_files:
-                                                    all_files_list.append({
-                                                        'source_path': file_full_path,
-                                                        'relative_path': rel_path,
-                                                        'size': os.path.getsize(file_full_path)
-                                                    })
-                                except ValueError:
-                                    pass
                 elif source_file.lower().endswith('.psvita'):
                     if parsed_files:
                         directory_name = parsed_files[0]
@@ -2370,50 +2349,40 @@ async def download_file(
                 if base_path_type == 'file':
                     # Check if this is a .xbox360 file (special handling for directory downloads)
                     if source_file.lower().endswith('.xbox360'):
-                        # For .xbox360 files: parsed_files contains the game directory name.
-                        # Game content goes to ROMS_PATH via destination_rom_path.
-                        # Saves (if present) have no override and go to dest_base_path = SAVEDIR/save_location.
+                        # For .xbox360 files: parsed_files contains the directory name
+                        # Build full path to the directory (relative to .xbox360 file's directory)
                         if parsed_files:
-                            # Resolve target_system and normalized rom path (same as .psn handling)
-                            normalized_rom_path = download_service._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
-                            if normalized_rom_path.startswith(f"{system}/"):
-                                normalized_rom_path = normalized_rom_path[len(system) + 1:]
-                            target_system = system
-                            try:
-                                game = download_service.game_service.get_game_by_id(queue_item.game_id, queue_item.system_id, catalog_type=catalog_type)
-                                if game:
-                                    game_system = game.get('system', '')
-                                    if game_system:
-                                        target_system = game_system
-                            except Exception as e:
-                                logger.debug(f"Could not get game for target_system: {e}")
-
                             directory_name = parsed_files[0]
                             dir_full_path = os.path.normpath(os.path.join(source_dir, directory_name))
-
+                            
                             # Verify the directory exists and is within the games directory
                             if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                                # Ensure the directory is within the games directory (security check)
                                 try:
                                     if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                                        # Walk the directory and add all files
+                                        # For .xbox360 files, relative paths should be relative to the .xbox360 file's directory
+                                        # So we need to include the directory name in the path
                                         for root, dirs, files in os.walk(dir_full_path):
                                             for filename in files:
                                                 file_full_path = os.path.join(root, filename)
+                                                # Get relative path from the directory root
                                                 rel_path_from_dir = os.path.relpath(file_full_path, dir_full_path)
-                                                rel_path = os.path.join(directory_name, rel_path_from_dir).replace('\\', '/')
+                                                # Make it relative to the .xbox360 file's directory by prepending the directory name
+                                                rel_path = os.path.join(directory_name, rel_path_from_dir)
+                                                file_size = os.path.getsize(file_full_path)
                                                 files_list.append({
-                                                    'relative_path': rel_path,
-                                                    'size': os.path.getsize(file_full_path),
-                                                    'destination_rom_path': rel_path,
-                                                    'destination_system': target_system
+                                                    'relative_path': rel_path.replace('\\', '/'),  # Normalize path separators
+                                                    'size': file_size
                                                 })
-
-                                        # Include the .xbox360 file itself, routed to ROMS_PATH
-                                        xbox360_rel_path = os.path.relpath(base_path, source_dir).replace('\\', '/')
+                                        
+                                        # Include the .xbox360 file itself in the download
+                                        # The .xbox360 file is a sibling of the directory, so it's relative to source_dir
+                                        xbox360_rel_path = os.path.relpath(base_path, source_dir)
+                                        xbox360_file_size = os.path.getsize(base_path)
                                         files_list.append({
-                                            'relative_path': xbox360_rel_path,
-                                            'size': os.path.getsize(base_path),
-                                            'destination_rom_path': normalized_rom_path,
-                                            'destination_system': target_system
+                                            'relative_path': xbox360_rel_path.replace('\\', '/'),
+                                            'size': xbox360_file_size
                                         })
                                     else:
                                         logger.warning(f"Directory {dir_full_path} is outside games directory, skipping")
@@ -2421,26 +2390,6 @@ async def download_file(
                                     logger.warning(f"Directory {dir_full_path} path validation failed, skipping")
                             else:
                                 logger.warning(f"Directory listed in {source_file} does not exist: {dir_full_path}")
-
-                            # Include saves directory if it exists (files go to SAVEDIR/save_location via dest_base_path)
-                            from app.services.download import parse_xbox360_save_id
-                            save_id = parse_xbox360_save_id(base_path)
-                            if save_id:
-                                save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'xbox360', 'xenia', 'content', '0000000000000000', save_id)
-                                save_dir_full_path = os.path.normpath(save_dir_path)
-                                if os.path.exists(save_dir_full_path) and os.path.isdir(save_dir_full_path):
-                                    try:
-                                        if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(save_dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
-                                            for root, dirs, files in os.walk(save_dir_full_path):
-                                                for filename in files:
-                                                    file_full_path = os.path.join(root, filename)
-                                                    rel_path = os.path.relpath(file_full_path, save_dir_full_path).replace('\\', '/')
-                                                    files_list.append({
-                                                        'relative_path': rel_path,
-                                                        'size': os.path.getsize(file_full_path)
-                                                    })
-                                    except ValueError:
-                                        logger.warning(f"Xbox360 save directory path validation failed: {save_dir_full_path}")
                     elif source_file.lower().endswith('.psvita'):
                         # For .psvita files: parsed_files contains the directory name
                         # Source directory is at {GAMES_PATH}/_saves_/psvita/vita3k/ux0/app/{directory_name}
