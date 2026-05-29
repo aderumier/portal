@@ -683,7 +683,7 @@ async def process_websocket_archive_stream(
                             dest_file_path = os.path.join(ROMS_PATH, dest_system, dest_rom_path)
                         else:
                             dest_file_path = os.path.join(dest_base_path, relative_path)
-                        
+
                         # Skip file if already successfully extracted (server may send archive twice)
                         if relative_path in extracted_files:
                             logger.debug(f"WebSocket: Skipping already-extracted file: {relative_path} ({file_size} bytes)")
@@ -2035,7 +2035,7 @@ def download_directory_as_tar(download_id, system, game_id, base_url, dest_base_
             dest_file_path = os.path.join(ROMS_PATH, dest_system, dest_rom_path)
         else:
             dest_file_path = os.path.join(dest_base_path, relative_path)
-        
+
         if os.path.exists(dest_file_path):
             try:
                 existing_size = os.path.getsize(dest_file_path)
@@ -2231,6 +2231,7 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
     for file_info in files_list:
         relative_path = file_info['relative_path']
         expected_size = int(file_info['size'])  # Ensure integer type
+        # Check if file_info has destination override
         # Check if file_info has destination_rom_path override (e.g., for .psvita file that should go to roms)
         if 'destination_rom_path' in file_info:
             # File should be saved to roms directory instead of save directory
@@ -2239,7 +2240,7 @@ def download_directory_recursive(download_id, system, game_id, base_url, dest_ba
             dest_file_path = os.path.join(ROMS_PATH, dest_system, dest_rom_path)
         else:
             dest_file_path = os.path.join(dest_base_path, relative_path)
-        
+
         # Check if file exists
         if os.path.exists(dest_file_path):
             try:
