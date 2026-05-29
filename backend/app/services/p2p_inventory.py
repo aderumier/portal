@@ -378,40 +378,36 @@ class P2PInventoryService:
                     logger.debug(f"Error processing candidate token_id {token_id}: {e}")
                     continue
             
-            # Fetch upload/download totals for all eligible peers in one DB query
+            # Fetch total upload for all eligible peers in one DB query
             if eligible_peers:
                 try:
                     from app.database import SessionLocal, ApiToken
                     db = SessionLocal()
                     try:
                         peer_ids = [p['token_id'] for p in eligible_peers]
-                        tokens = db.query(ApiToken.id, ApiToken.p2p_total_upload_mb, ApiToken.p2p_total_download_mb) \
+                        tokens = db.query(ApiToken.id, ApiToken.p2p_total_upload_mb) \
                             .filter(ApiToken.id.in_(peer_ids)).all()
-                        ratio_map = {}
-                        for t in tokens:
-                            dl = t.p2p_total_download_mb or 0.0
-                            ul = t.p2p_total_upload_mb or 0.0
-                            ratio_map[t.id] = ul / dl if dl > 0 else 0.0
+                        upload_map = {t.id: t.p2p_total_upload_mb or 0.0 for t in tokens}
                     finally:
                         db.close()
                 except Exception as e:
-                    logger.debug(f"P2P peer selection: Could not fetch upload/download ratios: {e}")
-                    ratio_map = {}
+                    logger.debug(f"P2P peer selection: Could not fetch upload totals: {e}")
+                    upload_map = {}
 
                 for peer in eligible_peers:
-                    peer['upload_download_ratio'] = ratio_map.get(peer['token_id'], 0.0)
+                    peer['total_upload_mb'] = upload_map.get(peer['token_id'], 0.0)
 
-            # Sort by upload/download ratio ascending (peers that have uploaded least relative to
-            # their downloads are prioritised), then by upload_bandwidth descending as tiebreaker
-            eligible_peers.sort(key=lambda x: (x.get('upload_download_ratio', 0.0), -x['upload_bandwidth']))
+            # Sort by total upload ascending (peers that have uploaded least get priority),
+            # then by upload_bandwidth descending as tiebreaker
+            eligible_peers.sort(key=lambda x: (x.get('total_upload_mb', 0.0), -x['upload_bandwidth']))
 
             # Log selection summary
             logger.info(f"P2P peer selection for {system}/{rom_path}: {len(eligible_peers)} eligible peers found (filtered out {filtered_count} candidates)")
             if eligible_peers:
                 bandwidths = [p['upload_bandwidth'] for p in eligible_peers]
-                ratios = [p.get('upload_download_ratio', 0.0) for p in eligible_peers]
+                uploads = [p.get('total_upload_mb', 0.0) for p in eligible_peers]
                 logger.info(f"P2P peer selection: Upload bandwidths - min={min(bandwidths):.2f}, max={max(bandwidths):.2f}, avg={sum(bandwidths)/len(bandwidths):.2f} Mbits/s")
-                logger.info(f"P2P peer selection: Upload/download ratios - min={min(ratios):.3f}, max={max(ratios):.3f}")
+                logger.info(f"P2P peer selection: Total upload MB - min={min(uploads):.1f}, max={max(uploads):.1f}")
             
             # Include p2p_port_accessible in results (needed for client decision-making)
             peers_to_send = []
