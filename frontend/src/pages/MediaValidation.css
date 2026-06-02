@@ -139,6 +139,12 @@
   cursor: zoom-in;
 }
 
+.media-item-preview-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 /* Lightbox */
 .mv-lightbox-overlay {
   position: fixed;

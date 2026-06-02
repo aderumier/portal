@@ -36,7 +36,8 @@ export const getSystemLogoUrl = (systemId) => {
  */
 export const getMediaUrl = (mediaPath) => {
   if (!mediaPath) return null
-  const base = `/media/${mediaPath}`
+  const encodedPath = mediaPath.split('/').map(encodeURIComponent).join('/')
+  const base = `/media/${encodedPath}`
   return mediaVersion != null ? `${base}?v=${mediaVersion}` : base
 }
 
@@ -80,7 +81,8 @@ export const getThumbnailUrl = (mediaPath, width, height) => {
   // In development (port 3000), use regular media URLs (Vite proxy doesn't support image_filter)
   if (isNginxServing()) {
     // URL format: /media/thumbnail/WIDTHxHEIGHT/system/media/thumbnails/image.png
-    const base = `/media/thumbnail/${width}x${height}/${mediaPath}`
+    const encodedPath = mediaPath.split('/').map(encodeURIComponent).join('/')
+    const base = `/media/thumbnail/${width}x${height}/${encodedPath}`
     return mediaVersion != null ? `${base}?v=${mediaVersion}` : base
   }
   return getMediaUrl(mediaPath)

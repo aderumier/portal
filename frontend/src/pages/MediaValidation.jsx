@@ -99,6 +99,13 @@ const GameInfoModal = ({ system, gameId, gameName, onClose }) => {
   )
 }
 
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv'])
+
+const isVideoFile = (filename) => {
+  const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase()
+  return VIDEO_EXTENSIONS.has(ext)
+}
+
 const MediaValidation = () => {
   const { isAdmin } = useAuth()
   const [pendingMedia, setPendingMedia] = useState([])
@@ -301,21 +308,32 @@ const MediaValidation = () => {
                     return (
                       <div key={index} className="media-item">
                         <div className="media-item-preview">
-                          <img
-                            src={previewUrl}
-                            alt={media.filename}
-                            className="media-item-preview-img"
-                            onClick={() => openLightbox(previewUrl, media.filename)}
-                            onLoad={(e) => handleImageLoad(dimKey, e)}
-                            onError={(e) => {
-                              e.target.style.display = 'none'
-                              const placeholder = e.target.nextElementSibling
-                              if (placeholder) placeholder.style.display = 'flex'
-                            }}
-                          />
-                          <div className="media-item-placeholder" style={{ display: 'none' }}>
-                            <i className="fas fa-image"></i>
-                          </div>
+                          {isVideoFile(media.filename) ? (
+                            <video
+                              src={previewUrl}
+                              className="media-item-preview-video"
+                              controls
+                              preload="metadata"
+                            />
+                          ) : (
+                            <>
+                              <img
+                                src={previewUrl}
+                                alt={media.filename}
+                                className="media-item-preview-img"
+                                onClick={() => openLightbox(previewUrl, media.filename)}
+                                onLoad={(e) => handleImageLoad(dimKey, e)}
+                                onError={(e) => {
+                                  e.target.style.display = 'none'
+                                  const placeholder = e.target.nextElementSibling
+                                  if (placeholder) placeholder.style.display = 'flex'
+                                }}
+                              />
+                              <div className="media-item-placeholder" style={{ display: 'none' }}>
+                                <i className="fas fa-image"></i>
+                              </div>
+                            </>
+                          )}
                         </div>
                         <div className="media-item-info">
                           <div
