@@ -25,7 +25,7 @@ import random
 import struct
 
 # Client version
-CLIENT_VERSION = "0.11"
+CLIENT_VERSION = "0.12"
 
 # Configure stdout/stderr for Windows to handle non-ASCII characters gracefully
 # This prevents encoding errors when third-party libraries (like internetspeedtest) print emojis
@@ -2897,9 +2897,6 @@ def add_game_to_batocera_api(batocera_system, game_id, game_data, media_paths):
         logger.info(f"XML Content:\n{xml_content}")
         logger.info(f"=== End Batocera API Request Parameters ===")
         
-        # Flush files to disk before notifying Batocera API
-        os.sync()
-
         # Send POST request to Batocera API
         batocera_api_url = "http://127.0.0.1:1234"
         url = f"{batocera_api_url}/addgames/{batocera_system}"
