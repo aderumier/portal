@@ -157,13 +157,64 @@
   cursor: pointer;
 }
 
+.mv-lightbox-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: default;
+  max-width: 92vw;
+  max-height: 92vh;
+}
+
+.mv-lightbox-tabs {
+  display: flex;
+  gap: 0.25rem;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.25rem;
+  border-radius: 8px;
+}
+
+.mv-lightbox-tab {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.9rem;
+  padding: 0.4rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mv-lightbox-tab:hover {
+  color: #fff;
+}
+
+.mv-lightbox-tab.active {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+
+.mv-lightbox-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
 .mv-lightbox-image {
   max-width: 90vw;
-  max-height: 90vh;
+  max-height: 80vh;
   object-fit: contain;
   border-radius: 4px;
   cursor: default;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+
+.mv-lightbox-empty {
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 1rem;
+  padding: 4rem 3rem;
 }
 
 .mv-lightbox-close {

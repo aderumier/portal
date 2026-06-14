@@ -505,6 +505,7 @@ async def get_contribute_games(
             'publisher': game_data.get('publisher', ''),
             'releasedate': game_data.get('releasedate', ''),
             'catalog_image': catalog_image,
+            'image': _norm(game_data.get('image', '')),
             'thumbnail': _norm(game_data.get('thumbnail', '')),
             'boxart': _norm(game_data.get('boxart', '')),
             'fanart': _norm(fanart),

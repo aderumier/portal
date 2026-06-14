@@ -5,21 +5,61 @@ import client from '../api/client'
 import { getGameDetails } from '../api/catalog'
 import './MediaValidation.css'
 
-const Lightbox = ({ url, alt, onClose }) => {
+const Lightbox = ({ url, alt, system, gameId, onClose }) => {
+  const [activeTab, setActiveTab] = useState('uploaded')
+  const [game, setGame] = useState(null)
+  const [gameLoading, setGameLoading] = useState(false)
+
   useEffect(() => {
     const handleKey = (e) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
   }, [onClose])
 
+  // Fetch game details to populate the Box Art / Screenshot tabs
+  useEffect(() => {
+    if (!gameId) return
+    setGameLoading(true)
+    getGameDetails(system, gameId, 'wip')
+      .then(data => { setGame(data); setGameLoading(false) })
+      .catch(() => { setGameLoading(false) })
+  }, [system, gameId])
+
+  const boxartUrl = game ? getMediaUrl(game.boxart) : null
+  const screenshotUrl = game ? getMediaUrl(game.image) : null
+
+  const tabs = [
+    { key: 'uploaded', label: 'Uploaded', src: url },
+    { key: 'boxart', label: 'Box Art', src: boxartUrl },
+    { key: 'screenshot', label: 'Screenshot', src: screenshotUrl },
+  ]
+
+  const activeSrc = tabs.find(t => t.key === activeTab)?.src
+
   return (
     <div className="mv-lightbox-overlay" onClick={onClose}>
-      <img
-        src={url}
-        alt={alt}
-        className="mv-lightbox-image"
-        onClick={(e) => e.stopPropagation()}
-      />
+      <div className="mv-lightbox-content" onClick={(e) => e.stopPropagation()}>
+        <div className="mv-lightbox-tabs">
+          {tabs.map(tab => (
+            <button
+              key={tab.key}
+              className={`mv-lightbox-tab${activeTab === tab.key ? ' active' : ''}`}
+              onClick={() => setActiveTab(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div className="mv-lightbox-stage">
+          {activeSrc ? (
+            <img src={activeSrc} alt={alt} className="mv-lightbox-image" />
+          ) : (
+            <div className="mv-lightbox-empty">
+              {gameLoading ? 'Loading…' : `No ${tabs.find(t => t.key === activeTab)?.label.toLowerCase()} available`}
+            </div>
+          )}
+        </div>
+      </div>
       <button className="mv-lightbox-close" onClick={onClose}>✕</button>
     </div>
   )
@@ -117,7 +157,7 @@ const MediaValidation = () => {
   const [dimensions, setDimensions] = useState({})
   const [gameModal, setGameModal] = useState(null)
 
-  const openLightbox = useCallback((url, alt) => setLightbox({ url, alt }), [])
+  const openLightbox = useCallback((url, alt, system, gameId) => setLightbox({ url, alt, system, gameId }), [])
   const closeLightbox = useCallback(() => setLightbox(null), [])
   const openGameModal = useCallback((system, gameId, gameName) => setGameModal({ system, gameId, gameName }), [])
   const closeGameModal = useCallback(() => setGameModal(null), [])
@@ -246,7 +286,7 @@ const MediaValidation = () => {
 
   return (
     <div className="media-validation-page">
-      {lightbox && <Lightbox url={lightbox.url} alt={lightbox.alt} onClose={closeLightbox} />}
+      {lightbox && <Lightbox url={lightbox.url} alt={lightbox.alt} system={lightbox.system} gameId={lightbox.gameId} onClose={closeLightbox} />}
       {gameModal && <GameInfoModal system={gameModal.system} gameId={gameModal.gameId} gameName={gameModal.gameName} onClose={closeGameModal} />}
       <h1>Media Validation</h1>
       <p className="media-validation-description">
@@ -321,7 +361,7 @@ const MediaValidation = () => {
                                 src={previewUrl}
                                 alt={media.filename}
                                 className="media-item-preview-img"
-                                onClick={() => openLightbox(previewUrl, media.filename)}
+                                onClick={() => openLightbox(previewUrl, media.filename, media.system, media.game_id)}
                                 onLoad={(e) => handleImageLoad(dimKey, e)}
                                 onError={(e) => {
                                   e.target.style.display = 'none'

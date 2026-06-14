@@ -226,6 +226,7 @@ const ContributeGamesTable = React.memo(({
             <SortHeader column="name" label="Game Name" />
             <SortHeader column="publisher" label="Publisher" />
             <SortHeader column="releaseDate" label="Year" />
+            <SortHeader column="image" label="Image" />
             <SortHeader column="thumbnail" label="Thumbnail" />
             <SortHeader column="boxart" label="Boxart" />
             <SortHeader column="fanart" label="Fanart" />
@@ -248,6 +249,7 @@ const ContributeGamesTable = React.memo(({
                 <td className="game-publisher-cell">{game.publisher || '-'}</td>
                 <td className="game-releaseyear-cell">{formatReleaseYear(game.releasedate) || '-'}</td>
 
+                <MediaThumbCell path={game.image} label="Image" onLightboxOpen={onLightboxOpen} />
                 <MediaThumbCell path={game.thumbnail} label="Thumbnail" onLightboxOpen={onLightboxOpen} />
                 <MediaThumbCell path={game.boxart} label="Boxart" onLightboxOpen={onLightboxOpen} />
                 <MediaThumbCell
@@ -368,7 +370,7 @@ const ContributeGamesList = ({ systemId }) => {
 
   // lightbox is intentionally NOT in deps — changing it must not recompute the list
   const filteredGames = useMemo(() => {
-    const mediaFields = ['thumbnail', 'boxart', 'fanart', 'marquee', 'video']
+    const mediaFields = ['image', 'thumbnail', 'boxart', 'fanart', 'marquee', 'video']
     return allGames
       .filter(game => {
         if (selectedLetter) {
