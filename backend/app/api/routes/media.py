@@ -1,6 +1,7 @@
 """Media upload and validation routes."""
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
-from typing import List
+from typing import List, Optional
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.api.middleware.roles import require_admin_role, require_media_contributor
 from app.services.media import MediaService
@@ -18,6 +19,98 @@ router = APIRouter()
 def get_media_service() -> MediaService:
     """Get media service instance."""
     return MediaService()
+
+async def _fetch_external_romfile_map(client, system):
+    """Fetch a ``{stem: romfile}`` map for a system from the external gamelist
+    service. Used to resolve romfiles for systems not present in the local WIP
+    catalog (the contribute game list is sourced from the same service)."""
+    try:
+        resp = await client.get(
+            f"{settings.GAMELIST_SERVICE_URL}/api/external/games",
+            params={"system": system},
+            headers={"X-API-Token": settings.GAMELIST_API_TOKEN},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.error(f"Error fetching external games for system '{system}': {e}", exc_info=True)
+        return {}
+
+    romfile_map = {}
+    for game in data.get('games', []):
+        romfile = game.get('romfile', '')
+        if not romfile:
+            continue
+        stem = os.path.splitext(os.path.basename(romfile))[0]
+        romfile_map[stem] = romfile if romfile.startswith('./') else f'./{romfile}'
+    return romfile_map
+
+
+async def _notify_gamelist_add_media(items):
+    """Notify the external gamelist service that media files were added.
+
+    items: list of dicts with keys ``system``, ``fieldname``, ``filename``.
+    Items are grouped by system and sent as a single batched request per
+    system using the ``/api/external/add-media`` batch format:
+        {"system": "snes", "media": [{"romfile", "mediatype", "mediafilename"}, ...]}
+
+    The romfile for each item is resolved from the local WIP catalog when
+    available, falling back to the external gamelist service for systems not
+    tracked locally.
+    """
+    if not settings.GAMELIST_SERVICE_URL or not items:
+        return
+
+    from app.api.routes.catalog import get_game_service
+    game_service = get_game_service()
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        external_maps = {}  # system -> {stem: romfile}, fetched lazily
+
+        # Resolve each item's romfile and group by system
+        by_system = {}
+        for item in items:
+            system = item['system']
+            fieldname = item['fieldname']
+            filename = item['filename']
+            stem = os.path.splitext(filename)[0]
+
+            system_catalog = game_service.catalog_wip.get(system, {})
+            rompath = next(
+                (k for k in system_catalog if os.path.splitext(os.path.basename(k))[0] == stem),
+                None
+            )
+            if rompath:
+                romfile = rompath if rompath.startswith('./') else f'./{rompath}'
+            else:
+                if system not in external_maps:
+                    external_maps[system] = await _fetch_external_romfile_map(client, system)
+                romfile = external_maps[system].get(stem)
+
+            if not romfile:
+                logger.warning(f"Could not find romfile for stem '{stem}' in system '{system}' (local catalog or external)")
+                continue
+
+            by_system.setdefault(system, []).append({
+                "romfile": romfile,
+                "mediatype": fieldname,
+                "mediafilename": filename,
+            })
+
+        if not by_system:
+            return
+
+        for system, media_list in by_system.items():
+            try:
+                resp = await client.post(
+                    f"{settings.GAMELIST_SERVICE_URL}/api/external/add-media",
+                    json={"system": system, "media": media_list},
+                    headers={"X-API-Token": settings.GAMELIST_API_TOKEN},
+                )
+                resp.raise_for_status()
+                logger.info(f"Notified gamelist service for system '{system}' with {len(media_list)} media item(s)")
+            except Exception as e:
+                logger.error(f"Error notifying gamelist service for system '{system}': {e}", exc_info=True)
 
 @router.post("/upload")
 async def upload_media(
@@ -231,35 +324,9 @@ async def validate_media(
                 db.rollback()
 
         # Notify external gamelist service
-        if settings.GAMELIST_SERVICE_URL:
-            try:
-                from app.api.routes.catalog import get_game_service
-                game_service = get_game_service()
-                stem = os.path.splitext(filename)[0]
-                system_catalog = game_service.catalog_wip.get(system, {})
-                rompath = next(
-                    (k for k in system_catalog if os.path.splitext(os.path.basename(k))[0] == stem),
-                    None
-                )
-                if rompath:
-                    romfile = rompath if rompath.startswith('./') else f'./{rompath}'
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        resp = await client.post(
-                            f"{settings.GAMELIST_SERVICE_URL}/api/external/add-media",
-                            json={
-                                "system": system,
-                                "romfile": romfile,
-                                "mediatype": fieldname,
-                                "mediafilename": filename,
-                            },
-                            headers={"X-API-Token": settings.GAMELIST_API_TOKEN},
-                        )
-                        resp.raise_for_status()
-                        logger.info(f"Notified gamelist service for {system}/{romfile} {fieldname}/{filename}")
-                else:
-                    logger.warning(f"Could not find rompath for stem '{stem}' in system '{system}' catalog")
-            except Exception as e:
-                logger.error(f"Error notifying gamelist service: {e}", exc_info=True)
+        await _notify_gamelist_add_media([
+            {"system": system, "fieldname": fieldname, "filename": filename}
+        ])
 
         return {
             "success": True,
@@ -274,6 +341,83 @@ async def validate_media(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while validating media"
         )
+
+
+class ValidateBatchItem(BaseModel):
+    system: str
+    fieldname: str
+    filename: str
+    user_id: Optional[str] = None
+
+
+class ValidateBatchRequest(BaseModel):
+    items: List[ValidateBatchItem]
+
+
+@router.post("/validate-batch")
+async def validate_media_batch(
+    request: ValidateBatchRequest,
+    current_user: dict = Depends(require_admin_role),
+    media_service: MediaService = Depends(get_media_service),
+    db: Session = Depends(get_db)
+):
+    """Validate and move multiple pending media files in one request.
+
+    Files are moved one by one (collecting per-file failures), user
+    ``medias_validated`` counters are aggregated into a single commit per
+    user, and the external gamelist service is notified with a single
+    batched request per system.
+    """
+    validated = []
+    failed = []
+    user_counts = {}
+    notify_items = []
+
+    for item in request.items:
+        try:
+            success, validated_user_id = media_service.validate_media(
+                item.system, item.fieldname, item.filename, item.user_id
+            )
+            if not success:
+                failed.append({"filename": item.filename, "error": "Failed to validate media file"})
+                continue
+
+            validated.append(item.filename)
+            if validated_user_id:
+                user_counts[validated_user_id] = user_counts.get(validated_user_id, 0) + 1
+            notify_items.append({
+                "system": item.system,
+                "fieldname": item.fieldname,
+                "filename": item.filename,
+            })
+        except Exception as e:
+            logger.error(f"Error validating media {item.filename}: {e}", exc_info=True)
+            failed.append({"filename": item.filename, "error": str(e)})
+
+    # Aggregate medias_validated counters (one commit per user)
+    for validated_user_id, count in user_counts.items():
+        try:
+            user = db.query(User).filter(User.user_id == validated_user_id).first()
+            if user:
+                user.medias_validated = (user.medias_validated or 0) + count
+            else:
+                user = User(user_id=validated_user_id, medias_upload=0, medias_validated=count)
+                db.add(user)
+            db.commit()
+            logger.info(f"Incremented medias_validated by {count} for user {validated_user_id}")
+        except Exception as e:
+            logger.error(f"Error updating medias_validated counter for {validated_user_id}: {e}", exc_info=True)
+            db.rollback()
+
+    # Notify external gamelist service (one batched request per system)
+    await _notify_gamelist_add_media(notify_items)
+
+    return {
+        "success": len(failed) == 0,
+        "validated": validated,
+        "failed": failed,
+    }
+
 
 @router.delete("/pending")
 async def delete_pending_media(

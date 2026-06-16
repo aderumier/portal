@@ -156,6 +156,7 @@ const MediaValidation = () => {
   const [lightbox, setLightbox] = useState(null)
   const [dimensions, setDimensions] = useState({})
   const [gameModal, setGameModal] = useState(null)
+  const [validatingKey, setValidatingKey] = useState(null)
 
   const openLightbox = useCallback((url, alt, system, gameId) => setLightbox({ url, alt, system, gameId }), [])
   const closeLightbox = useCallback(() => setLightbox(null), [])
@@ -189,27 +190,59 @@ const MediaValidation = () => {
     }
   }
 
+  const validateOne = async (system, fieldname, filename, userId) => {
+    const formData = new FormData()
+    formData.append('system', system)
+    formData.append('fieldname', fieldname)
+    formData.append('filename', filename)
+    if (userId) {
+      formData.append('user_id', userId)
+    }
+
+    await client.post('/api/media/validate', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    })
+  }
+
   const handleValidate = async (system, fieldname, filename, userId) => {
     try {
-      const formData = new FormData()
-      formData.append('system', system)
-      formData.append('fieldname', fieldname)
-      formData.append('filename', filename)
-      if (userId) {
-        formData.append('user_id', userId)
-      }
-
-      await client.post('/api/media/validate', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      })
-
+      await validateOne(system, fieldname, filename, userId)
       loadPendingMedia()
     } catch (err) {
       console.error('Error validating media:', err)
       alert(err.response?.data?.detail || 'Failed to validate media')
     }
+  }
+
+  const handleValidateAll = async (groupKey, mediaList) => {
+    if (mediaList.length === 0) return
+    const { system, fieldname } = mediaList[0]
+    if (!confirm(`Validate all ${mediaList.length} ${system} / ${fieldname} file${mediaList.length !== 1 ? 's' : ''}?`)) {
+      return
+    }
+
+    setValidatingKey(groupKey)
+    try {
+      const items = mediaList.map(media => ({
+        system: media.system,
+        fieldname: media.fieldname,
+        filename: media.filename,
+        user_id: media.user_id || null,
+      }))
+      const response = await client.post('/api/media/validate-batch', { items })
+      const failed = response.data?.failed || []
+      if (failed.length > 0) {
+        alert(`Failed to validate ${failed.length} file(s):\n${failed.map(f => f.filename).join('\n')}`)
+      }
+    } catch (err) {
+      console.error('Error validating media:', err)
+      alert(err.response?.data?.detail || 'Failed to validate media')
+    } finally {
+      setValidatingKey(null)
+    }
+    loadPendingMedia()
   }
 
   const handleDelete = async (system, fieldname, filename, userId) => {
@@ -337,9 +370,18 @@ const MediaValidation = () => {
             const [system, fieldname] = key.split('/')
             return (
               <div key={key} className="media-group">
-                <h2 className="media-group-title">
-                  {system} / {fieldname} ({mediaList.length} file{mediaList.length !== 1 ? 's' : ''})
-                </h2>
+                <div className="media-group-header">
+                  <h2 className="media-group-title">
+                    {system} / {fieldname} ({mediaList.length} file{mediaList.length !== 1 ? 's' : ''})
+                  </h2>
+                  <button
+                    className="validate-all-button"
+                    onClick={() => handleValidateAll(key, mediaList)}
+                    disabled={validatingKey === key}
+                  >
+                    {validatingKey === key ? 'Validating…' : 'Validate All'}
+                  </button>
+                </div>
                 <div className="media-list">
                   {mediaList.map((media, index) => {
                     const previewUrl = `${API_URL}/api/media/pending-preview/${media.user_id || 'unknown'}/${media.system}/${media.fieldname}/${encodeURIComponent(media.filename)}`

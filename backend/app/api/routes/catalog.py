@@ -12,6 +12,7 @@ from app.services import torrent as torrent_service
 from app.config import settings
 import logging
 import orjson
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -447,28 +448,26 @@ async def get_contribute_systems(
     return ORJSONResponse(content={"systems": systems, "media_version": media_version})
 
 
-@router.get("/contribute/games/{system}")
-async def get_contribute_games(
-    system: str,
-    current_user: dict = Depends(require_media_contributor),
-    game_service: GameService = Depends(get_game_service),
-    db: Session = Depends(get_db)
-):
-    """Get games with missing fanart, marquee, or video for a system (WIP catalog, any logged-in user)."""
-    if not game_service._gamelists_loaded:
-        game_service.preload_all_gamelists()
+async def _get_external_contribute_games(system: str, system_name: str):
+    """Build the contribute games list for a system sourced from the external
+    gamelist service. Fetches the full game list, then keeps only games missing
+    fanart, marquee, or video."""
+    if not settings.GAMELIST_SERVICE_URL:
+        logger.error("GAMELIST_SERVICE_URL is not configured; cannot fetch external games for '%s'", system)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="External gamelist service not configured")
 
-    catalog = game_service.catalog_wip
-    catalog_sorted_keys = game_service.catalog_sorted_keys_wip
-
-    if system not in catalog:
-        return ORJSONResponse(content={"games": []})
-
-    system_catalog = catalog[system]
-    sorted_rompaths = catalog_sorted_keys.get(system, [])
-
-    fullname = game_service.system_fullname.get(system)
-    system_name = fullname if fullname else game_service.get_system_name(system)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{settings.GAMELIST_SERVICE_URL}/api/external/games",
+                params={"system": system},
+                headers={"X-API-Token": settings.GAMELIST_API_TOKEN},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        logger.error("Error fetching external games for system '%s': %s", system, e, exc_info=True)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to fetch games from external service")
 
     def _norm(path):
         if not path:
@@ -479,42 +478,56 @@ async def get_contribute_games(
         return p
 
     games = []
-    for rompath in sorted_rompaths:
-        if rompath not in system_catalog:
-            continue
-        game_data = system_catalog[rompath]
-        fanart = game_data.get('fanart', '')
-        marquee = game_data.get('marquee', '')
-        video = game_data.get('video', '')
+    for game_data in data.get('games', []):
+        media = game_data.get('media') or {}
+        fanart = media.get('fanart', '')
+        marquee = media.get('marquee', '')
+        video = media.get('video', '')
         if fanart and marquee and video:
             continue
 
-        catalog_image = game_data.get('catalog_image', '')
-        if catalog_image:
-            clean = catalog_image.lstrip('./')
-            if not clean.startswith(f"{system}/"):
-                catalog_image = f"{system}/{clean}"
-            else:
-                catalog_image = clean
+        thumbnail = media.get('thumbnail', '')
+        boxart = media.get('boxart', '')
+        image = media.get('image', '')
+        catalog_image = thumbnail or boxart or image
 
         games.append({
-            'id': rompath,
+            'id': _norm(game_data.get('romfile', '')),
             'name': game_data.get('name', ''),
             'system': system,
             'systemName': system_name,
             'publisher': game_data.get('publisher', ''),
             'releasedate': game_data.get('releasedate', ''),
-            'catalog_image': catalog_image,
-            'image': _norm(game_data.get('image', '')),
-            'thumbnail': _norm(game_data.get('thumbnail', '')),
-            'boxart': _norm(game_data.get('boxart', '')),
+            'catalog_image': _norm(catalog_image),
+            'image': _norm(image),
+            'thumbnail': _norm(thumbnail),
+            'boxart': _norm(boxart),
             'fanart': _norm(fanart),
             'marquee': _norm(marquee),
             'video': _norm(video),
         })
 
-    media_version = int(game_service._catalog_timestamp) if game_service._catalog_timestamp else 0
-    return ORJSONResponse(content={"games": games, "media_version": media_version})
+    return ORJSONResponse(content={"games": games, "media_version": 0})
+
+
+@router.get("/contribute/games/{system}")
+async def get_contribute_games(
+    system: str,
+    current_user: dict = Depends(require_media_contributor),
+    game_service: GameService = Depends(get_game_service),
+    db: Session = Depends(get_db)
+):
+    """Get games with missing fanart, marquee, or video for a system.
+
+    The game list is sourced from the external gamelist service (same service
+    and token used by the /api/media/upload notification flow), then filtered
+    to games missing fanart, marquee, or video.
+    """
+    db_system = db.query(System).filter(System.id == system).first()
+    system_name = (db_system.fullname or db_system.name) if db_system else (
+        game_service.system_fullname.get(system) or system
+    )
+    return await _get_external_contribute_games(system, system_name)
 
 
 @router.get("/systems/top/downloads")
