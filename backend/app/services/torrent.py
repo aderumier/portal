@@ -1,5 +1,6 @@
 """Torrent file storage and per-user announce URL rewriting."""
 import os
+import re
 import uuid
 import logging
 from pathlib import Path
@@ -182,6 +183,21 @@ def push_torrent_to_qbittorrent(system_id: str, torrent_data: bytes, save_path: 
         logger.error(f"[qbt] {system_id}: failed to push torrent to qBittorrent: {exc}")
 
 
+def _normalize_announce_base(url: str) -> str:
+    """Clean a configured announce base URL so a stray slash can't produce an
+    invalid tracker URL (e.g. 'https:///host' -> 'https://host').
+
+    Returns '' if the value is empty/unset.
+    """
+    url = (url or "").strip()
+    if not url:
+        return ""
+    url = url.rstrip("/")
+    # Collapse accidental extra slashes right after the scheme.
+    url = re.sub(r"^(https?:)/+", r"\1//", url)
+    return url
+
+
 def build_user_torrent(system_id: str, passkey: str) -> Optional[bytes]:
     """
     Read the base torrent, replace every announce URL with the user-specific
@@ -192,7 +208,7 @@ def build_user_torrent(system_id: str, passkey: str) -> Optional[bytes]:
     if not path.exists():
         return None
 
-    announce_base = settings.TRACKER_ANNOUNCE_URL.rstrip("/")
+    announce_base = _normalize_announce_base(settings.TRACKER_ANNOUNCE_URL)
     if not announce_base:
         logger.warning("TRACKER_ANNOUNCE_URL is not configured")
         return None
