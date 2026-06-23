@@ -3,18 +3,24 @@ import { useAuth } from '../context/AuthContext'
 import { API_URL, getMediaUrl } from '../utils/constants'
 import client from '../api/client'
 import { getGameDetails } from '../api/catalog'
+import ImageCropper from '../components/ImageCropper/ImageCropper'
 import './MediaValidation.css'
 
-const Lightbox = ({ url, alt, system, gameId, onClose }) => {
+const Lightbox = ({ url, media, startCropping = false, canCrop = false, onCropSave, onClose }) => {
   const [activeTab, setActiveTab] = useState('uploaded')
   const [game, setGame] = useState(null)
   const [gameLoading, setGameLoading] = useState(false)
+  const [cropping, setCropping] = useState(startCropping)
+
+  const alt = media?.filename
+  const system = media?.system
+  const gameId = media?.game_id
 
   useEffect(() => {
-    const handleKey = (e) => { if (e.key === 'Escape') onClose() }
+    const handleKey = (e) => { if (e.key === 'Escape') cropping ? setCropping(false) : onClose() }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [onClose])
+  }, [onClose, cropping])
 
   // Fetch game details to populate the Box Art / Screenshot tabs
   useEffect(() => {
@@ -35,23 +41,38 @@ const Lightbox = ({ url, alt, system, gameId, onClose }) => {
   ]
 
   const activeSrc = tabs.find(t => t.key === activeTab)?.src
+  const cropActive = cropping && activeTab === 'uploaded'
+
+  const selectTab = (key) => { setCropping(false); setActiveTab(key) }
 
   return (
-    <div className="mv-lightbox-overlay" onClick={onClose}>
+    <div className="mv-lightbox-overlay" onClick={() => (cropping ? setCropping(false) : onClose())}>
       <div className="mv-lightbox-content" onClick={(e) => e.stopPropagation()}>
         <div className="mv-lightbox-tabs">
           {tabs.map(tab => (
             <button
               key={tab.key}
               className={`mv-lightbox-tab${activeTab === tab.key ? ' active' : ''}`}
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => selectTab(tab.key)}
             >
               {tab.label}
             </button>
           ))}
+          {canCrop && activeTab === 'uploaded' && !cropActive && (
+            <button className="mv-lightbox-tab mv-lightbox-crop-toggle" onClick={() => setCropping(true)}>
+              ✂ Crop
+            </button>
+          )}
         </div>
         <div className="mv-lightbox-stage">
-          {activeSrc ? (
+          {cropActive ? (
+            <ImageCropper
+              imageUrl={url}
+              filename={media.filename}
+              onApply={async (blob) => { await onCropSave(blob); setCropping(false) }}
+              onCancel={() => setCropping(false)}
+            />
+          ) : activeSrc ? (
             <img src={activeSrc} alt={alt} className="mv-lightbox-image" />
           ) : (
             <div className="mv-lightbox-empty">
@@ -157,8 +178,9 @@ const MediaValidation = () => {
   const [dimensions, setDimensions] = useState({})
   const [gameModal, setGameModal] = useState(null)
   const [validatingKey, setValidatingKey] = useState(null)
+  const [cropVersions, setCropVersions] = useState({})
 
-  const openLightbox = useCallback((url, alt, system, gameId) => setLightbox({ url, alt, system, gameId }), [])
+  const openLightbox = useCallback((media, cropping = false) => setLightbox({ media, cropping }), [])
   const closeLightbox = useCallback(() => setLightbox(null), [])
   const openGameModal = useCallback((system, gameId, gameName) => setGameModal({ system, gameId, gameName }), [])
   const closeGameModal = useCallback(() => setGameModal(null), [])
@@ -209,7 +231,12 @@ const MediaValidation = () => {
   const handleValidate = async (system, fieldname, filename, userId) => {
     try {
       await validateOne(system, fieldname, filename, userId)
-      loadPendingMedia()
+      setPendingMedia(prev => prev.filter(m => !(
+        m.system === system &&
+        m.fieldname === fieldname &&
+        m.filename === filename &&
+        (userId ? m.user_id === userId : true)
+      )))
     } catch (err) {
       console.error('Error validating media:', err)
       alert(err.response?.data?.detail || 'Failed to validate media')
@@ -233,6 +260,13 @@ const MediaValidation = () => {
       }))
       const response = await client.post('/api/media/validate-batch', { items })
       const failed = response.data?.failed || []
+      const failedNames = new Set(failed.map(f => f.filename))
+      // Remove the successfully validated items from this group, keep failures
+      setPendingMedia(prev => prev.filter(m => !(
+        m.system === system &&
+        m.fieldname === fieldname &&
+        !failedNames.has(m.filename)
+      )))
       if (failed.length > 0) {
         alert(`Failed to validate ${failed.length} file(s):\n${failed.map(f => f.filename).join('\n')}`)
       }
@@ -242,7 +276,6 @@ const MediaValidation = () => {
     } finally {
       setValidatingKey(null)
     }
-    loadPendingMedia()
   }
 
   const handleDelete = async (system, fieldname, filename, userId) => {
@@ -262,11 +295,37 @@ const MediaValidation = () => {
 
       await client.delete('/api/media/pending', { params })
 
-      alert('Pending media deleted successfully!')
-      loadPendingMedia()
+      setPendingMedia(prev => prev.filter(m => !(
+        m.system === system &&
+        m.fieldname === fieldname &&
+        m.filename === filename &&
+        (userId ? m.user_id === userId : true)
+      )))
     } catch (err) {
       console.error('Error deleting media:', err)
       alert(err.response?.data?.detail || 'Failed to delete media')
+    }
+  }
+
+  const handleCropApply = async (media, blob) => {
+    const formData = new FormData()
+    formData.append('system', media.system)
+    formData.append('fieldname', media.fieldname)
+    formData.append('filename', media.filename)
+    if (media.user_id) {
+      formData.append('user_id', media.user_id)
+    }
+    formData.append('file', blob, media.filename)
+    try {
+      await client.post('/api/media/pending/crop', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      const dimKey = `${media.user_id}/${media.system}/${media.fieldname}/${media.filename}`
+      setCropVersions(prev => ({ ...prev, [dimKey]: Date.now() }))
+      setDimensions(prev => { const next = { ...prev }; delete next[dimKey]; return next })
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to crop image')
+      throw err
     }
   }
 
@@ -319,7 +378,22 @@ const MediaValidation = () => {
 
   return (
     <div className="media-validation-page">
-      {lightbox && <Lightbox url={lightbox.url} alt={lightbox.alt} system={lightbox.system} gameId={lightbox.gameId} onClose={closeLightbox} />}
+      {lightbox && (() => {
+        const m = lightbox.media
+        const dimKey = `${m.user_id}/${m.system}/${m.fieldname}/${m.filename}`
+        const ver = cropVersions[dimKey]
+        const url = `${API_URL}/api/media/pending-preview/${m.user_id || 'unknown'}/${m.system}/${m.fieldname}/${encodeURIComponent(m.filename)}${ver ? `?v=${ver}` : ''}`
+        return (
+          <Lightbox
+            url={url}
+            media={m}
+            startCropping={lightbox.cropping}
+            canCrop={!isVideoFile(m.filename)}
+            onCropSave={(blob) => handleCropApply(m, blob)}
+            onClose={closeLightbox}
+          />
+        )
+      })()}
       {gameModal && <GameInfoModal system={gameModal.system} gameId={gameModal.gameId} gameName={gameModal.gameName} onClose={closeGameModal} />}
       <h1>Media Validation</h1>
       <p className="media-validation-description">
@@ -384,8 +458,9 @@ const MediaValidation = () => {
                 </div>
                 <div className="media-list">
                   {mediaList.map((media, index) => {
-                    const previewUrl = `${API_URL}/api/media/pending-preview/${media.user_id || 'unknown'}/${media.system}/${media.fieldname}/${encodeURIComponent(media.filename)}`
                     const dimKey = `${media.user_id}/${media.system}/${media.fieldname}/${media.filename}`
+                    const cropVersion = cropVersions[dimKey]
+                    const previewUrl = `${API_URL}/api/media/pending-preview/${media.user_id || 'unknown'}/${media.system}/${media.fieldname}/${encodeURIComponent(media.filename)}${cropVersion ? `?v=${cropVersion}` : ''}`
                     const dim = dimensions[dimKey]
                     return (
                       <div key={index} className="media-item">
@@ -403,7 +478,7 @@ const MediaValidation = () => {
                                 src={previewUrl}
                                 alt={media.filename}
                                 className="media-item-preview-img"
-                                onClick={() => openLightbox(previewUrl, media.filename, media.system, media.game_id)}
+                                onClick={() => openLightbox(media)}
                                 onLoad={(e) => handleImageLoad(dimKey, e)}
                                 onError={(e) => {
                                   e.target.style.display = 'none'
@@ -446,6 +521,14 @@ const MediaValidation = () => {
                           >
                             Validate
                           </button>
+                          {!isVideoFile(media.filename) && (
+                            <button
+                              className="crop-button"
+                              onClick={() => openLightbox(media, true)}
+                            >
+                              Crop
+                            </button>
+                          )}
                           <button
                             className="delete-button"
                             onClick={() => handleDelete(media.system, media.fieldname, media.filename, media.user_id)}

@@ -2,20 +2,29 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { getMediaUrl } from '../utils/constants'
 import { getGameDetails } from '../api/catalog'
 import client from '../api/client'
+import ImageCropper from '../components/ImageCropper/ImageCropper'
 import './MediaValidation.css'
+
+const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.avi', '.webm', '.mov']
+const isVideoFile = (filename) => VIDEO_EXTENSIONS.some(ext => filename.toLowerCase().endsWith(ext))
 
 // ── Shared sub-components ──────────────────────────────────────────────────────
 
-const Lightbox = ({ url, alt, system, gameId, onClose }) => {
+const Lightbox = ({ url, media, startCropping = false, canCrop = false, onCropSave, onClose }) => {
   const [activeTab, setActiveTab] = useState('uploaded')
   const [game, setGame] = useState(null)
   const [gameLoading, setGameLoading] = useState(false)
+  const [cropping, setCropping] = useState(startCropping)
+
+  const alt = media?.filename
+  const system = media?.system
+  const gameId = media?.game_id
 
   useEffect(() => {
-    const handleKey = (e) => { if (e.key === 'Escape') onClose() }
+    const handleKey = (e) => { if (e.key === 'Escape') cropping ? setCropping(false) : onClose() }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [onClose])
+  }, [onClose, cropping])
 
   // Fetch game details to populate the Box Art / Screenshot tabs
   useEffect(() => {
@@ -36,23 +45,38 @@ const Lightbox = ({ url, alt, system, gameId, onClose }) => {
   ]
 
   const activeSrc = tabs.find(t => t.key === activeTab)?.src
+  const cropActive = cropping && activeTab === 'uploaded'
+
+  const selectTab = (key) => { setCropping(false); setActiveTab(key) }
 
   return (
-    <div className="mv-lightbox-overlay" onClick={onClose}>
+    <div className="mv-lightbox-overlay" onClick={() => (cropping ? setCropping(false) : onClose())}>
       <div className="mv-lightbox-content" onClick={(e) => e.stopPropagation()}>
         <div className="mv-lightbox-tabs">
           {tabs.map(tab => (
             <button
               key={tab.key}
               className={`mv-lightbox-tab${activeTab === tab.key ? ' active' : ''}`}
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => selectTab(tab.key)}
             >
               {tab.label}
             </button>
           ))}
+          {canCrop && activeTab === 'uploaded' && !cropActive && (
+            <button className="mv-lightbox-tab mv-lightbox-crop-toggle" onClick={() => setCropping(true)}>
+              ✂ Crop
+            </button>
+          )}
         </div>
         <div className="mv-lightbox-stage">
-          {activeSrc ? (
+          {cropActive ? (
+            <ImageCropper
+              imageUrl={url}
+              filename={media.filename}
+              onApply={async (blob) => { await onCropSave(blob); setCropping(false) }}
+              onCancel={() => setCropping(false)}
+            />
+          ) : activeSrc ? (
             <img src={activeSrc} alt={alt} className="mv-lightbox-image" />
           ) : (
             <div className="mv-lightbox-empty">
@@ -149,8 +173,9 @@ const MyPendingMedia = () => {
   const [lightbox, setLightbox] = useState(null)
   const [dimensions, setDimensions] = useState({})
   const [gameModal, setGameModal] = useState(null)
+  const [cropVersions, setCropVersions] = useState({})
 
-  const openLightbox = useCallback((url, alt, system, gameId) => setLightbox({ url, alt, system, gameId }), [])
+  const openLightbox = useCallback((media, cropping = false) => setLightbox({ media, cropping }), [])
   const closeLightbox = useCallback(() => setLightbox(null), [])
   const openGameModal = useCallback((system, gameId, gameName) => setGameModal({ system, gameId, gameName }), [])
   const closeGameModal = useCallback(() => setGameModal(null), [])
@@ -182,9 +207,28 @@ const MyPendingMedia = () => {
     if (!confirm(`Delete ${filename}?`)) return
     try {
       await client.delete('/api/media/my-pending', { params: { system, fieldname, filename } })
-      loadPendingMedia()
+      setPendingMedia(prev => prev.filter(m => !(m.system === system && m.fieldname === fieldname && m.filename === filename)))
     } catch (err) {
       alert(err.response?.data?.detail || 'Failed to delete media')
+    }
+  }
+
+  const handleCropApply = async (media, blob) => {
+    const formData = new FormData()
+    formData.append('system', media.system)
+    formData.append('fieldname', media.fieldname)
+    formData.append('filename', media.filename)
+    formData.append('file', blob, media.filename)
+    try {
+      await client.post('/api/media/my-pending/crop', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      const dimKey = `${media.system}/${media.fieldname}/${media.filename}`
+      setCropVersions(prev => ({ ...prev, [dimKey]: Date.now() }))
+      setDimensions(prev => { const next = { ...prev }; delete next[dimKey]; return next })
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to crop image')
+      throw err
     }
   }
 
@@ -222,7 +266,22 @@ const MyPendingMedia = () => {
 
   return (
     <div className="media-validation-page">
-      {lightbox && <Lightbox url={lightbox.url} alt={lightbox.alt} system={lightbox.system} gameId={lightbox.gameId} onClose={closeLightbox} />}
+      {lightbox && (() => {
+        const m = lightbox.media
+        const dimKey = `${m.system}/${m.fieldname}/${m.filename}`
+        const ver = cropVersions[dimKey]
+        const url = `/api/media/my-pending-preview/${m.system}/${m.fieldname}/${encodeURIComponent(m.filename)}${ver ? `?v=${ver}` : ''}`
+        return (
+          <Lightbox
+            url={url}
+            media={m}
+            startCropping={lightbox.cropping}
+            canCrop={!isVideoFile(m.filename)}
+            onCropSave={(blob) => handleCropApply(m, blob)}
+            onClose={closeLightbox}
+          />
+        )
+      })()}
       {gameModal && <GameInfoModal system={gameModal.system} gameId={gameModal.gameId} gameName={gameModal.gameName} onClose={closeGameModal} />}
 
       <h1>My Pending Media</h1>
@@ -265,8 +324,9 @@ const MyPendingMedia = () => {
                 </h2>
                 <div className="media-list">
                   {mediaList.map((media, index) => {
-                    const previewUrl = `/api/media/my-pending-preview/${media.system}/${media.fieldname}/${encodeURIComponent(media.filename)}`
                     const dimKey = `${media.system}/${media.fieldname}/${media.filename}`
+                    const cropVersion = cropVersions[dimKey]
+                    const previewUrl = `/api/media/my-pending-preview/${media.system}/${media.fieldname}/${encodeURIComponent(media.filename)}${cropVersion ? `?v=${cropVersion}` : ''}`
                     const dim = dimensions[dimKey]
                     return (
                       <div key={index} className="media-item">
@@ -275,7 +335,7 @@ const MyPendingMedia = () => {
                             src={previewUrl}
                             alt={media.filename}
                             className="media-item-preview-img"
-                            onClick={() => openLightbox(previewUrl, media.filename, media.system, media.game_id)}
+                            onClick={() => openLightbox(media)}
                             onLoad={(e) => handleImageLoad(dimKey, e)}
                             onError={(e) => {
                               e.target.style.display = 'none'
@@ -303,6 +363,14 @@ const MyPendingMedia = () => {
                           </div>
                         </div>
                         <div className="media-item-actions">
+                          {!isVideoFile(media.filename) && (
+                            <button
+                              className="crop-button"
+                              onClick={() => openLightbox(media, true)}
+                            >
+                              Crop
+                            </button>
+                          )}
                           <button
                             className="delete-button"
                             onClick={() => handleDelete(media.system, media.fieldname, media.filename)}

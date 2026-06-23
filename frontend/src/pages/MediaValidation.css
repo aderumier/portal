@@ -227,6 +227,15 @@
   color: #fff;
 }
 
+.mv-lightbox-crop-toggle {
+  margin-left: 0.5rem;
+  color: #f0a020;
+}
+.mv-lightbox-crop-toggle:hover {
+  background: rgba(240, 160, 32, 0.15);
+  color: #f7b94a;
+}
+
 .mv-lightbox-stage {
   display: flex;
   align-items: center;
@@ -409,7 +418,8 @@
 }
 
 .validate-button,
-.delete-button {
+.delete-button,
+.crop-button {
   flex: 1;
   padding: 0.5rem 1rem;
   border: none;
@@ -418,6 +428,16 @@
   font-size: 0.85rem;
   font-weight: 600;
   transition: all 0.3s ease;
+}
+
+.crop-button {
+  background: transparent;
+  color: #f0a020;
+  border: 1px solid #f0a020;
+}
+
+.crop-button:hover {
+  background: rgba(240, 160, 32, 0.1);
 }
 
 .validate-button {

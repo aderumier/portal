@@ -500,6 +500,61 @@ async def delete_my_pending_media(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending media file not found")
     return {"success": True, "message": "Pending media deleted successfully"}
 
+def _overwrite_pending_file(media_service, user_id, system, fieldname, filename, content):
+    """Overwrite an existing pending media file in place with new bytes.
+
+    Used by the crop endpoints. Guards against path traversal and requires the
+    target file to already exist (we only replace existing uploads, never create
+    new ones here).
+    """
+    from pathlib import Path
+
+    if not media_service.users_media_path:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="USERS_MEDIA_PATH not configured")
+
+    base = Path(media_service.users_media_path) / user_id / system / fieldname
+    target = (base / filename).resolve()
+    # Ensure the resolved path stays inside the user's media directory
+    if not str(target).startswith(str(base.resolve()) + os.sep):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file path")
+    if not target.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending media file not found")
+
+    target.write_bytes(content)
+    return target
+
+@router.post("/my-pending/crop")
+async def crop_my_pending_media(
+    system: str = Form(...),
+    fieldname: str = Form(...),
+    filename: str = Form(...),
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_media_contributor),
+    media_service: MediaService = Depends(get_media_service)
+):
+    """Replace one of the current user's pending media files with a cropped version."""
+    user_id = current_user.get('id')
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
+    content = await file.read()
+    _overwrite_pending_file(media_service, user_id, system, fieldname, filename, content)
+    return {"success": True, "message": "Image cropped successfully"}
+
+@router.post("/pending/crop")
+async def crop_pending_media(
+    system: str = Form(...),
+    fieldname: str = Form(...),
+    filename: str = Form(...),
+    user_id: str = Form(...),
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_admin_role),
+    media_service: MediaService = Depends(get_media_service)
+):
+    """Replace a pending media file (any user) with a cropped version. Admin only."""
+    content = await file.read()
+    _overwrite_pending_file(media_service, user_id, system, fieldname, filename, content)
+    return {"success": True, "message": "Image cropped successfully"}
+
 @router.get("/my-pending-preview/{system}/{fieldname}/{filename:path}")
 async def get_my_pending_preview(
     system: str,
