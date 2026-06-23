@@ -63,7 +63,9 @@ fi
 if [ -d "debian/opt/batocera-games-catalog/scripts" ]; then
     mkdir -p "$BUILD_DIR/opt/batocera-games-catalog/scripts"
     cp debian/opt/batocera-games-catalog/scripts/*.sh "$BUILD_DIR/opt/batocera-games-catalog/scripts/" 2>/dev/null || true
+    cp debian/opt/batocera-games-catalog/scripts/*.py "$BUILD_DIR/opt/batocera-games-catalog/scripts/" 2>/dev/null || true
     chmod +x "$BUILD_DIR/opt/batocera-games-catalog/scripts"/*.sh 2>/dev/null || true
+    chmod +x "$BUILD_DIR/opt/batocera-games-catalog/scripts"/*.py 2>/dev/null || true
 fi
 
 # Set proper permissions
