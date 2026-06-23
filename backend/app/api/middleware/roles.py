@@ -11,18 +11,35 @@ logger = logging.getLogger(__name__)
 async def require_role(
     request: Request,
     role_name: str,
-    current_user: Optional[dict] = Depends(get_current_user)
+    current_user: Optional[dict] = Depends(get_current_user),
+    allow_api_token: bool = True
 ) -> dict:
-    """Require user to have a specific Discord role."""
+    """Require user to have a specific Discord role.
+
+    API tokens (used by the download service) bypass role checks by default.
+    Set ``allow_api_token=False`` for privileged roles (e.g. admin) that must
+    never be granted to a personal API token.
+    """
     if not current_user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required"
         )
-    
+
     # Check if authenticated via API token
     auth_method = getattr(request.state, 'auth_method', None)
     if auth_method == 'api_token':
+        if not allow_api_token:
+            # Admin (and other privileged) endpoints must not be reachable with
+            # an API token; tokens are always created with is_admin=False.
+            logger.warning(
+                f"API token (user {current_user.get('id')}) denied access to "
+                f"{role_name}-protected endpoint"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"{role_name} role required"
+            )
         # API tokens bypass role checks (they're used by the download service)
         return current_user
     
@@ -145,7 +162,9 @@ async def require_admin_role(
     current_user: Optional[dict] = Depends(get_current_user)
 ) -> dict:
     """Require user to have the admin role."""
-    return await require_role(request, settings.DISCORD_ADMIN_ROLE, current_user)
+    return await require_role(
+        request, settings.DISCORD_ADMIN_ROLE, current_user, allow_api_token=False
+    )
 
 async def require_media_contributor(
     request: Request,
