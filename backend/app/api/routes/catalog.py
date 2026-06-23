@@ -481,6 +481,10 @@ async def _get_external_contribute_games(system: str, system_name: str):
 
     games = []
     for game_data in data.get('games', []):
+        # Skip games flagged as hidden (<hidden>true</hidden>) in the gamelist.
+        if str(game_data.get('hidden') or '').strip().lower() == 'true':
+            continue
+
         media = game_data.get('media') or {}
         fanart = media.get('fanart', '')
         marquee = media.get('marquee', '')
