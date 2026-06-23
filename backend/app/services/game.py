@@ -1086,7 +1086,35 @@ class GameService:
         # Use timestamp (converted to int) for catalog version
         catalog_version = int(self._catalog_timestamp) if self._catalog_timestamp else 0
         return f'W/"systems-t{catalog_version}"'
-    
+
+    def get_media_versions(self, catalog_type: str) -> Dict[str, str]:
+        """Per-system cache-busting token for media URLs, keyed by system id.
+
+        Unlike the global ``media_version`` (the catalog timestamp, which changes
+        on every regeneration), these tokens only change when a system's media
+        actually changes. That way regenerating the catalog does NOT alter image
+        URLs for systems whose content is unchanged, so browsers keep their
+        cached images:
+
+          - releases: the snapshot/version name (e.g. "v10.5"). Releases media is
+            frozen per snapshot and the snapshot dir is already part of the media
+            path, so this token is stable until a new snapshot is published.
+          - wip: the gamelist.xml modification date (dd-mm-yyyy). WIP media tracks
+            the live gamelist, so the token changes only when the gamelist does.
+
+        Returns a dict ``{system_id: token}``; systems without a token are omitted
+        and fall back to the global ``media_version`` on the client.
+        """
+        if catalog_type == 'wip':
+            return {sid: token for sid, token in self.system_gamelist_date_wip.items() if token}
+
+        versions: Dict[str, str] = {}
+        for sid in self.catalog_releases:
+            token = self.system_versions.get(sid) or self.system_gamelist_date_releases.get(sid)
+            if token:
+                versions[sid] = token
+        return versions
+
     def search_games(self, query: str, page: int = 1, limit: int = 12) -> List[Dict]:
         """Search games across all systems.
         

@@ -168,11 +168,11 @@ const MediaThumbCell = ({ path, label, uploadProps, onLightboxOpen, pendingUrl }
     return (
       <td className="contribute-media-cell">
         <img
-          src={getMediaUrl(path)}
+          src={getMediaUrl(path, 'wip')}
           alt={label}
           className="contribute-media-thumb contribute-media-clickable"
           loading="lazy"
-          onClick={() => onLightboxOpen(getMediaUrl(path), label)}
+          onClick={() => onLightboxOpen(getMediaUrl(path, 'wip'), label)}
         />
       </td>
     )

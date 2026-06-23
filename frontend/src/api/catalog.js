@@ -1,5 +1,5 @@
 import client from './client'
-import { setMediaVersion, getMediaVersion } from '../utils/constants'
+import { setMediaVersion, setMediaVersions, getMediaVersion } from '../utils/constants'
 
 export const refreshCatalog = async () => {
   const response = await client.post('/api/catalog/refresh')
@@ -17,6 +17,9 @@ export const getSystems = async (catalogType = 'releases') => {
   const data = response.data
   if (data != null && data.media_version != null) {
     setMediaVersion(data.media_version)
+  }
+  if (data != null && data.media_versions != null) {
+    setMediaVersions(catalogType, data.media_versions)
   }
   return data
 }
@@ -62,6 +65,9 @@ export const getContributeSystems = async () => {
   const data = response.data
   if (data != null && data.media_version != null) {
     setMediaVersion(data.media_version)
+  }
+  if (data != null && data.media_versions != null) {
+    setMediaVersions('wip', data.media_versions)
   }
   return data
 }

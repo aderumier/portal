@@ -91,8 +91,9 @@ async def get_systems(
         })
     
     media_version = int(game_service._catalog_timestamp) if game_service._catalog_timestamp else 0
-    response_data = {"systems": systems, "media_version": media_version}
-    
+    media_versions = game_service.get_media_versions(catalog_type)
+    response_data = {"systems": systems, "media_version": media_version, "media_versions": media_versions}
+
     # Return response with ETag header for future 304 checks
     response = ORJSONResponse(content=response_data)
     response.headers["ETag"] = etag
@@ -445,7 +446,8 @@ async def get_contribute_systems(
         })
 
     media_version = int(game_service._catalog_timestamp) if game_service._catalog_timestamp else 0
-    return ORJSONResponse(content={"systems": systems, "media_version": media_version})
+    media_versions = game_service.get_media_versions('wip')
+    return ORJSONResponse(content={"systems": systems, "media_version": media_version, "media_versions": media_versions})
 
 
 async def _get_external_contribute_games(system: str, system_name: str):

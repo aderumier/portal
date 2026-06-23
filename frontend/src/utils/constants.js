@@ -10,7 +10,16 @@ const isLocalhost = envApiUrl.includes('localhost:8000') || envApiUrl.includes('
 // In development, use VITE_API_URL if set, otherwise use relative URLs
 export const API_URL = (isProduction && isLocalhost) ? '' : envApiUrl
 
-// Media cache busting: set from catalog systems/refresh response; appended as ?v= to media URLs
+// Media cache busting.
+// Per-system version tokens (keyed by catalog type, then system id) let us bust
+// the browser cache only for systems whose media actually changed, instead of
+// stamping a new global value onto every image URL on each catalog regeneration.
+//   - releases: snapshot/version name (stable until a new snapshot is published)
+//   - wip: gamelist.xml modification date (changes only when the gamelist does)
+// Set from the catalog systems response (media_versions). The legacy global
+// mediaVersion (catalog timestamp) is kept as a fallback for system logos and
+// for any media whose system has no per-system token.
+const mediaVersions = { wip: {}, releases: {} }
 let mediaVersion = null
 
 export const setMediaVersion = (version) => {
@@ -19,26 +28,48 @@ export const setMediaVersion = (version) => {
 
 export const getMediaVersion = () => mediaVersion
 
+export const setMediaVersions = (catalogType, map) => {
+  const key = catalogType === 'wip' ? 'wip' : 'releases'
+  mediaVersions[key] = (map && typeof map === 'object') ? map : {}
+}
+
+// Media paths always start with the system id (e.g. "macintosh/media/...").
+const systemIdFromPath = (mediaPath) => {
+  const slash = mediaPath.indexOf('/')
+  return slash === -1 ? mediaPath : mediaPath.slice(0, slash)
+}
+
+// Resolve the cache-busting token for a media path: prefer the per-system token
+// for the active catalog type, fall back to the global media version.
+const versionForPath = (mediaPath, catalogType) => {
+  const key = catalogType === 'wip' ? 'wip' : 'releases'
+  const token = mediaVersions[key][systemIdFromPath(mediaPath)]
+  return token != null ? token : mediaVersion
+}
+
+const withVersion = (base, version) =>
+  version != null ? `${base}?v=${encodeURIComponent(version)}` : base
+
 /**
  * Get the system logo URL for a given system ID.
- * Appends ?v= when mediaVersion is set (cache busting after catalog refresh).
+ * Logos are static assets (not catalog media), so they keep using the global
+ * media version for cache busting.
  */
 export const getSystemLogoUrl = (systemId) => {
-  const base = `/systems_logos/${systemId}.webp`
-  return mediaVersion != null ? `${base}?v=${mediaVersion}` : base
+  return withVersion(`/systems_logos/${systemId}.webp`, mediaVersion)
 }
 
 /**
  * Get the media URL for a given media path.
  * In development, this uses the Vite proxy (/media).
  * In production, this uses the full API URL.
- * Appends ?v= when mediaVersion is set (cache busting after catalog refresh).
+ * Appends a per-system ?v= token so unchanged systems keep stable URLs.
  */
-export const getMediaUrl = (mediaPath) => {
+export const getMediaUrl = (mediaPath, catalogType = 'releases') => {
   if (!mediaPath) return null
   const encodedPath = mediaPath.split('/').map(encodeURIComponent).join('/')
   const base = `/media/${encodedPath}`
-  return mediaVersion != null ? `${base}?v=${mediaVersion}` : base
+  return withVersion(base, versionForPath(mediaPath, catalogType))
 }
 
 /**
@@ -74,7 +105,7 @@ const isNginxServing = () => {
  * @param {number} height - Thumbnail height in pixels
  * @returns {string|null} The thumbnail URL or regular media URL, or null if mediaPath is invalid
  */
-export const getThumbnailUrl = (mediaPath, width, height) => {
+export const getThumbnailUrl = (mediaPath, width, height, catalogType = 'releases') => {
   if (!mediaPath) return null
 
   // Only use thumbnail URLs when nginx is serving (ports 443/80 or HTTPS)
@@ -83,8 +114,8 @@ export const getThumbnailUrl = (mediaPath, width, height) => {
     // URL format: /media/thumbnail/WIDTHxHEIGHT/system/media/thumbnails/image.png
     const encodedPath = mediaPath.split('/').map(encodeURIComponent).join('/')
     const base = `/media/thumbnail/${width}x${height}/${encodedPath}`
-    return mediaVersion != null ? `${base}?v=${mediaVersion}` : base
+    return withVersion(base, versionForPath(mediaPath, catalogType))
   }
-  return getMediaUrl(mediaPath)
+  return getMediaUrl(mediaPath, catalogType)
 }
 
