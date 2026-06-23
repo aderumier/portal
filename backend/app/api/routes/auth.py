@@ -75,12 +75,14 @@ async def callback(
         
         logger.info(f"User data received: {user.get('username')} (ID: {user.get('id')})")
         
-        # Check guild membership
-        required_guild_name = "Team Pixel Nostalgia"
-        is_guild_member = await discord_service.is_guild_member_by_name(
+        # Check guild membership by guild ID (not name).
+        # Matching by name is spoofable: a user can create their own Discord
+        # server with the same name and pass the check. Guild IDs cannot be
+        # spoofed, so we verify against the configured DISCORD_GUILD_ID.
+        is_guild_member = await discord_service.is_guild_member(
             user['id'],
             access_token,
-            required_guild_name
+            settings.DISCORD_GUILD_ID
         )
         
         logger.info(f"Guild membership check result: {'IS member' if is_guild_member else 'NOT a member'}")
