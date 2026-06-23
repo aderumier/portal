@@ -67,8 +67,9 @@ const Layout = () => {
         const res = await client.get('/api/media/pending-count')
         const count = res.data.count || 0
         setPendingMediaCount(count)
-        if (firstFetch && count > 0) {
+        if (firstFetch && count > 0 && !sessionStorage.getItem('pendingMediaModalShown')) {
           setShowPendingModal(true)
+          sessionStorage.setItem('pendingMediaModalShown', '1')
         }
       } catch {
         // silently ignore
