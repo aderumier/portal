@@ -8,30 +8,35 @@ import asyncio
 import hashlib
 import time
 import logging
+import httpx
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_tracker_redis_client = None
 
+async def _tracker_api_get(path: str) -> dict:
+    """GET a JSON resource from the tracker's admin API (secret-authenticated).
 
-def get_tracker_redis_client():
-    global _tracker_redis_client
-    if _tracker_redis_client is not None:
-        return _tracker_redis_client
-    if not settings.TRACKER_REDIS_URL:
-        return None
+    The tracker owns the peer-state Redis; the backend reads swarm/peer data over
+    HTTP instead of connecting to that Redis directly.
+    """
+    base = settings.TRACKER_API_URL
+    if not base:
+        raise HTTPException(status_code=503, detail="TRACKER_API_URL is not configured")
+    url = base.rstrip("/") + path
+    headers = {"X-Tracker-Secret": settings.TRACKER_API_SECRET}
     try:
-        import redis.asyncio as aioredis
-        _tracker_redis_client = aioredis.from_url(
-            settings.TRACKER_REDIS_URL,
-            decode_responses=True,
-        )
-        return _tracker_redis_client
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Tracker API error {e.response.status_code} for {path}")
+        raise HTTPException(status_code=503, detail=f"Tracker API error: HTTP {e.response.status_code}")
     except Exception as e:
-        logger.warning(f"Failed to initialize tracker Redis client: {e}")
-        return None
+        logger.error(f"Tracker API unreachable for {path}: {e}")
+        raise HTTPException(status_code=503, detail=f"Tracker API unreachable: {e}")
 
 
 
@@ -205,77 +210,29 @@ async def list_swarms(
     db: Session = Depends(get_db),
 ):
     """List all active torrent swarms with seeder/leecher counts."""
-    redis = get_tracker_redis_client()
-    if not redis:
-        raise HTTPException(status_code=503, detail="TRACKER_REDIS_URL is not configured")
-
-    prefix = settings.TRACKER_REDIS_KEY_PREFIX
-    now = int(time.time())
-
     t_total = time.time()
 
+    # Swarm counts come from the tracker's admin API; system-name resolution
+    # stays here because it needs the local .torrent files.
+    data = await _tracker_api_get("/api/swarms")
     ih_to_system = await _get_ih_system_map()
-    logger.warning(f"[tracker] ih_system_map: {time.time()-t_total:.3f}s")
 
-    try:
-        # Scan for swarm sorted-set keys (skip :d detail hashes)
-        t_scan = time.time()
-        swarm_keys = []
-        cursor = 0
-        while True:
-            cursor, keys = await redis.scan(cursor, match=f"{prefix}swarm:*", count=500)
-            for k in keys:
-                if not k.endswith(":d"):
-                    swarm_keys.append(k)
-            if cursor == 0:
-                break
-        logger.warning(f"[tracker] SCAN: {time.time()-t_scan:.3f}s  keys={len(swarm_keys)}")
-
-        if not swarm_keys:
-            return {"swarms": []}
-
-        prefix_len = len(prefix) + len("swarm:")
-        ih_hexes = [key[prefix_len:] for key in swarm_keys]
-
-        # Pipeline 1: fetch active peer IDs for every swarm in one round-trip
-        t_p1 = time.time()
-        pipe = redis.pipeline()
-        for key in swarm_keys:
-            pipe.zrangebyscore(key, now, "+inf")
-        all_peer_ids: list = await pipe.execute()
-        logger.warning(f"[tracker] pipeline1 (zrangebyscore ×{len(swarm_keys)}): {time.time()-t_p1:.3f}s")
-
-        # Pipeline 2: fetch peer data only for non-empty swarms
-        non_empty = [(ih, pids) for ih, pids in zip(ih_hexes, all_peer_ids) if pids]
-        if not non_empty:
-            return {"swarms": []}
-
-        t_p2 = time.time()
-        pipe = redis.pipeline()
-        for ih_hex, peer_ids in non_empty:
-            pipe.hmget(f"{prefix}swarm:{ih_hex}:d", *peer_ids)
-        all_vals: list = await pipe.execute()
-        logger.warning(f"[tracker] pipeline2 (hmget ×{len(non_empty)}): {time.time()-t_p2:.3f}s")
-
-        results = []
-        for (ih_hex, _), vals in zip(non_empty, all_vals):
-            seeders  = sum(1 for v in vals if v and v.endswith("|1"))
-            leechers = sum(1 for v in vals if v and not v.endswith("|1"))
-            if seeders + leechers == 0:
-                continue
-            meta = ih_to_system.get(ih_hex)
-            results.append({
-                "info_hash": ih_hex,
-                "system_name": meta["name"] if meta else None,
-                "private": meta["private"] if meta else None,
-                "seeders": seeders,
-                "leechers": leechers,
-                "total_peers": seeders + leechers,
-            })
-
-    except Exception as e:
-        logger.error(f"Tracker Redis error in list_swarms: {e}")
-        raise HTTPException(status_code=503, detail=f"Tracker Redis error: {e}")
+    results = []
+    for s in data.get("swarms", []):
+        ih_hex = str(s.get("info_hash", "")).lower()
+        seeders = int(s.get("seeders", 0))
+        leechers = int(s.get("leechers", 0))
+        if seeders + leechers == 0:
+            continue
+        meta = ih_to_system.get(ih_hex)
+        results.append({
+            "info_hash": ih_hex,
+            "system_name": meta["name"] if meta else None,
+            "private": meta["private"] if meta else None,
+            "seeders": seeders,
+            "leechers": leechers,
+            "total_peers": seeders + leechers,
+        })
 
     results.sort(key=lambda x: x["total_peers"], reverse=True)
     logger.warning(f"[tracker] TOTAL: {time.time()-t_total:.3f}s  swarms={len(results)}")
@@ -289,42 +246,21 @@ async def get_swarm_peers(
     db: Session = Depends(get_db),
 ):
     """Get detailed peer list for a swarm, with username resolution."""
-    redis = get_tracker_redis_client()
-    if not redis:
-        raise HTTPException(status_code=503, detail="TRACKER_REDIS_URL is not configured")
+    data = await _tracker_api_get(f"/api/swarms/{info_hash_hex}/peers")
 
-    prefix = settings.TRACKER_REDIS_KEY_PREFIX
-    now = int(time.time())
-
-    swarm_key = f"{prefix}swarm:{info_hash_hex}"
-    data_key = f"{prefix}swarm:{info_hash_hex}:d"
-
-    try:
-        peer_ids = await redis.zrangebyscore(swarm_key, now, "+inf")
-        if not peer_ids:
-            return {"peers": []}
-
-        vals = await redis.hmget(data_key, *peer_ids)
-    except Exception as e:
-        logger.error(f"Tracker Redis error in get_swarm_peers: {e}")
-        raise HTTPException(status_code=503, detail=f"Tracker Redis error: {e}")
-
+    # IP→username resolution stays here because it needs the application DB.
     ip_to_user = _build_ip_user_map(db)
 
     peers = []
-    for pid, val in zip(peer_ids, vals):
-        if not val:
-            continue
-        parts = val.split("|", 2)
-        if len(parts) != 3:
-            continue
-        ip, port, complete = parts
+    for p in data.get("peers", []):
+        ip = p.get("ip")
+        pid = str(p.get("peer_id", ""))
         user_info = ip_to_user.get(ip)
         peers.append({
-            "peer_id": pid[:16] + "…",
+            "peer_id": (pid[:16] + "…") if pid else "",
             "ip": ip,
-            "port": int(port),
-            "seeder": complete == "1",
+            "port": p.get("port"),
+            "seeder": bool(p.get("seeder")),
             "username": user_info["username"] if user_info else None,
             "user_id": user_info["user_id"] if user_info else None,
         })

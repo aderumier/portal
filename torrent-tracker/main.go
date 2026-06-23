@@ -95,6 +95,10 @@ func main() {
 	}
 
 	http.HandleFunc("/", handleRequest)
+	// Admin read API for the backend (secret-protected). More specific than "/"
+	// so announce/scrape still route through handleRequest.
+	http.HandleFunc("/api/swarms", handleAdminSwarms)
+	http.HandleFunc("/api/swarms/", handleAdminSwarmPeers)
 	log.Printf("HTTP tracker listening on %s", cfg.Addr)
 	log.Fatal(http.ListenAndServe(cfg.Addr, nil))
 }
