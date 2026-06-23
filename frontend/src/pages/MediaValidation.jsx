@@ -174,6 +174,7 @@ const MediaValidation = () => {
   const [error, setError] = useState(null)
   const [filterSystem, setFilterSystem] = useState('')
   const [filterFieldname, setFilterFieldname] = useState('')
+  const [sortBy, setSortBy] = useState('date')
   const [lightbox, setLightbox] = useState(null)
   const [dimensions, setDimensions] = useState({})
   const [gameModal, setGameModal] = useState(null)
@@ -340,8 +341,16 @@ const MediaValidation = () => {
     return true
   })
 
-  // Group by system and fieldname
-  const groupedMedia = filteredMedia.reduce((acc, media) => {
+  const sortMedia = (a, b) => {
+    if (sortBy === 'name') {
+      return (a.filename || '').localeCompare(b.filename || '', undefined, { sensitivity: 'base' })
+    }
+    // Default: by upload date, newest first
+    return new Date(b.upload_date) - new Date(a.upload_date)
+  }
+
+  // Group by system and fieldname, ordering items within each group
+  const groupedMedia = [...filteredMedia].sort(sortMedia).reduce((acc, media) => {
     const key = `${media.system}/${media.fieldname}`
     if (!acc[key]) {
       acc[key] = []
@@ -424,6 +433,17 @@ const MediaValidation = () => {
             {fieldnames.map(fieldname => (
               <option key={fieldname} value={fieldname}>{fieldname}</option>
             ))}
+          </select>
+        </div>
+
+        <div className="filter-group">
+          <label>Sort by:</label>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+          >
+            <option value="date">Date (newest first)</option>
+            <option value="name">Name</option>
           </select>
         </div>
 
