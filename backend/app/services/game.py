@@ -189,7 +189,9 @@ class GameService:
         if not os.path.isdir(snapshot_dir):
             return None
         
-        version_pattern = re.compile(r'^v(\d+)(\S*)$')
+        # Capture the full dotted numeric version (e.g. "2.1" from "v2.1-RGS_wii")
+        # so minor versions are compared, not just the leading number.
+        version_pattern = re.compile(r'^v(\d+(?:\.\d+)*)(\S*)$')
         found_versions = []
         
         try:
@@ -205,24 +207,25 @@ class GameService:
                 
                 version_num_str = match.group(1)
                 version_suffix = match.group(2)
-                
+
                 gamelist_path = os.path.join(entry_path, 'gamelist.xml')
                 if not os.path.isfile(gamelist_path):
                     continue
-                
+
                 try:
-                    version_num = int(version_num_str)
+                    # Tuple of all dotted components so v2.2 > v2.1 > v2
+                    version_key = tuple(int(p) for p in version_num_str.split('.'))
                     # Store snapshot directory path relative to system_path
                     snapshot_dir_path = os.path.join('.zfs', 'snapshot', entry)
-                    found_versions.append((version_num, entry, snapshot_dir_path, gamelist_path))
+                    found_versions.append((version_key, entry, snapshot_dir_path, gamelist_path))
                 except ValueError:
                     logger.warning(f"Could not parse version number from '{entry}' for system {os.path.basename(system_path)}")
                     continue
-            
+
             if not found_versions:
                 return None
-            
-            # Sort by version number (descending) and return the latest
+
+            # Sort by version key (descending) and return the latest
             found_versions.sort(key=lambda x: x[0], reverse=True)
             latest_version_num, latest_version_str, latest_snapshot_dir_path, latest_gamelist_path = found_versions[0]
             logger.info(f"Found latest versioned gamelist for {os.path.basename(system_path)}: {latest_version_str} at {latest_gamelist_path}")
