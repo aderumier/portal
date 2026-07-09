@@ -2222,17 +2222,21 @@ class DownloadService:
                     'system': game.get('system', ''),  # Include system for download service
                     'batocera_system': target_system,  # Include system prefix for destination path (batocera_system for Linux, retrobat_system for Windows)
                     'game_details': self._normalize_game_details_for_client(game, catalog_version),  # Include full game details for media download (snapshot paths removed)
-                    'p2p_enabled': settings.P2P_ENABLED  # Include P2P enabled status
+                    'p2p_enabled': settings.P2P_ENABLED,  # Include P2P enabled status
+                    # This download was already active (resumable), not a fresh
+                    # assignment. The caller uses this to avoid re-registering it in
+                    # Redis, which would reset its progress and wipe P2P tracking.
+                    'is_resume': True
                 }
-                
+
                 # Add save_location if this is a .psvita or .psn file (Windows)
                 if save_location:
                     download_info['save_location'] = save_location
-                
+
                 # Add config_location if this is a .psn file (Linux)
                 if config_location:
                     download_info['config_location'] = config_location
-                
+
                 logger.info(f"Resuming download {resumable_download.id} from {resumable_download.bytes_transferred} bytes")
                 return download_info
             

@@ -1442,31 +1442,46 @@ async def request_download(
     client_version = request.client_version
     download_info = await download_service.get_next_download(queue_type, service_id, token_id=token_id, platform=platform, client_version=client_version)
     
-    # Store active download in Redis for fast status checks (after get_next_download returns)
+    # Store active download in Redis for fast status checks (after get_next_download returns).
+    #
+    # For a resume, the download is usually already tracked in Redis. Re-registering it
+    # unconditionally would reset its progress to 0 and drop its P2P tracking (e.g.
+    # p2p_remote_token_id) - that is what made an in-flight P2P transfer get mislabelled as
+    # direct when a queue notification made the client re-request mid-download. But we must
+    # still recreate the entry if it is missing (e.g. Redis/backend was restarted, or the
+    # entry expired), otherwise progress reports would 410 and the client would abort.
     download_id = download_info.get('download_id') if download_info else None
     if download_info and download_id:
-        try:
-            from app.services.redis_downloads import RedisDownloadTracker
-            # Fire and forget - don't wait for completion
-            # Store system and rom_path in Redis for P2P verification
-            system = download_info.get('system')
-            rom_path = download_info.get('rom_path')
-            
-            asyncio.create_task(RedisDownloadTracker.set_active_download(
-                download_id,
-                status='downloading',
-                bytes_transferred=0,
-                bytes_per_second=0,
-                file_size=download_info.get('file_size'),
-                queue_type=download_info.get('queue_type'),
-                assigned_to_service=service_id,
-                system=system,
-                rom_path=rom_path
-            ))
-        except Exception as e:
-            logger.debug(f"Failed to store download in Redis: {e}")
-            # Continue anyway - Redis is optional
-    
+        is_resume = bool(download_info.get('is_resume'))
+        system = download_info.get('system')
+        rom_path = download_info.get('rom_path')
+        file_size = download_info.get('file_size')
+        queue_type = download_info.get('queue_type')
+        resume_bytes = download_info.get('bytes_transferred', 0) or 0
+
+        async def _register_active_download():
+            try:
+                from app.services.redis_downloads import RedisDownloadTracker
+                if is_resume and await RedisDownloadTracker.get_download_status(download_id):
+                    # Already tracked - leave the live entry untouched.
+                    return
+                await RedisDownloadTracker.set_active_download(
+                    download_id,
+                    status='downloading',
+                    bytes_transferred=resume_bytes if is_resume else 0,
+                    bytes_per_second=0,
+                    file_size=file_size,
+                    queue_type=queue_type,
+                    assigned_to_service=service_id,
+                    system=system,
+                    rom_path=rom_path,
+                )
+            except Exception as e:
+                logger.debug(f"Failed to store download in Redis: {e}")
+
+        # Fire and forget - Redis is optional
+        asyncio.create_task(_register_active_download())
+
     if not download_info:
         return {
             "download": None,
