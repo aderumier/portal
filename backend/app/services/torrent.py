@@ -63,7 +63,7 @@ def generate_torrent_from_snapshot(system_id: str, snapshot_name: str) -> bytes:
     if not snapshot_path.exists():
         raise FileNotFoundError(f"Snapshot not found: {snapshot_name}")
 
-    announce_base = settings.TRACKER_ANNOUNCE_URL.rstrip("/")
+    announce_base = _normalize_announce_base(settings.TRACKER_ANNOUNCE_URL)
     if not announce_base:
         raise ValueError("TRACKER_ANNOUNCE_URL is not configured")
 
@@ -157,6 +157,7 @@ def push_torrent_to_qbittorrent(system_id: str, torrent_data: bytes, save_path: 
     try:
         t = torf.Torrent.read_stream(torrent_data)
         t.trackers = [[announce_url]]
+        name = t.name
         payload = t.dump()
     except Exception as exc:
         logger.error(f"[qbt] {system_id}: failed to rewrite announce URL: {exc}")
@@ -177,10 +178,71 @@ def push_torrent_to_qbittorrent(system_id: str, torrent_data: bytes, save_path: 
                 data={"savepath": save_path},
                 files={"torrents": (f"{system_id}.torrent", payload, "application/x-bittorrent")},
             )
+            # A torrent whose content already exists is reported as 409 Conflict
+            # (v1 torrents) or 200 "Fails." (hybrid v1+v2 torrents). The info-hash
+            # is derived from the files only, so re-pushing the same snapshot —
+            # e.g. only to refresh the tracker after a domain migration — collides
+            # with the existing torrent. Update its trackers in place rather than
+            # treating it as an error.
+            if resp.status_code == 409 or (
+                resp.status_code == 200 and resp.text.strip() == "Fails."
+            ):
+                _sync_qbt_trackers(client, system_id, name, announce_url, url)
+                return
             resp.raise_for_status()
             logger.info(f"[qbt] {system_id}: torrent pushed to qBittorrent ({url})")
     except Exception as exc:
         logger.error(f"[qbt] {system_id}: failed to push torrent to qBittorrent: {exc}")
+
+
+def _sync_qbt_trackers(
+    client: "httpx.Client", system_id: str, name: str, announce_url: str, url: str
+) -> None:
+    """Point an already-present qBittorrent torrent at announce_url. Used when
+    /torrents/add reports the content already exists. The torrent is located by
+    name rather than by torf's v1 info-hash, because hybrid (v1+v2) torrents are
+    indexed in qBittorrent under a hash that differs from torf's value."""
+    resp = client.get("/api/v2/torrents/info")
+    resp.raise_for_status()
+    matches = [it for it in resp.json() if it.get("name") == name]
+    if not matches:
+        # add said it exists, yet no torrent carries this name — surface it.
+        logger.error(
+            f"[qbt] {system_id}: add reported the torrent already exists but no "
+            f"torrent named {name!r} was found"
+        )
+        return
+    qbt_hash = matches[0]["hash"]
+
+    resp = client.get("/api/v2/torrents/trackers", params={"hash": qbt_hash})
+    resp.raise_for_status()
+    # Drop the synthetic DHT/PEX/LSD entries (urls like '** [DHT] **').
+    old_urls = [
+        tr["url"] for tr in resp.json()
+        if tr.get("url", "").startswith(("http://", "https://"))
+    ]
+    if old_urls == [announce_url]:
+        logger.info(
+            f"[qbt] {system_id}: torrent already present with current tracker, nothing to do"
+        )
+        return
+
+    resp = client.post(
+        "/api/v2/torrents/addTrackers",
+        data={"hash": qbt_hash, "urls": announce_url},
+    )
+    resp.raise_for_status()
+    stale = [u for u in old_urls if u != announce_url]
+    if stale:
+        # removeTrackers expects URLs separated by '|' (addTrackers uses newlines).
+        resp = client.post(
+            "/api/v2/torrents/removeTrackers",
+            data={"hash": qbt_hash, "urls": "|".join(stale)},
+        )
+        resp.raise_for_status()
+    logger.info(
+        f"[qbt] {system_id}: existing torrent found, trackers updated to {announce_url} ({url})"
+    )
 
 
 def _normalize_announce_base(url: str) -> str:
