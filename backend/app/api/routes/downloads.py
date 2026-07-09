@@ -565,23 +565,22 @@ async def stream_archive_via_websocket(
             })
             return
         
-        # Get allocated bandwidth for throttling
-        allocated_bandwidth = 0
-        bandwidth_manager = None
-        
-        if queue_item.status in ['downloading'] and queue_item.queue_type:
-            from app.services.bandwidth import BandwidthManager
-            bandwidth_manager = BandwidthManager(db)
-            allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
-            
-            # Apply user's custom bandwidth limit if set
-            from app.database import User
-            db_user = db.query(User).filter(User.user_id == queue_item.user_id).first()
-            if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
-                allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
-                logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
-            
-            logger.info(f"Allocated bandwidth for WebSocket archive download: {allocated_bandwidth} bytes/s ({allocated_bandwidth / 125000:.2f} Mbits/s)")
+        # Get allocated bandwidth for throttling.
+        # Throttle regardless of status (resumes/paused/user_queue also stream here);
+        # default a missing queue_type to 'slow' so a NULL never disables throttling.
+        from app.services.bandwidth import BandwidthManager
+        bandwidth_manager = BandwidthManager(db)
+        effective_queue_type = queue_item.queue_type or 'slow'
+        allocated_bandwidth = bandwidth_manager.allocate_bandwidth(effective_queue_type)
+
+        # Apply user's custom bandwidth limit if set
+        from app.database import User
+        db_user = db.query(User).filter(User.user_id == queue_item.user_id).first()
+        if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
+            allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
+            logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
+
+        logger.info(f"Allocated bandwidth for WebSocket archive download: {allocated_bandwidth} bytes/s ({allocated_bandwidth / 125000:.2f} Mbits/s)")
         
         # Convert requested_files list to set for helper function
         requested_files_set = None
@@ -614,7 +613,7 @@ async def stream_archive_via_websocket(
             last_chunk_time = start_time
             last_user_count_check = start_time
             user_count_check_interval = 2.0
-            last_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
+            last_active_user_count = bandwidth_manager.get_active_user_count(effective_queue_type)
             pause_check_interval = 2.0
             last_pause_check = start_time
             bandwidth_changed = False
@@ -719,10 +718,10 @@ async def stream_archive_via_websocket(
                         # Check for bandwidth changes
                         if current_time - last_user_count_check >= user_count_check_interval:
                             bandwidth_changed = False
-                            current_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
+                            current_active_user_count = bandwidth_manager.get_active_user_count(effective_queue_type)
                             
                             # Recompute bandwidth allocation
-                            new_allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
+                            new_allocated_bandwidth = bandwidth_manager.allocate_bandwidth(effective_queue_type)
                             
                             # Re-apply user's custom bandwidth limit
                             from app.database import SessionLocal
@@ -2877,28 +2876,28 @@ async def download_file(
             else:
                 content_length = file_size
             
-            # Get allocated bandwidth from queue item (if available)
-            # Apply throttling for downloads in 'downloading' or 'pending' status
-            allocated_bandwidth = 0
-            logger.info(f"Queue item status: {queue_item.status}, queue_type: {queue_item.queue_type}")
-            
-            if queue_item.status in ['downloading'] and queue_item.queue_type:
-                # Get allocated bandwidth from the bandwidth manager
-                from app.services.bandwidth import BandwidthManager
-                bandwidth_manager = BandwidthManager(db)
-                allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
-                
-                # Apply user's custom bandwidth limit if set (capped at role-based limit)
-                from app.database import User
-                db_user = db.query(User).filter(User.user_id == queue_item.user_id).first()
-                if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
-                    # Cap user's bandwidth_limit at the role-based limit
-                    allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
-                    logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
-                
-                logger.info(f"Allocated bandwidth for download: {allocated_bandwidth} bytes/s ({allocated_bandwidth / 125000:.2f} Mbits/s)")
-            else:
-                logger.warning(f"Not applying throttling: status={queue_item.status}, queue_type={queue_item.queue_type}")
+            # Get allocated bandwidth from queue item.
+            # Throttle every served download, not only status=='downloading': this
+            # endpoint also serves resumes and items in user_queue/paused/completed,
+            # and gating on 'downloading' left those paths unthrottled, letting users
+            # exceed their per-user limit. Default a missing queue_type to 'slow' so a
+            # NULL never silently disables throttling.
+            from app.services.bandwidth import BandwidthManager
+            bandwidth_manager = BandwidthManager(db)
+            effective_queue_type = queue_item.queue_type or 'slow'
+            logger.info(f"Queue item status: {queue_item.status}, queue_type: {queue_item.queue_type} (effective: {effective_queue_type})")
+
+            allocated_bandwidth = bandwidth_manager.allocate_bandwidth(effective_queue_type)
+
+            # Apply user's custom bandwidth limit if set (capped at role-based limit)
+            from app.database import User
+            db_user = db.query(User).filter(User.user_id == queue_item.user_id).first()
+            if db_user and db_user.bandwidth_limit is not None and db_user.bandwidth_limit > 0:
+                # Cap user's bandwidth_limit at the role-based limit
+                allocated_bandwidth = min(allocated_bandwidth, db_user.bandwidth_limit)
+                logger.info(f"Applied user bandwidth limit: {db_user.bandwidth_limit} bytes/s, effective: {allocated_bandwidth} bytes/s")
+
+            logger.info(f"Allocated bandwidth for download: {allocated_bandwidth} bytes/s ({allocated_bandwidth / 125000:.2f} Mbits/s)")
             
             # If no bandwidth limit, use StreamingResponse without throttling (but with Range support)
             if allocated_bandwidth <= 0:
@@ -2983,7 +2982,7 @@ async def download_file(
                 last_chunk_time = start_time
                 last_user_count_check = start_time
                 user_count_check_interval = 2.0  # Check every 2 seconds for user count changes and bandwidth limit updates
-                last_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
+                last_active_user_count = bandwidth_manager.get_active_user_count(effective_queue_type)
                 pause_check_interval = 2.0  # Check every 2 seconds for pause status
                 last_pause_check = start_time
                 bandwidth_changed = False  # Track if bandwidth changed in current iteration
@@ -3010,10 +3009,10 @@ async def download_file(
                         
                         # Check if user count changed (users joined or left) or user's bandwidth_limit changed
                         if current_time - last_user_count_check >= user_count_check_interval:
-                            current_active_user_count = bandwidth_manager.get_active_user_count(queue_item.queue_type)
+                            current_active_user_count = bandwidth_manager.get_active_user_count(effective_queue_type)
                             
                             # Recompute bandwidth allocation (may have changed due to user count)
-                            new_allocated_bandwidth = bandwidth_manager.allocate_bandwidth(queue_item.queue_type)
+                            new_allocated_bandwidth = bandwidth_manager.allocate_bandwidth(effective_queue_type)
                             
                             # Re-apply user's custom bandwidth limit if set (may have changed)
                             # Use a fresh database session to get the latest committed value
