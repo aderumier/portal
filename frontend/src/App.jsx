@@ -35,6 +35,8 @@ import TorrentTrackerStats from './pages/TorrentTrackerStats'
 import Contribute from './pages/Contribute'
 import ContributeSystem from './pages/ContributeSystem'
 import MyPendingMedia from './pages/MyPendingMedia'
+import TermsOfService from './pages/TermsOfService'
+import PrivacyPolicy from './pages/PrivacyPolicy'
 
 function App() {
   return (
@@ -44,6 +46,8 @@ function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/unauthorized" element={<Unauthorized />} />
+            <Route path="/terms-of-service" element={<TermsOfService />} />
+            <Route path="/privacy-policy" element={<PrivacyPolicy />} />
             <Route path="/" element={<Layout />}>
               <Route index element={<Home />} />
               <Route path="systems" element={<Navigate to="/releases" replace />} />

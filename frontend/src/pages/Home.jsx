@@ -70,6 +70,12 @@ const Home = () => {
         </div>
       </div>
 
+      <footer className="home-footer">
+        <Link to="/terms-of-service">Terms of Service</Link>
+        <span className="home-footer-separator">·</span>
+        <Link to="/privacy-policy">Privacy Policy</Link>
+      </footer>
+
       <WarningModal
         isOpen={showWarningModal}
         onClose={() => setShowWarningModal(false)}

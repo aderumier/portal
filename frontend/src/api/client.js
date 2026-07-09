@@ -32,8 +32,9 @@ client.interceptors.response.use(
     const isAuthCheck = skipRedirectUrls.some(u => error.config?.url?.includes(u))
 
     if (error.response?.status === 401 && !isAuthCheck) {
-      // Only redirect to login if not already on login page and not checking auth status
-      if (window.location.pathname !== '/login' && window.location.pathname !== '/') {
+      // Only redirect to login if not on a page that must stay accessible without auth
+      const publicPaths = ['/', '/login', '/terms-of-service', '/privacy-policy']
+      if (!publicPaths.includes(window.location.pathname)) {
         window.location.href = '/login'
       }
     }

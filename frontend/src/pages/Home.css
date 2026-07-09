@@ -128,6 +128,27 @@
   line-height: 1.6;
 }
 
+/* Footer legal links */
+.home-footer {
+  margin-top: 3rem;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  font-size: 0.8rem;
+}
+
+.home-footer a {
+  color: var(--text-secondary);
+}
+
+.home-footer a:hover {
+  color: var(--accent);
+}
+
+.home-footer-separator {
+  color: var(--text-secondary);
+  margin: 0 0.5rem;
+}
+
 @media (max-width: 768px) {
   .hero {
     padding: 4rem 1rem;
