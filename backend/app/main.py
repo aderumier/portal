@@ -475,11 +475,16 @@ async def cleanup_p2p_index_periodically():
     
     # Wait a bit before first run to let server fully start
     await asyncio.sleep(60)  # Wait 1 minute after startup
-    
+
+    # Run once shortly after startup (so a restart triggers cleanup/migration of
+    # stale index keys), then every 24 hours after that.
+    first_run = True
     while True:
         try:
-            await asyncio.sleep(86400)  # Run every 24 hours (86400 seconds)
-            
+            if not first_run:
+                await asyncio.sleep(86400)  # Run every 24 hours (86400 seconds)
+            first_run = False
+
             # Try to acquire Redis lock - only one worker will succeed
             redis_client = get_redis_ws_client()
             if not redis_client:

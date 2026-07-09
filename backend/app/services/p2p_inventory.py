@@ -1,6 +1,7 @@
 """P2P inventory service for tracking client ROM files."""
 import json
 import logging
+import time
 from typing import Optional, Dict, Set, List
 from app.config import settings
 
@@ -47,7 +48,39 @@ def get_redis_p2p_client():
 
 class P2PInventoryService:
     """Service for managing P2P client ROM inventory in Redis."""
-    
+
+    # A peer must re-advertise a ROM within this window or it ages out of the
+    # reverse index. The client re-uploads its full inventory every 24h (and on
+    # restart), so this must stay comfortably above that interval to avoid
+    # evicting live peers. This is what lets deleted files / deleted gamelists /
+    # emptied clients drop out without keeping a per-token map.
+    INDEX_STALE_SECONDS = 48 * 3600
+
+    @staticmethod
+    async def _zadd_index(redis_client, index_key: str, token_str: str, now_ts: int) -> int:
+        """Add/refresh a peer in a ROM's reverse index, scored by last-seen time.
+
+        Migrates a legacy plain-SET key to a sorted set on the fly, so no manual
+        catalog refresh is needed after deploy: the first write to each key
+        converts it, grandfathering existing members with the current timestamp so
+        no peer is lost. Returns 1 only when token_str is a brand-new member
+        (a score refresh returns 0), matching the old SADD semantics.
+        """
+        try:
+            return await redis_client.zadd(index_key, {token_str: now_ts})
+        except Exception as e:
+            if 'WRONGTYPE' not in str(e):
+                raise
+            try:
+                old_members = await redis_client.smembers(index_key)
+            except Exception:
+                old_members = set()
+            await redis_client.delete(index_key)
+            mapping = {m: now_ts for m in old_members}
+            mapping[token_str] = now_ts
+            await redis_client.zadd(index_key, mapping)
+            return 0 if token_str in old_members else 1
+
     @staticmethod
     def _get_index_key(system: str, rom_path: str) -> str:
         """Get Redis key for reverse index (which clients have this ROM).
@@ -77,19 +110,25 @@ class P2PInventoryService:
         try:
             # Track which ROMs are new for this token (to count accurately)
             new_roms_count = 0
-            
-            # Add new inventory entries to index
+            now_ts = int(time.time())
+            token_str = str(token_id)
+
+            # Add/refresh inventory entries in the reverse index (a time-scored
+            # sorted set). Re-advertising refreshes the score; anything the peer
+            # stops advertising is not refreshed and ages out on its own.
             for system, paths in inventory.items():
                 for rom_path in paths:
                     index_key = P2PInventoryService._get_index_key(system, rom_path)
-                    # Use SADD return value to atomically check if token_id was added (not already present)
-                    # SADD returns 1 if element was added, 0 if it was already in the set
-                    # This is atomic and prevents race conditions when multiple clients update simultaneously
-                    added_count = await redis_client.sadd(index_key, str(token_id))
-                    
+                    added_count = await P2PInventoryService._zadd_index(
+                        redis_client, index_key, token_str, now_ts
+                    )
+
                     # Count new ROMs (ones where token_id wasn't already present)
                     if added_count == 1:
                         new_roms_count += 1
+
+                    # Reclaim the key itself once no peer refreshes this ROM.
+                    await redis_client.expire(index_key, P2PInventoryService.INDEX_STALE_SECONDS)
             
             total_paths = sum(len(paths) for paths in inventory.values())
             logger.info(f"Updated P2P inventory for token_id {token_id}: {len(inventory)} systems, {total_paths} ROM paths ({new_roms_count} new ROMs)")
@@ -144,7 +183,18 @@ class P2PInventoryService:
         
         try:
             index_key = P2PInventoryService._get_index_key(system, rom_path)
-            token_ids_str = await redis_client.smembers(index_key)
+            min_score = int(time.time()) - P2PInventoryService.INDEX_STALE_SECONDS
+            try:
+                # Only peers that re-advertised within the staleness window.
+                token_ids_str = await redis_client.zrangebyscore(index_key, min_score, '+inf')
+                # Opportunistically drop members that have aged out.
+                await redis_client.zremrangebyscore(index_key, '-inf', f'({min_score}')
+            except Exception as e:
+                if 'WRONGTYPE' not in str(e):
+                    raise
+                # Legacy plain-SET key not yet converted by an upload: read as-is so
+                # P2P keeps working during the transition (no scores to filter on).
+                token_ids_str = await redis_client.smembers(index_key)
             return {int(token_id) for token_id in token_ids_str if token_id.isdigit()}
         except Exception as e:
             logger.error(f"Error finding clients with ROM {system}/{rom_path}: {e}")
@@ -161,15 +211,17 @@ class P2PInventoryService:
             True if successful, False otherwise
         
         Note:
-            Index entries expire naturally via TTL (48 hours) instead of being cleaned up immediately.
+            The peer's reverse-index memberships are not removed here (no per-token
+            map is kept, to save memory). They age out once the peer stops
+            re-advertising, via the last-seen score window (INDEX_STALE_SECONDS).
         """
         redis_client = get_redis_p2p_client()
         if not redis_client:
             return False
-        
+
         try:
-            # Remove client connection info
-            # Note: Index entries expire naturally via TTL (48 hours)
+            # Remove client connection info. Reverse-index memberships age out via
+            # the last-seen score window rather than being enumerated here.
             client_key = f"p2p:client:{token_id}"
             await redis_client.delete(client_key)
             
@@ -432,14 +484,15 @@ class P2PInventoryService:
     
     @staticmethod
     async def p2p_index_garbage_collector() -> bool:
-        """Garbage collect the p2p_index by removing disconnected clients.
-        
+        """Garbage collect the p2p_index.
+
         Process:
         1. Get all connected token_ids from WebSocket connections and P2P client info
         2. Scan all existing p2p:index:* keys
-        3. For each ROM key, remove token_ids that are not in the connected list
-        4. Delete ROM entries that no longer have any associated token_ids
-        
+        3. For each scored (zset) key, drop members that aged out of the last-seen
+           window or whose client is disconnected, and delete empty keys. For legacy
+           plain-SET keys, stamp a TTL so they expire if never re-advertised.
+
         Returns:
             True if successful, False otherwise
         """
@@ -492,58 +545,66 @@ class P2PInventoryService:
             
             logger.info(f"Found {len(connected_token_ids)} connected clients")
             
-            # Step 3: Scan all index keys and clean up disconnected clients
+            # Step 3: Scan all index keys. For sorted-set keys, drop members that
+            # aged out of the last-seen window or whose client is disconnected, and
+            # delete empty keys. For legacy plain-SET keys (from before the scored
+            # index), stamp a 48h TTL if they have none so they clear out on their
+            # own if no client re-advertises them (a re-advertisement converts them
+            # to a scored zset). This is what makes a restart start clearing stale
+            # keys without keeping a per-token map.
+            min_score = int(time.time()) - P2PInventoryService.INDEX_STALE_SECONDS
             keys_updated = 0
             keys_deleted = 0
+            legacy_stamped = 0
             token_ids_removed = 0
-            pipeline = redis_client.pipeline()
-            pipeline_count = 0
-            
+
             cursor = 0
             while True:
                 cursor, keys = await redis_client.scan(cursor, match="p2p:index:*", count=1000)
                 for key in keys:
                     try:
-                        # Get all token_ids for this ROM
-                        token_ids = await redis_client.smembers(key)
-                        token_id_set = {int(tid) for tid in token_ids if tid.isdigit()}
-                        
-                        # Remove disconnected token_ids
-                        connected_token_ids_in_rom = token_id_set & connected_token_ids
-                        disconnected_token_ids_in_rom = token_id_set - connected_token_ids
-                        
-                        if disconnected_token_ids_in_rom:
-                            token_ids_removed += len(disconnected_token_ids_in_rom)
-                            
-                            if connected_token_ids_in_rom:
-                                # Update key with only connected token_ids
-                                pipeline.delete(key)
-                                pipeline.sadd(key, *[str(tid) for tid in connected_token_ids_in_rom])
-                                keys_updated += 1
-                                pipeline_count += 2
-                            else:
-                                # No connected clients remain - delete the key
-                                pipeline.delete(key)
-                                keys_deleted += 1
-                                pipeline_count += 1
+                        key_type = await redis_client.type(key)
+
+                        if key_type == 'set':
+                            if await redis_client.ttl(key) == -1:
+                                await redis_client.expire(key, P2PInventoryService.INDEX_STALE_SECONDS)
+                                legacy_stamped += 1
+                            continue
+
+                        if key_type != 'zset':
+                            continue
+
+                        # Drop members not re-advertised within the window.
+                        aged = await redis_client.zremrangebyscore(key, '-inf', f'({min_score}')
+                        token_ids_removed += aged
+
+                        # Drop members whose client is currently disconnected.
+                        members = await redis_client.zrange(key, 0, -1)
+                        disconnected = [
+                            m for m in members
+                            if m.isdigit() and int(m) not in connected_token_ids
+                        ]
+                        if disconnected:
+                            await redis_client.zrem(key, *disconnected)
+                            token_ids_removed += len(disconnected)
+                            keys_updated += 1
+
+                        # Delete the key if no peers remain.
+                        if await redis_client.zcard(key) == 0:
+                            await redis_client.delete(key)
+                            keys_deleted += 1
                     except Exception as e:
                         logger.warning(f"Error processing index key {key}: {e}")
                         continue
-                
-                # Execute pipeline in batches to avoid memory issues
-                if pipeline_count >= 3000:  # ~1500 ROMs per batch
-                    await pipeline.execute()
-                    pipeline = redis_client.pipeline()
-                    pipeline_count = 0
-                
+
                 if cursor == 0:
                     break
-            
-            # Execute remaining pipeline operations
-            if pipeline_count > 0:
-                await pipeline.execute()
-            
-            logger.info(f"p2p_index cleanup completed: {keys_updated} keys updated, {keys_deleted} keys deleted, {token_ids_removed} token_ids removed")
+
+            logger.info(
+                f"p2p_index cleanup completed: {keys_updated} keys pruned, "
+                f"{keys_deleted} keys deleted, {token_ids_removed} memberships removed, "
+                f"{legacy_stamped} legacy keys stamped for expiry"
+            )
             return True
             
         except Exception as e:
