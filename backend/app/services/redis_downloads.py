@@ -278,6 +278,37 @@ class RedisDownloadTracker:
             return None
     
     @staticmethod
+    async def clear_p2p_remote_token_id(download_id: int) -> bool:
+        """Drop p2p_remote_token_id from a download's Redis entry.
+
+        The client stores that token when it *starts* a P2P attempt, before it
+        knows the attempt will succeed. If P2P fails the client falls back to a
+        direct server download but never clears the token, so /current-transfers
+        would mislabel the (throttled) direct download as P2P and the peer would
+        be wrongly credited with upload stats. The backend clears it once it has
+        confirmed the file is being served directly from /file."""
+        redis_client = get_redis_downloads_client()
+        if not redis_client:
+            return False
+
+        try:
+            key = RedisDownloadTracker._get_key(download_id)
+            data_str = await redis_client.get(key)
+            if not data_str:
+                return False
+            data = json.loads(data_str)
+            if 'p2p_remote_token_id' not in data:
+                return False
+            del data['p2p_remote_token_id']
+            ttl = await redis_client.ttl(key)
+            await redis_client.setex(key, ttl if ttl and ttl > 0 else 86400, json.dumps(data))
+            logger.info(f"Cleared stale p2p_remote_token_id for direct download_id={download_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing p2p_remote_token_id in Redis for download_id={download_id}: {e}")
+            return False
+
+    @staticmethod
     async def remove_download(download_id: int) -> bool:
         """Remove download from Redis (when completed/cancelled)."""
         redis_client = get_redis_downloads_client()

@@ -2986,7 +2986,15 @@ async def download_file(
                 pause_check_interval = 2.0  # Check every 2 seconds for pause status
                 last_pause_check = start_time
                 bandwidth_changed = False  # Track if bandwidth changed in current iteration
-                
+                # Once we have streamed this many bytes, this is unambiguously a
+                # direct download and not the client's initial header probe: a
+                # client that fell back to P2P stalls this stream after only a few
+                # buffered MB, so it can never reach the threshold. At that point we
+                # drop any stale p2p_remote_token_id so /current-transfers stops
+                # showing the direct (throttled) download as P2P.
+                direct_confirm_bytes = 8 * 1024 * 1024
+                p2p_token_cleared = False
+
                 with open(file_path, 'rb') as f:
                     # Seek to start position if Range request
                     if start_byte > 0:
@@ -3086,7 +3094,14 @@ async def download_file(
                         chunk_count += 1
                         total_bytes += len(chunk)
                         remaining -= len(chunk)
-                        
+
+                        # Confirmed direct download: drop any stale P2P token so the
+                        # monitoring page reflects that the server is serving this.
+                        if not p2p_token_cleared and total_bytes >= direct_confirm_bytes:
+                            from app.services.redis_downloads import RedisDownloadTracker
+                            await RedisDownloadTracker.clear_p2p_remote_token_id(queue_item.id)
+                            p2p_token_cleared = True
+
                         # Log progress every 100 chunks
                         if chunk_count % 100 == 0:
                             elapsed_total = time.time() - start_time
