@@ -82,11 +82,18 @@ class RedisDownloadTracker:
             # Preserve started_at from the existing entry so repeated reconnects
             # don't reset the clock used by the zero-progress cleanup check.
             original_started_at = None
+            # Preserve the P2P peer token. The client stores it via a separate call
+            # (set_p2p_remote_token_id) once the P2P transfer starts; this full-blob
+            # rewrite runs from /start (fire-and-forget) and from stuck-recovery, and
+            # can land after that store. Dropping it here makes /current-transfers
+            # misclassify a P2P transfer as direct/Server.
+            preserved_p2p_remote_token_id = None
             existing_raw = await redis_client.get(key)
             if existing_raw:
                 try:
                     existing = json.loads(existing_raw)
                     original_started_at = existing.get('started_at')
+                    preserved_p2p_remote_token_id = existing.get('p2p_remote_token_id')
                 except Exception:
                     pass
 
@@ -98,6 +105,8 @@ class RedisDownloadTracker:
                 'last_progress_at': now_iso,
                 'started_at': original_started_at if original_started_at else now_iso,
             }
+            if preserved_p2p_remote_token_id is not None:
+                data['p2p_remote_token_id'] = preserved_p2p_remote_token_id
             if file_size is not None:
                 data['file_size'] = file_size
             if queue_type:
