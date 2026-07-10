@@ -1091,7 +1091,20 @@ class DownloadService:
                 try:
                     from app.services.websocket_manager import get_websocket_manager
                     ws_manager = get_websocket_manager()
-                    if ws_manager.has_connection(token_id):
+                    # Don't notify if the client already has an active download: it
+                    # would only re-request and be handed back the in-progress one
+                    # (a wasted round-trip that also churns its Redis tracking). The
+                    # newly queued item is picked up when the current one finishes.
+                    has_active = self.db.query(DownloadQueue).filter(
+                        and_(
+                            DownloadQueue.token_id == token_id,
+                            DownloadQueue.active_download == True,
+                            DownloadQueue.status == 'downloading'
+                        )
+                    ).first()
+                    if has_active:
+                        logger.info(f"Not notifying token_id {token_id} for queue_type {queue_type} - active download {has_active.id} in progress")
+                    elif ws_manager.has_connection(token_id):
                         await ws_manager.send_notification(token_id, {
                             "type": "download_available",
                             "queue_type": queue_type
