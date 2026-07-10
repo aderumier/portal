@@ -3001,13 +3001,13 @@ async def download_file(
                 pause_check_interval = 2.0  # Check every 2 seconds for pause status
                 last_pause_check = start_time
                 bandwidth_changed = False  # Track if bandwidth changed in current iteration
-                # Once we have streamed this many bytes, this is unambiguously a
-                # direct download and not the client's initial header probe: a
-                # client that fell back to P2P stalls this stream after only a few
-                # buffered MB, so it can never reach the threshold. At that point we
-                # drop any stale p2p_remote_token_id so /current-transfers stops
-                # showing the direct (throttled) download as P2P.
-                direct_confirm_bytes = 8 * 1024 * 1024
+                # Threshold before we treat this as a real direct download and drop a
+                # stale p2p_remote_token_id. Kept well above any realistic OS socket
+                # buffer: the client's initial header probe abandons this stream and
+                # the throttled generator only fills the socket buffer before blocking,
+                # so a probe can't reach this on its own. (An 8MB value misfired on
+                # throughput-tuned servers whose send buffer exceeds 8MB.)
+                direct_confirm_bytes = 64 * 1024 * 1024
                 p2p_token_cleared = False
 
                 with open(file_path, 'rb') as f:
@@ -3112,9 +3112,22 @@ async def download_file(
 
                         # Confirmed direct download: drop any stale P2P token so the
                         # monitoring page reflects that the server is serving this.
+                        # Guard against the abandoned probe of a P2P download: a real
+                        # direct client cannot have received more bytes than we have
+                        # sent (start_byte for a resume + what we streamed here), so if
+                        # its reported progress is well beyond that, it is pulling from
+                        # a peer and this connection is just the probe - leave the token.
                         if not p2p_token_cleared and total_bytes >= direct_confirm_bytes:
                             from app.services.redis_downloads import RedisDownloadTracker
-                            await RedisDownloadTracker.clear_p2p_remote_token_id(queue_item.id)
+                            rs = await RedisDownloadTracker.get_download_status(queue_item.id)
+                            reported = 0
+                            if rs:
+                                try:
+                                    reported = int(rs.get('bytes_transferred', 0) or 0)
+                                except (TypeError, ValueError):
+                                    reported = 0
+                            if reported <= start_byte + total_bytes + 4 * 1024 * 1024:
+                                await RedisDownloadTracker.clear_p2p_remote_token_id(queue_item.id)
                             p2p_token_cleared = True
 
                         # Log progress every 100 chunks
