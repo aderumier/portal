@@ -49,6 +49,13 @@ def get_redis_p2p_client():
 class P2PInventoryService:
     """Service for managing P2P client ROM inventory in Redis."""
 
+    # Lifetime of a peer's connection info (p2p:client:*). The client only
+    # registers when its WebSocket (re)connects, so this TTL is refreshed for
+    # every live connection by the WebSocket TTL refresh task: without that, a
+    # client whose connection stays up longer than the TTL would silently stop
+    # being offered as a P2P source.
+    CLIENT_INFO_TTL_SECONDS = 48 * 3600
+
     # A peer must re-advertise a ROM within this window or it ages out of the
     # reverse index. The client re-uploads its full inventory every 24h (and on
     # restart), so this must stay comfortably above that interval to avoid
@@ -248,14 +255,42 @@ class P2PInventoryService:
         
         try:
             client_key = f"p2p:client:{token_id}"
-            # Store with 48 hour TTL (clients re-register periodically)
-            await redis_client.setex(client_key, 48 * 3600, json.dumps(connection_info))
+            await redis_client.setex(
+                client_key,
+                P2PInventoryService.CLIENT_INFO_TTL_SECONDS,
+                json.dumps(connection_info),
+            )
             logger.info(f"Updated P2P client connection info in Redis for token_id {token_id}: external_ip={connection_info.get('external_ip')}, external_port={connection_info.get('external_port')}, upnp_enabled={connection_info.get('upnp_enabled')}")
             return True
         except Exception as e:
             logger.error(f"Error updating P2P client connection info for token_id {token_id}: {e}")
             return False
-    
+
+    @staticmethod
+    async def refresh_client_connection_ttl(token_id: int) -> bool:
+        """Extend the TTL of a connected peer's connection info.
+
+        Called for every live WebSocket connection so a peer stays a valid P2P
+        source for as long as it is connected. The client only registers on
+        (re)connect, so without this a stable, long-lived connection would let
+        p2p:client:{token_id} expire and disappear from find_eligible_peers().
+
+        Returns:
+            True if the key existed and its TTL was extended, False otherwise
+            (missing key: the peer must re-register to become a source again).
+        """
+        redis_client = get_redis_p2p_client()
+        if not redis_client:
+            return False
+
+        try:
+            client_key = f"p2p:client:{token_id}"
+            return bool(await redis_client.expire(client_key, P2PInventoryService.CLIENT_INFO_TTL_SECONDS))
+        except Exception as e:
+            logger.debug(f"Error refreshing P2P client connection info TTL for token_id {token_id}: {e}")
+            return False
+
+
     @staticmethod
     async def get_client_connection_info(token_id: int) -> Optional[Dict]:
         """Get client connection info for P2P transfers.
@@ -486,12 +521,15 @@ class P2PInventoryService:
     async def p2p_index_garbage_collector() -> bool:
         """Garbage collect the p2p_index.
 
-        Process:
-        1. Get all connected token_ids from WebSocket connections and P2P client info
-        2. Scan all existing p2p:index:* keys
-        3. For each scored (zset) key, drop members that aged out of the last-seen
-           window or whose client is disconnected, and delete empty keys. For legacy
-           plain-SET keys, stamp a TTL so they expire if never re-advertised.
+        Scans all p2p:index:* keys and, for each scored (zset) key, drops members
+        that aged out of the last-seen window, deleting keys left with no peers.
+        Legacy plain-SET keys get a TTL stamped so they expire if never
+        re-advertised.
+
+        Staleness is decided purely by the last-seen score, never by whether the
+        client is connected right now: an offline client still holds its ROMs and
+        only re-advertises every 24h, so dropping it on disconnect would remove it
+        as a source for up to a day after it comes back.
 
         Returns:
             True if successful, False otherwise
@@ -502,56 +540,13 @@ class P2PInventoryService:
         
         try:
             logger.info("Starting p2p_index cleanup")
-            
-            # Step 1: Get all connected token_ids from WebSocket connections (Redis DB 4)
-            connected_token_ids = set()
-            try:
-                from app.services.websocket_manager import get_redis_ws_client
-                redis_ws_client = get_redis_ws_client()
-                if redis_ws_client:
-                    cursor = 0
-                    while True:
-                        cursor, keys = await redis_ws_client.scan(cursor, match="ws:connections:*", count=1000)
-                        for key in keys:
-                            try:
-                                # Extract token_id from key format: ws:connections:{token_id}
-                                token_id_str = key.split(':')[-1]
-                                if token_id_str.isdigit():
-                                    connected_token_ids.add(int(token_id_str))
-                            except (ValueError, IndexError):
-                                continue
-                        if cursor == 0:
-                            break
-            except Exception as e:
-                logger.warning(f"Error getting WebSocket connections: {e}")
-            
-            # Step 2: Get all connected token_ids from P2P client info (Redis DB 3)
-            try:
-                cursor = 0
-                while True:
-                    cursor, keys = await redis_client.scan(cursor, match="p2p:client:*", count=1000)
-                    for key in keys:
-                        try:
-                            # Extract token_id from key format: p2p:client:{token_id}
-                            token_id_str = key.split(':')[-1]
-                            if token_id_str.isdigit():
-                                connected_token_ids.add(int(token_id_str))
-                        except (ValueError, IndexError):
-                            continue
-                    if cursor == 0:
-                        break
-            except Exception as e:
-                logger.warning(f"Error getting P2P client info: {e}")
-            
-            logger.info(f"Found {len(connected_token_ids)} connected clients")
-            
-            # Step 3: Scan all index keys. For sorted-set keys, drop members that
-            # aged out of the last-seen window or whose client is disconnected, and
-            # delete empty keys. For legacy plain-SET keys (from before the scored
-            # index), stamp a 48h TTL if they have none so they clear out on their
-            # own if no client re-advertises them (a re-advertisement converts them
-            # to a scored zset). This is what makes a restart start clearing stale
-            # keys without keeping a per-token map.
+
+            # Scan all index keys. For sorted-set keys, drop members that aged out of
+            # the last-seen window, and delete empty keys. For legacy plain-SET keys
+            # (from before the scored index), stamp a 48h TTL if they have none so
+            # they clear out on their own if no client re-advertises them (a
+            # re-advertisement converts them to a scored zset). This is what makes a
+            # restart start clearing stale keys without keeping a per-token map.
             min_score = int(time.time()) - P2PInventoryService.INDEX_STALE_SECONDS
             keys_updated = 0
             keys_deleted = 0
@@ -574,19 +569,14 @@ class P2PInventoryService:
                         if key_type != 'zset':
                             continue
 
-                        # Drop members not re-advertised within the window.
+                        # Drop members not re-advertised within the window. Being
+                        # disconnected right now is deliberately not a reason to drop
+                        # a peer: a client that is merely offline (rebooting, powered
+                        # down) still has the ROMs, and only re-advertises every 24h,
+                        # so evicting it here would hide it as a source for a day.
                         aged = await redis_client.zremrangebyscore(key, '-inf', f'({min_score}')
-                        token_ids_removed += aged
-
-                        # Drop members whose client is currently disconnected.
-                        members = await redis_client.zrange(key, 0, -1)
-                        disconnected = [
-                            m for m in members
-                            if m.isdigit() and int(m) not in connected_token_ids
-                        ]
-                        if disconnected:
-                            await redis_client.zrem(key, *disconnected)
-                            token_ids_removed += len(disconnected)
+                        if aged:
+                            token_ids_removed += aged
                             keys_updated += 1
 
                         # Delete the key if no peers remain.

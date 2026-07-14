@@ -16,6 +16,11 @@ _redis_ws_client = None
 # Redis pub/sub channel for cross-process WebSocket notifications
 WS_PUBSUB_CHANNEL = "ws:notifications"
 
+# TTL for connection hashes. Refreshed every 60s by the background task, so a
+# worker that crashes lets its connections expire well inside the 5 min staleness
+# window used by get_all_connections().
+CONNECTION_TTL_SECONDS = 600
+
 
 def get_redis_ws_client():
     """Get or create Redis client for websocket connection tracking."""
@@ -64,6 +69,9 @@ class WebSocketManager:
         """Initialize the WebSocket manager."""
         # Only store websocket objects in memory (not serializable)
         self._websocket_objects: Dict[int, WebSocket] = {}
+        # Connection metadata mirrored in memory so an expired/evicted Redis hash
+        # can be restored in full rather than resurrected as a metadata-less stub
+        self._connection_metadata: Dict[int, Dict[str, str]] = {}
         self._lock = asyncio.Lock()
         self._process_id = os.getpid()
         # Try to get worker ID from environment if set
@@ -290,6 +298,36 @@ class WebSocketManager:
     def _get_process_set_key(self) -> str:
         """Get Redis set key for tracking connections by process."""
         return f"ws:process:{self._process_id}:connections"
+
+    def _stale_entry_reason(self, token_id: int, conn_data: Dict[str, str]) -> Optional[str]:
+        """Return why an existing connection entry is stale, or None if it is live.
+
+        Mirrors the staleness rules in get_all_connections(): an entry claiming this
+        worker with no websocket in local memory, or an entry whose last heartbeat is
+        older than the refresh window, is not backed by a real connection. Entries left
+        in Redis by a restarted or crashed worker look valid but nobody is serving them.
+        """
+        conn_process_id = conn_data.get('process_id', '')
+
+        if conn_process_id == str(self._process_id):
+            if token_id not in self._websocket_objects:
+                return f"claims worker {self._process_id} but no websocket in local memory"
+            return None
+
+        # Owned by another worker: trust it only while its heartbeat is fresh.
+        heartbeat = conn_data.get('last_updated') or conn_data.get('connected_at')
+        if not heartbeat:
+            return "no heartbeat timestamp"
+
+        try:
+            last_seen = datetime.fromisoformat(heartbeat)
+        except (ValueError, TypeError):
+            return f"unparseable heartbeat ({heartbeat!r})"
+
+        if last_seen < datetime.now(timezone.utc) - timedelta(minutes=5):
+            return f"heartbeat is stale (last seen {heartbeat})"
+
+        return None
     
     async def update_connection_info_port_check(self, token_id: int, p2p_port_accessible: bool):
         """Update connection info with P2P port accessibility result.
@@ -308,6 +346,11 @@ class WebSocketManager:
         
         try:
             key = self._get_redis_key(token_id)
+            # HSET recreates a missing key (with no TTL), which would leave a partial,
+            # never-expiring connection entry behind. Only update an entry that exists.
+            if not await redis_client.exists(key):
+                logger.debug(f"Skipping port check update for token_id {token_id}: no connection entry")
+                return
             await redis_client.hset(key, 'p2p_port_accessible', 'true' if p2p_port_accessible else 'false')
             logger.debug(f"Updated port check result for token_id {token_id}: {p2p_port_accessible}")
         except Exception as e:
@@ -356,7 +399,18 @@ class WebSocketManager:
                     
                     # If entry is missing all required fields, it's invalid/partial - clean it up
                     if not (has_process_id or has_connected_at or has_last_updated):
-                        logger.warning(f"Found invalid/partial connection entry for token_id {token_id} - cleaning up and allowing new connection")
+                        reclaim_reason = "invalid/partial entry"
+                    else:
+                        reclaim_reason = self._stale_entry_reason(token_id, conn_data)
+
+                    if reclaim_reason:
+                        # Nobody is actually serving this connection (e.g. entries left behind
+                        # by a restarted/crashed worker). Reclaim instead of locking the client
+                        # out until the key expires.
+                        logger.warning(
+                            f"Reclaiming connection entry for token_id {token_id} ({reclaim_reason}) "
+                            f"- allowing new connection"
+                        )
                         await redis_client.delete(key)
                         # Also remove from process set if it exists
                         process_set_key = self._get_process_set_key()
@@ -386,17 +440,17 @@ class WebSocketManager:
                     'download_bandwidth': ''
                 }
                 
-                # Store in Redis Hash with 24 hour expiration
                 await redis_client.hset(key, mapping=connection_data)
-                await redis_client.expire(key, 86400)  # 24 hours
-                
+                await redis_client.expire(key, CONNECTION_TTL_SECONDS)
+
                 # Add to process set for tracking
                 process_set_key = self._get_process_set_key()
                 await redis_client.sadd(process_set_key, str(token_id))
-                await redis_client.expire(process_set_key, 86400)  # 24 hours
-                
+                await redis_client.expire(process_set_key, CONNECTION_TTL_SECONDS)
+
                 # Store websocket object in memory
                 self._websocket_objects[token_id] = websocket
+                self._connection_metadata[token_id] = connection_data
                 
                 logger.info(f"WebSocket connection added for token_id {token_id}, websocket_id={id(websocket)}, ip={ip}, platform={platform}, process_id={self._process_id}")
                 
@@ -421,6 +475,7 @@ class WebSocketManager:
             if current_websocket == websocket:
                 # Remove from memory
                 del self._websocket_objects[token_id]
+                self._connection_metadata.pop(token_id, None)
                 logger.info(f"WebSocket connection removed from memory for token_id {token_id}")
             else:
                 logger.warning(f"WebSocket connection for token_id {token_id} was already replaced (current != removed). Current websocket_id={id(current_websocket) if current_websocket else 'None'}, removed websocket_id={id(websocket)}")
@@ -586,9 +641,39 @@ class WebSocketManager:
                 
                 if is_connected:
                     key = self._get_redis_key(token_id)
-                    # Update last_updated timestamp and refresh TTL
-                    await redis_client.hset(key, 'last_updated', now)
-                    await redis_client.expire(key, 600)  # 10 minute TTL
+                    # A bare HSET would recreate an expired/evicted key holding only
+                    # 'last_updated', and keep refreshing that stub forever: the client
+                    # then shows up with no ip/platform/client_version/connected_at.
+                    # Restore the full entry from the in-memory metadata instead.
+                    if not await redis_client.exists(key):
+                        metadata = self._connection_metadata.get(token_id)
+                        if not metadata:
+                            logger.warning(
+                                f"Connection entry for token_id {token_id} is gone and no metadata "
+                                f"is cached to restore it - dropping connection"
+                            )
+                            await self.remove_connection(token_id, websocket)
+                            continue
+                        metadata['last_updated'] = now
+                        await redis_client.hset(key, mapping=metadata)
+                        await redis_client.sadd(self._get_process_set_key(), str(token_id))
+                        logger.warning(f"Restored missing connection entry for token_id {token_id}")
+                    else:
+                        await redis_client.hset(key, 'last_updated', now)
+                        if token_id in self._connection_metadata:
+                            self._connection_metadata[token_id]['last_updated'] = now
+
+                    await redis_client.expire(key, CONNECTION_TTL_SECONDS)
+
+                    # Keep the peer's P2P connection info alive for as long as it
+                    # is connected. The client only registers it on (re)connect, so
+                    # a connection that stays up longer than the key's TTL would
+                    # otherwise expire and stop being offered as a P2P source.
+                    from app.services.p2p_inventory import P2PInventoryService
+                    if not await P2PInventoryService.refresh_client_connection_ttl(token_id):
+                        # Normal for clients with no P2P server (they never register).
+                        logger.debug(f"No P2P connection info to refresh for token_id {token_id}")
+
                     refreshed_count += 1
                 else:
                     # Websocket is disconnected, remove it
