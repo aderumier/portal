@@ -896,7 +896,10 @@ def verify_p2p_download_id(download_id, system, rom_path):
         response = http_session.post(verify_url, json=data, headers=headers, timeout=2)
         if response.status_code == 200:
             result = response.json()
-            return result.get('valid', False)
+            valid = result.get('valid', False)
+            if not valid:
+                logger.warning(f"Download {download_id} verification rejected for {system}/{rom_path}: {result.get('reason')}")
+            return valid
         else:
             logger.debug(f"Download verification returned status {response.status_code}")
             return False

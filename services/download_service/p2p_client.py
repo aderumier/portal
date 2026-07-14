@@ -71,7 +71,10 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                 response = requests.post(verify_url, json=data, headers=headers, timeout=2)
                 if response.status_code == 200:
                     result = response.json()
-                    return result.get('valid', False)
+                    valid = result.get('valid', False)
+                    if not valid:
+                        logger.warning(f"Download {download_id} verification rejected for {system}/{rom_path}: {result.get('reason')}")
+                    return valid
                 else:
                     logger.debug(f"Download verification returned status {response.status_code}")
                     return False
@@ -535,6 +538,10 @@ def create_p2p_handler(roms_path, api_url=None, api_token=None):
                             if expected_time > elapsed:
                                 time.sleep(expected_time - elapsed)
                         
+            except (TimeoutError, socket.timeout, BrokenPipeError, ConnectionResetError) as e:
+                # Peer stalled or disconnected mid-transfer — routine, not an error.
+                # Body streaming has already begun, so send_error() is invalid here.
+                logger.info(f"P2P transfer to peer aborted: {e}")
             except Exception as e:
                 logger.error(f"Error handling file request: {e}", exc_info=True)
                 try:
