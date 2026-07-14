@@ -3132,9 +3132,41 @@ class DownloadService:
             logger.error(f"Error reading download log for {download_id}: {e}")
             return None
     
+    async def _resolve_rom_directory(self, system_id: str, token_id: int) -> str:
+        """Map a catalog System.id to the ROM directory it lives in on the client.
+
+        The p2p index is keyed by on-disk directory, not by System.id: clients
+        advertise the directories they find under ROMS_PATH, and a peer serves a
+        request as roms_path/{system}/{rom_path}. The two names diverge for any
+        system whose id is not its directory (e.g. id 'nesicax_batocera' lives in
+        /roms/nesicax), so indexing by id would make the ROM unfindable.
+
+        The directory is platform-dependent (retrobat_system on Windows,
+        batocera_system otherwise), so the client's platform is read from its
+        WebSocket connection info. Falls back to system_id when the system or the
+        platform is unknown, which is correct for the majority of systems, where
+        the id and the directory are the same string.
+        """
+        db_system = self.db.query(System).filter(System.id == system_id).first()
+        if not db_system:
+            return system_id
+
+        is_windows = False
+        try:
+            from app.services.websocket_manager import get_redis_ws_client
+            redis_ws_client = get_redis_ws_client()
+            if redis_ws_client:
+                platform = await redis_ws_client.hget(f"ws:connections:{token_id}", 'platform')
+                is_windows = bool(platform) and platform.lower() == 'windows'
+        except Exception as e:
+            logger.debug(f"Could not read platform for token_id {token_id}, assuming Linux: {e}")
+
+        directory = db_system.retrobat_system if is_windows else db_system.batocera_system
+        return directory or system_id
+
     async def complete_download(self, download_id: int) -> bool:
         """Remove download from queue and update user download statistics.
-        
+
         After completion, checks if there are more items in user_queue for the same token_id
         and promotes one if no active downloads remain, then sends WebSocket notification.
         
@@ -3321,14 +3353,18 @@ class DownloadService:
                                 rom_path = rom_path[len(system) + 1:]
                             # Remove leading "./" if present
                             rom_path = rom_path.lstrip('./')
-                            
-                            # Register token_id in p2p_index
-                            inventory = {system: [rom_path]}
+
+                            # Register token_id in p2p_index, under the ROM's on-disk
+                            # directory: that is the key clients advertise under and
+                            # the key the peer search looks up, and it is not always
+                            # the System.id.
+                            index_system = await self._resolve_rom_directory(system, token_id)
+                            inventory = {index_system: [rom_path]}
                             success = await P2PInventoryService.update_inventory(token_id, inventory)
                             if success:
-                                logger.info(f"Registered token_id {token_id} in p2p_index for {system}/{rom_path}")
+                                logger.info(f"Registered token_id {token_id} in p2p_index for {index_system}/{rom_path}")
                             else:
-                                logger.warning(f"Failed to register token_id {token_id} in p2p_index for {system}/{rom_path}")
+                                logger.warning(f"Failed to register token_id {token_id} in p2p_index for {index_system}/{rom_path}")
                         else:
                             logger.warning(f"Game found but system is empty for game_id: {lookup_game_id}")
                     else:

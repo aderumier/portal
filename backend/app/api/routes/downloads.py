@@ -1492,9 +1492,18 @@ async def request_download(
     if settings.P2P_ENABLED and download_info:
         try:
             from app.services.p2p_inventory import P2PInventoryService
-            system = download_info.get('system')
+            # The p2p index is keyed by the ROM's on-disk directory, not the catalog
+            # System.id: peers advertise what they find under ROMS_PATH, and a peer
+            # asked for a file resolves it as roms_path/{system}/{rom_path}. These
+            # differ for any system whose id is not its directory name (e.g. id
+            # 'nesicax_batocera' lives in /roms/nesicax), so searching by id there
+            # would never match a peer. 'batocera_system' is the directory the
+            # backend already resolved for this client's platform (retrobat_system on
+            # Windows, batocera_system otherwise) and is what the client will ask the
+            # peer for.
+            system = download_info.get('batocera_system') or download_info.get('system')
             rom_path = download_info.get('rom_path')  # Use rom_path instead of game_id
-            
+
             if system and rom_path:
                 # Use rom_path for P2P inventory lookup (normalized, system-relative, without snapshot paths)
                 # This matches what's stored in the p2p_index (normalized paths without snapshot prefixes)
@@ -4468,11 +4477,25 @@ async def verify_p2p_download(
         redis_system = redis_status.get('system')
         redis_rom_path = redis_status.get('rom_path')
         
+        # Redis stores the catalog system id (System.id, e.g. "namco2x6_batocera"),
+        # but the P2P client requests using the translated, client-facing system it
+        # actually mounts files under (batocera_system on Linux / retrobat_system on
+        # Windows, e.g. "namco2x6"). Several catalog systems can share one translated
+        # name and a catalog system maps to both, so accept the catalog id or either
+        # of its translations rather than storing a single lossy value.
         if redis_system and redis_system != body.system:
-            return {
-                "valid": False,
-                "reason": f"System mismatch: expected {redis_system}, got {body.system}"
-            }
+            accepted_systems = {redis_system}
+            db_system = db.query(System).filter(System.id == redis_system).first()
+            if db_system:
+                if db_system.batocera_system:
+                    accepted_systems.add(db_system.batocera_system)
+                if db_system.retrobat_system:
+                    accepted_systems.add(db_system.retrobat_system)
+            if body.system not in accepted_systems:
+                return {
+                    "valid": False,
+                    "reason": f"System mismatch: expected one of {sorted(accepted_systems)}, got {body.system}"
+                }
         
         if redis_rom_path and redis_rom_path != body.rom_path:
             return {
