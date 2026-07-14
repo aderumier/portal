@@ -220,6 +220,8 @@ def migrate_database():
         ("idx_download_archive_download_id", "download_archive(download_id)"),
         ("idx_download_archive_timestamp", "download_archive(timestamp)"),
         ("idx_download_archive_user_id", "download_archive(user_id)"),
+        # Covers the download-count aggregations (by system, and by system+rompath)
+        ("idx_download_archive_status_system_rompath", "download_archive(download_status, system, rompath)"),
     ]
     
     for idx_name, idx_def in indexes_to_create:

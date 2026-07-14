@@ -1,5 +1,5 @@
 """Database configuration and models."""
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, BigInteger, Float, event
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, BigInteger, Float, Index, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import func
@@ -112,6 +112,8 @@ class DownloadArchive(Base):
     device = Column(String, nullable=True)  # API token name (device) used for the download
 
     __table_args__ = (
+        # Covers the download-count aggregations (by system, and by system+rompath)
+        Index('idx_download_archive_status_system_rompath', 'download_status', 'system', 'rompath'),
         {'sqlite_autoincrement': True},
     )
 
