@@ -25,8 +25,7 @@ import ConnectedClients from './pages/ConnectedClients'
 import BugReports from './pages/BugReports'
 import Debug from './pages/Debug'
 import TopDownloads from './pages/TopDownloads'
-import TopPlaycount from './pages/TopPlaycount'
-import TopPlaytime from './pages/TopPlaytime'
+import TopPlayed from './pages/TopPlayed'
 import TopSystemsList from './pages/TopSystemsList'
 import Collections from './pages/Collections'
 import Collection from './pages/Collection'
@@ -61,8 +60,10 @@ function App() {
               <Route path="playlist/collections" element={<ProtectedRoute><Collections /></ProtectedRoute>} />
               <Route path="collection/:id" element={<ProtectedRoute><Collection /></ProtectedRoute>} />
               <Route path="playlist/top-downloads" element={<ProtectedRoute><TopDownloads /></ProtectedRoute>} />
-              <Route path="playlist/top-playcount" element={<ProtectedRoute><TopPlaycount /></ProtectedRoute>} />
-              <Route path="playlist/top-playtime" element={<ProtectedRoute><TopPlaytime /></ProtectedRoute>} />
+              <Route path="playlist/top-played" element={<ProtectedRoute><TopPlayed /></ProtectedRoute>} />
+              {/* Superseded by the combined, TOPSIS-ranked Top Played Games list */}
+              <Route path="playlist/top-playcount" element={<Navigate to="/playlist/top-played" replace />} />
+              <Route path="playlist/top-playtime" element={<Navigate to="/playlist/top-played" replace />} />
               <Route path="playlist/top-systems" element={<ProtectedRoute requireAdmin><TopSystemsList /></ProtectedRoute>} />
               <Route path="search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
               <Route path="downloads" element={<ProtectedRoute requireDownload><Downloads /></ProtectedRoute>} />

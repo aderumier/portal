@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 import logging
 import pickle
 import hashlib
+import math
 import time
 from typing import List, Dict, Optional, Tuple
 import re
@@ -1024,6 +1025,10 @@ class GameService:
                         game_response['playcount'] = game_data['playcount']
                     if 'gametime' in game_data:
                         game_response['gametime'] = game_data['gametime']
+                    if 'player_count' in game_data:
+                        game_response['player_count'] = game_data['player_count']
+                    if 'topsis_score' in game_data:
+                        game_response['topsis_score'] = game_data['topsis_score']
                     
                     games.append(game_response)
             
@@ -1660,6 +1665,7 @@ class GameService:
                                 if rompath in catalog[catalog_system_id]:
                                     catalog[catalog_system_id][rompath]['playcount'] = stats['playcount']
                                     catalog[catalog_system_id][rompath]['gametime'] = stats['gametime']
+                                    catalog[catalog_system_id][rompath]['player_count'] = stats.get('player_count', 0)
                                     merged_count += 1
                                     matched = True
                                 else:
@@ -1670,11 +1676,13 @@ class GameService:
                                         if catalog_normalized == cat_normalized:
                                             game_data['playcount'] = stats['playcount']
                                             game_data['gametime'] = stats['gametime']
+                                            game_data['player_count'] = stats.get('player_count', 0)
                                             merged_count += 1
                                             matched = True
                                             break
                     
                     logger.info(f"  {catalog_type} catalog: merged stats for {merged_count} games")
+                self._compute_topsis_scores()
                 logger.info("Finished updating aggregated user stats in cached catalog")
             else:
                 logger.info("No user gamelist stats found - using cached stats if available")
@@ -2196,6 +2204,8 @@ class GameService:
         skipped_excluded_system = 0
 
         for tar_file in tar_files:
+            # Games this client has already been counted as a player of
+            clients_counted = set()
             try:
                 with tarfile.open(tar_file, 'r:gz') as tar:
                     # Read gamelists directly from the archive. Extracting to disk used to
@@ -2306,10 +2316,20 @@ class GameService:
                                 if system_id not in aggregated_stats:
                                     aggregated_stats[system_id] = {}
                                 if rompath not in aggregated_stats[system_id]:
-                                    aggregated_stats[system_id][rompath] = {'playcount': 0, 'gametime': 0}
+                                    aggregated_stats[system_id][rompath] = {
+                                        'playcount': 0, 'gametime': 0, 'player_count': 0
+                                    }
 
-                                aggregated_stats[system_id][rompath]['playcount'] += playcount
-                                aggregated_stats[system_id][rompath]['gametime'] += gametime
+                                game_stats = aggregated_stats[system_id][rompath]
+                                game_stats['playcount'] += playcount
+                                game_stats['gametime'] += gametime
+
+                                # Distinct clients that played this game: one of the three criteria the
+                                # ranking score is built from. Guard against a client listing the same
+                                # game in more than one gamelist.
+                                if (system_id, rompath) not in clients_counted:
+                                    clients_counted.add((system_id, rompath))
+                                    game_stats['player_count'] += 1
 
                         except Exception as e:
                             logger.error(f"Error parsing {member.name} from {tar_file}: {e}")
@@ -2328,6 +2348,67 @@ class GameService:
         )
 
         return aggregated_stats
+
+    def _compute_topsis_scores(self) -> None:
+        """Score every game that has play stats, for the "Top played games" ranking.
+
+        Ranking on any single stat is misleading: playcount alone lets one machine with a
+        runaway counter own the chart, and gametime alone just favours long games. TOPSIS
+        ranks each game on all three criteria at once - how many distinct players it has,
+        how often it was played, and for how long - by its closeness to the best possible
+        game and its distance from the worst.
+
+        The three criteria span very different magnitudes (players are single digits,
+        playcount and gametime run into the thousands), so they are log-scaled first.
+        Without that, the raw spread of playcount/gametime swamps the player count after
+        normalisation and the score collapses back into a plays ranking.
+
+        Scores are per catalog, since each is ranked against its own games.
+        """
+        criteria = ('player_count', 'playcount', 'gametime')
+
+        # Half the weight goes to how many people played the game. Plays and playtime move together
+        # almost perfectly - a game played more is played longer - so splitting the rest between them
+        # keeps that single, largely redundant signal from outvoting the breadth of interest.
+        weights = (0.5, 0.25, 0.25)
+
+        for catalog in (self.catalog_wip, self.catalog_releases):
+            scored_games = [
+                game_data
+                for system_games in catalog.values()
+                for game_data in system_games.values()
+                if game_data.get('playcount') or game_data.get('gametime')
+            ]
+
+            if not scored_games:
+                continue
+
+            matrix = [
+                [math.log1p(max(game_data.get(c, 0) or 0, 0)) for c in criteria]
+                for game_data in scored_games
+            ]
+
+            # Vector normalisation, then weight each criterion
+            norms = [
+                math.sqrt(sum(row[j] ** 2 for row in matrix)) or 1.0
+                for j in range(len(criteria))
+            ]
+            weighted = [
+                [weights[j] * row[j] / norms[j] for j in range(len(criteria))]
+                for row in matrix
+            ]
+
+            # All three are benefit criteria: more is better
+            best = [max(row[j] for row in weighted) for j in range(len(criteria))]
+            worst = [min(row[j] for row in weighted) for j in range(len(criteria))]
+
+            for game_data, row in zip(scored_games, weighted):
+                dist_best = math.sqrt(sum((row[j] - best[j]) ** 2 for j in range(len(criteria))))
+                dist_worst = math.sqrt(sum((row[j] - worst[j]) ** 2 for j in range(len(criteria))))
+                total = dist_best + dist_worst
+                game_data['topsis_score'] = round(dist_worst / total, 4) if total else 0.0
+
+        logger.info("Computed TOPSIS ranking scores for games with play stats")
 
     def _aggregate_download_counts(self) -> Dict[str, Dict[str, int]]:
         """Aggregate download counts from download_archive table.
@@ -2474,6 +2555,10 @@ class GameService:
                         del game_data['playcount']
                     if 'gametime' in game_data:
                         del game_data['gametime']
+                    if 'player_count' in game_data:
+                        del game_data['player_count']
+                    if 'topsis_score' in game_data:
+                        del game_data['topsis_score']
         
         # Drop archives from clients whose token was revoked or deleted before aggregating
         self.prune_orphan_user_gamelists()
@@ -2532,6 +2617,7 @@ class GameService:
                         if rompath in catalog[catalog_system_id]:
                             catalog[catalog_system_id][rompath]['playcount'] = stats['playcount']
                             catalog[catalog_system_id][rompath]['gametime'] = stats['gametime']
+                            catalog[catalog_system_id][rompath]['player_count'] = stats.get('player_count', 0)
                             merged_count += 1
                             matched = True
                         else:
@@ -2546,6 +2632,7 @@ class GameService:
                                 if catalog_normalized == cat_normalized:
                                     game_data['playcount'] = stats['playcount']
                                     game_data['gametime'] = stats['gametime']
+                                    game_data['player_count'] = stats.get('player_count', 0)
                                     merged_count += 1
                                     matched = True
                                     break
@@ -2556,6 +2643,8 @@ class GameService:
             logger.info(f"  {catalog_type} catalog merge complete: {merged_count} games merged, {skipped_system_count} systems skipped, {skipped_game_count} games not matched")
         
         logger.info("Finished merging playcount and gametime stats into catalogs")
+
+        self._compute_topsis_scores()
         
         # Aggregate download counts from download_archive
         logger.info("Aggregating download counts from archive...")
@@ -2800,6 +2889,10 @@ class GameService:
                 game_response['playcount'] = game_data['playcount']
             if 'gametime' in game_data:
                 game_response['gametime'] = game_data['gametime']
+            if 'player_count' in game_data:
+                game_response['player_count'] = game_data['player_count']
+            if 'topsis_score' in game_data:
+                game_response['topsis_score'] = game_data['topsis_score']
             results.append(game_response)
             
         return results

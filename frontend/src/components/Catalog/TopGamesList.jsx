@@ -9,7 +9,10 @@ import { getMediaUrl } from '../../utils/constants'
 import { useAuth } from '../../context/AuthContext'
 import './TopGamesList.css'
 
-const TopGamesList = ({ title, sortBy, valueLabel, formatValue }) => {
+// `columns` shows several sortable stat columns instead of the single `valueLabel` one.
+// Each entry is { key, label, format? }; the table is fetched sorted by `sortBy`.
+const TopGamesList = ({ title, sortBy, valueLabel, formatValue, columns }) => {
+    const statColumns = columns || [{ key: sortBy, label: valueLabel, format: formatValue }]
     const { catalogType } = useCatalog()
     const [games, setGames] = useState([])
     const [loading, setLoading] = useState(true)
@@ -92,10 +95,10 @@ const TopGamesList = ({ title, sortBy, valueLabel, formatValue }) => {
         return sortDirection === 'asc' ? valA - valB : valB - valA
     })
 
-    // Helper to format values if needed (e.g. seconds to time)
-    const getDisplayValue = (game) => {
-        const val = game[sortBy]
-        return formatValue ? formatValue(val) : val
+    const getDisplayValue = (game, column) => {
+        const val = game[column.key]
+        if (column.format) return column.format(val)
+        return val == null ? '-' : val
     }
 
     if (loading) return <div className="loading">Loading top games...</div>
@@ -129,9 +132,11 @@ const TopGamesList = ({ title, sortBy, valueLabel, formatValue }) => {
                             <th className="sortable" onClick={() => handleSort('systemName')}>
                                 System {sortColumn === 'systemName' && (sortDirection === 'asc' ? '↑' : '↓')}
                             </th>
-                            <th className="sortable" onClick={() => handleSort(sortBy)}>
-                                {valueLabel} {sortColumn === sortBy && (sortDirection === 'asc' ? '↑' : '↓')}
-                            </th>
+                            {statColumns.map((column) => (
+                                <th key={column.key} className="sortable" onClick={() => handleSort(column.key)}>
+                                    {column.label} {sortColumn === column.key && (sortDirection === 'asc' ? '↑' : '↓')}
+                                </th>
+                            ))}
                             {(isDownload || isFastDownload) && <th>Action</th>}
                         </tr>
                     </thead>
@@ -153,7 +158,9 @@ const TopGamesList = ({ title, sortBy, valueLabel, formatValue }) => {
                                 </td>
                                 <td className="game-name-cell">{game.name}</td>
                                 <td>{game.systemName}</td>
-                                <td className="stat-cell">{getDisplayValue(game)}</td>
+                                {statColumns.map((column) => (
+                                    <td key={column.key} className="stat-cell">{getDisplayValue(game, column)}</td>
+                                ))}
                                 {(isDownload || isFastDownload) && (
                                     <td>
                                         <button

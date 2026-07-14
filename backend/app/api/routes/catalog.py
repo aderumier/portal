@@ -344,7 +344,7 @@ async def set_catalog_preference(
 async def get_top_downloads(
     limit: int = Query(100, ge=1, le=1000),
     catalog_type: Optional[str] = Query('releases', regex='^(wip|releases)$'),
-    sort_by: Optional[str] = Query('download_count', regex='^(download_count|playcount|gametime)$'),
+    sort_by: Optional[str] = Query('download_count', regex='^(download_count|playcount|gametime|player_count|topsis_score)$'),
     current_user: dict = Depends(require_catalog_viewer),
     game_service: GameService = Depends(get_game_service)
 ):

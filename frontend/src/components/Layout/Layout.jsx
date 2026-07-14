@@ -123,8 +123,7 @@ const Layout = () => {
                     <div className="playlist-menu-dropdown">
                       <Link to="/playlist/collections" className="playlist-menu-item" onClick={() => setPlaylistMenuOpen(false)}>Collections</Link>
                       <Link to="/playlist/top-downloads" className="playlist-menu-item" onClick={() => setPlaylistMenuOpen(false)}>Top Download</Link>
-                      <Link to="/playlist/top-playcount" className="playlist-menu-item" onClick={() => setPlaylistMenuOpen(false)}>Top Playcount</Link>
-                      <Link to="/playlist/top-playtime" className="playlist-menu-item" onClick={() => setPlaylistMenuOpen(false)}>Top Playtime</Link>
+                      <Link to="/playlist/top-played" className="playlist-menu-item" onClick={() => setPlaylistMenuOpen(false)}>Top Played Games</Link>
                     </div>
                   )}
                 </div>
