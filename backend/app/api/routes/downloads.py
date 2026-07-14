@@ -3266,7 +3266,18 @@ async def upload_gamelist(
         dest_file = dest_dir / 'gamelists.tar.gz'
         with open(dest_file, 'wb') as f:
             f.write(file_content)
-        
+
+        # Only the latest upload of a client may count towards the aggregated play stats,
+        # so drop any other archive left in this token's directory.
+        for stale in list(dest_dir.glob('*.tar.gz')) + list(dest_dir.glob('*.tgz')):
+            if stale == dest_file:
+                continue
+            try:
+                stale.unlink()
+                logger.info(f"Removed stale gamelist archive for token_id '{token_id}': {stale.name}")
+            except OSError as e:
+                logger.warning(f"Could not remove stale gamelist archive {stale}: {e}")
+
         logger.info(f"Uploaded gamelist.tar.gz for token_id '{token_id}' ({file_count} files, {len(file_content)} bytes) to {dest_file}")
         
         return {
@@ -4433,6 +4444,7 @@ async def store_p2p_remote_token(
 async def verify_p2p_download(
     body: VerifyP2PDownloadRequest,
     request: Request,
+    db: Session = Depends(get_db),
     current_user: dict = Depends(require_auth_user)
 ):
     """Verify that a download_id exists in Redis and matches the requested system/rom_path.

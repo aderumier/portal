@@ -10,7 +10,6 @@ from typing import List, Dict, Optional, Tuple
 import re
 from pathlib import Path
 import tarfile
-import tempfile
 import shutil
 from sqlalchemy import func
 from app.config import settings
@@ -1803,13 +1802,16 @@ class GameService:
                     if system.batocera_system:
                         if system.batocera_system not in mapping:
                             mapping[system.batocera_system] = []
-                        mapping[system.batocera_system].append(system.id)
-                    
+                        if system.id not in mapping[system.batocera_system]:
+                            mapping[system.batocera_system].append(system.id)
+
                     # Map retrobat_system to this catalog system
+                    # (may be the same name as batocera_system, so guard against duplicates)
                     if system.retrobat_system:
                         if system.retrobat_system not in mapping:
                             mapping[system.retrobat_system] = []
-                        mapping[system.retrobat_system].append(system.id)
+                        if system.id not in mapping[system.retrobat_system]:
+                            mapping[system.retrobat_system].append(system.id)
             finally:
                 db.close()
         except Exception as e:
@@ -2033,181 +2035,277 @@ class GameService:
             # Can't determine system without system_id
             return None, normalized
     
-    def _aggregate_users_playcount_gametime(self) -> Dict[str, Dict[str, Dict[str, int]]]:
-        """Parse user gamelist.xml files from tar.gz archives and aggregate playcount/gametime.
-        
-        Scans backend/data/users_gamelist/*/ for all *.tar.gz files, extracts them,
-        parses gamelist.xml files, and aggregates playcount and gametime across all users.
-        
-        Returns:
-            Dictionary: {system_id: {rompath: {'playcount': int, 'gametime': int}}}
-        """
-        aggregated_stats = {}  # {system_id: {rompath: {'playcount': int, 'gametime': int}}}
-        
-        # Determine users_gamelist path
-        # Try multiple possible locations
+    def _get_users_gamelist_path(self) -> Optional[Path]:
+        """Locate the directory holding per-token gamelist archives."""
         possible_paths = [
             Path(__file__).parent.parent.parent / 'data' / 'users_gamelist',  # backend/data/users_gamelist
             Path(__file__).parent.parent.parent.parent / 'data' / 'users_gamelist',  # project_root/data/users_gamelist
             Path('/opt/batocera-games-catalog/data/users_gamelist'),  # Production
             Path(settings.USERS_GAMELIST_PATH),  # From config
         ]
-        
-        users_gamelist_path = None
+
         for path in possible_paths:
             if path.exists() and path.is_dir():
-                users_gamelist_path = path
-                break
-        
-        if not users_gamelist_path:
-            logger.warning(f"Users gamelist directory not found. Tried: {possible_paths}")
-            return aggregated_stats
-        
-        logger.info(f"Scanning for user gamelist files in: {users_gamelist_path}")
-        
-        # Create temporary directory for extraction
-        temp_dir = tempfile.mkdtemp(prefix='gamelist_extract_')
-        logger.info(f"Created temporary extraction directory: {temp_dir}")
-        
+                return path
+
+        logger.warning(f"Users gamelist directory not found. Tried: {possible_paths}")
+        return None
+
+    def _get_active_token_ids(self) -> set:
+        """Return the ids of API tokens that still exist and are not revoked."""
+        from app.database import ApiToken
+
+        db = SessionLocal()
         try:
-            # Find all tar.gz files in user directories
-            tar_files = []
-            for user_dir in users_gamelist_path.iterdir():
-                if not user_dir.is_dir():
+            rows = db.query(ApiToken.id).filter(ApiToken.revoked == False).all()
+            return {row[0] for row in rows}
+        finally:
+            db.close()
+
+    def prune_orphan_user_gamelists(self) -> int:
+        """Delete gamelist archives belonging to tokens that were revoked or deleted.
+
+        A gamelist directory is named after the API token (client) that uploaded it, so a
+        directory with no matching live token is a client that no longer exists and must
+        not keep contributing to the aggregated playcount/gametime stats.
+
+        Returns:
+            Number of directories removed.
+        """
+        users_gamelist_path = self._get_users_gamelist_path()
+        if not users_gamelist_path:
+            return 0
+
+        try:
+            active_token_ids = self._get_active_token_ids()
+        except Exception as e:
+            # Without a reliable token list we cannot tell orphans apart from live clients,
+            # so keep the archives rather than risk deleting valid uploads.
+            logger.warning(f"Skipping orphan gamelist pruning, could not load API tokens: {e}")
+            return 0
+
+        removed = 0
+        for token_dir in users_gamelist_path.iterdir():
+            if not token_dir.is_dir():
+                continue
+            if token_dir.name.isdigit() and int(token_dir.name) in active_token_ids:
+                continue
+
+            try:
+                shutil.rmtree(token_dir)
+                removed += 1
+                logger.info(f"Pruned orphan gamelist directory (no live token): {token_dir.name}")
+            except Exception as e:
+                logger.warning(f"Could not prune orphan gamelist directory {token_dir}: {e}")
+
+        if removed:
+            logger.info(f"Pruned {removed} orphan gamelist director(ies)")
+        return removed
+
+    def _aggregate_users_playcount_gametime(self) -> Dict[str, Dict[str, Dict[str, int]]]:
+        """Parse user gamelist.xml files from tar.gz archives and aggregate playcount/gametime.
+
+        Scans data/users_gamelist/<token_id>/ for the client's latest *.tar.gz upload, reads
+        the gamelist.xml files straight out of each archive, and aggregates playcount and
+        gametime across all clients. Archives belonging to revoked or deleted tokens are
+        ignored.
+
+        Returns:
+            Dictionary: {system_id: {rompath: {'playcount': int, 'gametime': int}}}
+        """
+        aggregated_stats = {}  # {system_id: {rompath: {'playcount': int, 'gametime': int}}}
+
+        users_gamelist_path = self._get_users_gamelist_path()
+        if not users_gamelist_path:
+            return aggregated_stats
+
+        logger.info(f"Scanning for user gamelist files in: {users_gamelist_path}")
+
+        try:
+            active_token_ids = self._get_active_token_ids()
+        except Exception as e:
+            logger.warning(f"Could not load API tokens, aggregating all gamelist archives: {e}")
+            active_token_ids = None
+
+        # Find the archives to process, one client (API token) per directory
+        tar_files = []
+        skipped_tokens = 0
+        for token_dir in sorted(users_gamelist_path.iterdir()):
+            if not token_dir.is_dir():
+                continue
+
+            if active_token_ids is not None:
+                is_active = token_dir.name.isdigit() and int(token_dir.name) in active_token_ids
+                if not is_active:
+                    # Revoked or deleted client: its old stats must not count anymore
+                    skipped_tokens += 1
                     continue
-                
-                logger.info(f"Scanning user directory: {user_dir.name}")
-                for tar_file in user_dir.glob('*.tar.gz'):
-                    tar_files.append(tar_file)
-                    logger.info(f"  Found tar.gz: {tar_file.name} ({tar_file.stat().st_size} bytes)")
-            
-            if not tar_files:
-                logger.info("No tar.gz files found in users_gamelist directory")
-                return aggregated_stats
-            
-            logger.info(f"Found {len(tar_files)} tar.gz file(s) to process")
-            
-            # Process each tar.gz file
-            for tar_file in tar_files:
-                try:
-                    logger.info(f"Processing tar.gz: {tar_file.name}")
-                    # Extract to temporary directory
-                    extract_dir = os.path.join(temp_dir, tar_file.stem)
-                    os.makedirs(extract_dir, exist_ok=True)
-                    
-                    with tarfile.open(tar_file, 'r:gz') as tar:
-                        tar.extractall(extract_dir)
-                        logger.info(f"  Extracted {len(tar.getnames())} files to {extract_dir}")
-                    
-                    # Find all gamelist.xml files (may be in subdirectories)
-                    gamelist_files = []
-                    for root, dirs, files in os.walk(extract_dir):
-                        if 'gamelist.xml' in files:
-                            gamelist_files.append(os.path.join(root, 'gamelist.xml'))
-                    
-                    logger.info(f"  Found {len(gamelist_files)} gamelist.xml file(s)")
-                    
-                    # Parse each gamelist.xml
-                    for gamelist_path in gamelist_files:
+
+            # A client only ever keeps its most recent upload, but tolerate several files
+            # by taking the newest one so a stale archive can never be counted alongside it.
+            archives = sorted(token_dir.glob('*.tar.gz'), key=lambda p: p.stat().st_mtime)
+            if archives:
+                tar_files.append(archives[-1])
+
+        if skipped_tokens:
+            logger.info(f"Skipped {skipped_tokens} gamelist director(ies) with no live API token")
+
+        if not tar_files:
+            logger.info("No tar.gz files found in users_gamelist directory")
+            return aggregated_stats
+
+        logger.info(f"Found {len(tar_files)} tar.gz file(s) to process")
+
+        MAX_GAMETIME = 7_776_000  # 3 months in seconds
+
+        # No human launches the same game this many times. Anything above is a crash/relaunch loop:
+        # the game dies after a fixed interval, EmulationStation records a play, and it restarts,
+        # which is why such entries show a suspiciously constant time-per-play across machines.
+        MAX_PLAYCOUNT_PER_CLIENT = 1000
+
+        # A game whose sessions are consistently short was not really played: it crashed on launch,
+        # or the user backed straight out again. Note this also excludes arcade titles that are short
+        # by design, which is intended - a game only counts here once players sit down with it.
+        MIN_SECONDS_PER_PLAY = 300  # 5 minutes
+
+        # A client that spent only a few minutes on a game merely tried it out, and games everybody
+        # tests once should not outrank games people actually play. This is a floor on the client's
+        # TOTAL time on the game, not on the session length, so a short arcade title still counts as
+        # soon as the player keeps coming back to it.
+        MIN_TOTAL_GAMETIME = 1800  # 30 minutes
+
+        # EmulationStation always writes lastplayed when a game is actually launched, so a playcount
+        # with no lastplayed cannot come from real play - it is metadata shipped with the gamelist.
+        # Stats copied between installs also repeat the exact same playcount on unrelated clients,
+        # which is not a coincidence real play can produce once the count is non-trivial.
+        DUPLICATE_MIN_PLAYCOUNT = 20
+
+        seen_entries = set()
+
+        skipped_no_lastplayed = 0
+        skipped_runaway = 0
+        skipped_duplicate = 0
+        skipped_too_short = 0
+        skipped_only_tested = 0
+
+        for tar_file in tar_files:
+            try:
+                with tarfile.open(tar_file, 'r:gz') as tar:
+                    # Read gamelists directly from the archive. Extracting to disk used to
+                    # collide between clients (every upload is named gamelists.tar.gz) and
+                    # made each client's stats be counted once per archive processed.
+                    members = [
+                        m for m in tar.getmembers()
+                        if m.isfile() and os.path.basename(m.name) == 'gamelist.xml'
+                    ]
+
+                    for member in members:
                         try:
-                            # Try to determine system from directory structure
-                            # gamelist.xml is typically in: extract_dir/system_id/gamelist.xml
-                            # or extract_dir/system_id/.../gamelist.xml
-                            rel_path = os.path.relpath(gamelist_path, extract_dir)
-                            path_parts = rel_path.split(os.sep)
-                            
-                            # If gamelist.xml is in a subdirectory, use that as system_id
-                            system_id_from_path = None
-                            if len(path_parts) > 1:
-                                # First directory component is likely the system_id
-                                system_id_from_path = path_parts[0]
-                            
-                            tree = ET.parse(gamelist_path)
-                            root = tree.getroot()
-                            
-                            games_with_stats = 0
-                            games_processed = 0
-                            
+                            # gamelist.xml usually sits in <system_id>/gamelist.xml
+                            path_parts = os.path.normpath(member.name).split(os.sep)
+                            system_id_from_path = path_parts[0] if len(path_parts) > 1 else None
+
+                            handle = tar.extractfile(member)
+                            if handle is None:
+                                continue
+                            root = ET.parse(handle).getroot()
+
                             for game in root.findall('.//game'):
-                                games_processed += 1
-                                # Get path
                                 path_elem = game.find('path')
                                 if path_elem is None or not path_elem.text:
                                     continue
-                                
+
                                 game_path = path_elem.text
-                                
-                                # Get playcount and gametime
+
                                 playcount_elem = game.find('playcount')
                                 gametime_elem = game.find('gametime')
-                                
+                                lastplayed_elem = game.find('lastplayed')
+
                                 playcount = 0
                                 gametime = 0
-                                
+
                                 if playcount_elem is not None and playcount_elem.text:
                                     try:
                                         playcount = int(playcount_elem.text)
                                     except (ValueError, TypeError):
                                         pass
-                                
+
                                 if gametime_elem is not None and gametime_elem.text:
                                     try:
                                         gametime = int(gametime_elem.text)
                                     except (ValueError, TypeError):
                                         pass
-                                
-                                # Skip corrupted entries (EmulationStation runaway counter bug)
-                                MAX_PLAYCOUNT = 5000
-                                MAX_GAMETIME = 7_776_000  # 3 months in seconds
-                                if playcount > MAX_PLAYCOUNT or gametime > MAX_GAMETIME:
-                                    logger.warning(f"    Skipping corrupted stats for {game_path}: playcount={playcount}, gametime={gametime}")
-                                    continue
 
                                 # Skip if both are zero
                                 if playcount == 0 and gametime == 0:
                                     continue
-                                
-                                # Normalize path
+
+                                # Never actually launched here: the stats were shipped with the gamelist
+                                if playcount > 0 and (lastplayed_elem is None or not lastplayed_elem.text):
+                                    skipped_no_lastplayed += 1
+                                    logger.debug(f"    Skipping stats with no lastplayed for {game_path}: playcount={playcount}")
+                                    continue
+
+                                # Crash/relaunch loop or otherwise corrupted counters
+                                if playcount > MAX_PLAYCOUNT_PER_CLIENT or gametime > MAX_GAMETIME:
+                                    skipped_runaway += 1
+                                    logger.debug(f"    Skipping implausible stats for {game_path}: playcount={playcount}, gametime={gametime}")
+                                    continue
+
+                                # Launched but never actually played (instant crash / immediate exit)
+                                if gametime / playcount < MIN_SECONDS_PER_PLAY:
+                                    skipped_too_short += 1
+                                    logger.debug(f"    Skipping too-short sessions for {game_path}: playcount={playcount}, gametime={gametime}")
+                                    continue
+
+                                # Merely tried out by this client, not actually played
+                                if gametime < MIN_TOTAL_GAMETIME:
+                                    skipped_only_tested += 1
+                                    logger.debug(f"    Skipping game only tested by client: {game_path}: playcount={playcount}, gametime={gametime}")
+                                    continue
+
                                 system_id, rompath = self._normalize_game_path(game_path, system_id_from_path)
-                                
+
                                 if not system_id or not rompath:
-                                    # Couldn't determine system or rompath, skip
                                     logger.debug(f"    Skipping game (couldn't normalize path): {game_path} -> system_id={system_id}, rompath={rompath}")
                                     continue
-                                
-                                games_with_stats += 1
-                                
-                                # Initialize nested dictionaries if needed
+
+                                # Stats copied from another install: the same non-trivial playcount for
+                                # the same game on a second client is not independent play, so it is
+                                # only counted once. Gametime is ignored here because a copied gamelist
+                                # keeps drifting slightly once the game is launched again.
+                                if playcount >= DUPLICATE_MIN_PLAYCOUNT:
+                                    entry_key = (system_id, rompath, playcount)
+                                    if entry_key in seen_entries:
+                                        skipped_duplicate += 1
+                                        continue
+                                    seen_entries.add(entry_key)
+
                                 if system_id not in aggregated_stats:
                                     aggregated_stats[system_id] = {}
-                                    logger.debug(f"    Created new system entry: {system_id}")
                                 if rompath not in aggregated_stats[system_id]:
                                     aggregated_stats[system_id][rompath] = {'playcount': 0, 'gametime': 0}
-                                
-                                # Add to aggregated stats
+
                                 aggregated_stats[system_id][rompath]['playcount'] += playcount
                                 aggregated_stats[system_id][rompath]['gametime'] += gametime
-                            
+
                         except Exception as e:
-                            logger.error(f"Error parsing gamelist.xml from {gamelist_path}: {e}")
+                            logger.error(f"Error parsing {member.name} from {tar_file}: {e}")
                             continue
-                
-                except Exception as e:
-                    logger.error(f"Error processing tar.gz file {tar_file}: {e}")
-                    continue
-        
-        finally:
-            # Clean up temporary directory
-            try:
-                shutil.rmtree(temp_dir)
+
             except Exception as e:
-                logger.warning(f"Error cleaning up temp directory {temp_dir}: {e}")
-        
+                logger.error(f"Error processing tar.gz file {tar_file}: {e}")
+                continue
+
         total_games = sum(len(games) for games in aggregated_stats.values())
         logger.info(f"Aggregated playcount/gametime stats for {total_games} games across {len(aggregated_stats)} systems")
-        
+        logger.info(
+            f"  Discarded {skipped_no_lastplayed} entries with no lastplayed, {skipped_runaway} implausible entries, "
+            f"{skipped_too_short} instant-exit entries, {skipped_only_tested} only-tested entries, {skipped_duplicate} copied entries"
+        )
+
         return aggregated_stats
-    
+
     def _aggregate_download_counts(self) -> Dict[str, Dict[str, int]]:
         """Aggregate download counts from download_archive table.
         
@@ -2306,6 +2404,9 @@ class GameService:
                     if 'gametime' in game_data:
                         del game_data['gametime']
         
+        # Drop archives from clients whose token was revoked or deleted before aggregating
+        self.prune_orphan_user_gamelists()
+
         # Aggregate playcount and gametime from users' gamelist files
         logger.info("Aggregating playcount and gametime from users' gamelist files...")
         aggregated_stats = self._aggregate_users_playcount_gametime()
@@ -2654,9 +2755,9 @@ class GameService:
             catalog = self.catalog_releases
         else:
             catalog = self.catalog_releases
-            
+
         system_stats = {}
-        
+
         # Helper to safely get numeric value
         def get_value(data, key):
             val = data.get(key, 0)
@@ -2697,9 +2798,11 @@ class GameService:
                     'hardware': system_info['hardware'],
                     'manufacturer': system_info['manufacturer'],
                     'release': system_info['release'],
-                    sort_by: total_val
+                    sort_by: total_val,
+                    'download_count': system_downloads.get('count', 0),
+                    'download_size': system_downloads.get('bytes', 0)
                 }
                 results.append(result)
-            
+
         return results
 
