@@ -18,6 +18,11 @@ from app.database import SessionLocal, DownloadArchive
 
 logger = logging.getLogger(__name__)
 
+# Systems whose game pack ships a gamelist.xml with playcount/gametime already filled in. Every
+# install of the pack then reports those numbers as if they were play, so the whole system is left
+# out of the aggregated stats rather than trusted per entry.
+STATS_EXCLUDED_SYSTEMS = {'win98'}
+
 def _is_game_hidden(game: ET.Element) -> bool:
     """Check if a game is hidden by checking both attribute and element.
     
@@ -2181,12 +2186,14 @@ class GameService:
         DUPLICATE_MIN_PLAYCOUNT = 20
 
         seen_entries = set()
+        seen_lastplayed = set()
 
         skipped_no_lastplayed = 0
         skipped_runaway = 0
         skipped_duplicate = 0
         skipped_too_short = 0
         skipped_only_tested = 0
+        skipped_excluded_system = 0
 
         for tar_file in tar_files:
             try:
@@ -2270,10 +2277,25 @@ class GameService:
                                     logger.debug(f"    Skipping game (couldn't normalize path): {game_path} -> system_id={system_id}, rompath={rompath}")
                                     continue
 
-                                # Stats copied from another install: the same non-trivial playcount for
-                                # the same game on a second client is not independent play, so it is
-                                # only counted once. Gametime is ignored here because a copied gamelist
-                                # keeps drifting slightly once the game is launched again.
+                                # Pack ships its gamelist with the stats already in it
+                                if system_id in STATS_EXCLUDED_SYSTEMS:
+                                    skipped_excluded_system += 1
+                                    continue
+
+                                # Stats that came with the install rather than from playing. Two people
+                                # cannot launch the same game in the same second, so an identical
+                                # lastplayed on another client means the gamelist was copied - a game
+                                # pack or a community image with stats already baked in. Whoever
+                                # actually plays it afterwards gets a fresh lastplayed and still counts.
+                                lastplayed_key = (system_id, rompath, lastplayed_elem.text)
+                                if lastplayed_key in seen_lastplayed:
+                                    skipped_duplicate += 1
+                                    continue
+                                seen_lastplayed.add(lastplayed_key)
+
+                                # Copied stats whose lastplayed drifted once the game was relaunched:
+                                # the playcount alone repeating on another client is not independent
+                                # play once it is high enough that coincidence is implausible.
                                 if playcount >= DUPLICATE_MIN_PLAYCOUNT:
                                     entry_key = (system_id, rompath, playcount)
                                     if entry_key in seen_entries:
@@ -2301,7 +2323,8 @@ class GameService:
         logger.info(f"Aggregated playcount/gametime stats for {total_games} games across {len(aggregated_stats)} systems")
         logger.info(
             f"  Discarded {skipped_no_lastplayed} entries with no lastplayed, {skipped_runaway} implausible entries, "
-            f"{skipped_too_short} instant-exit entries, {skipped_only_tested} only-tested entries, {skipped_duplicate} copied entries"
+            f"{skipped_too_short} instant-exit entries, {skipped_only_tested} only-tested entries, "
+            f"{skipped_duplicate} copied entries, {skipped_excluded_system} entries from excluded systems"
         )
 
         return aggregated_stats
