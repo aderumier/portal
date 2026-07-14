@@ -2350,6 +2350,54 @@ class GameService:
             
         return aggregated_stats
 
+    def _live_system_download_stats(self) -> Dict[str, Dict[str, int]]:
+        """Count completed downloads and downloaded bytes per system, straight
+        from download_archive.
+
+        Unlike _aggregate_download_counts(), this does not go through rompath ->
+        catalog key matching, so downloads of games whose rompath no longer maps
+        to a catalog entry (unified keys, snapshot prefixes, renamed or removed
+        ROMs) are still counted.
+
+        bytes_transferred is authoritative, but older rows (and some archived
+        P2P downloads) left it at 0, so fall back to the known file_size there.
+
+        Returns:
+            Dictionary: {system_id: {'count': int, 'bytes': int}}
+        """
+        stats = {}
+
+        try:
+            db = SessionLocal()
+            try:
+                transferred = func.coalesce(
+                    func.nullif(DownloadArchive.bytes_transferred, 0),
+                    DownloadArchive.file_size,
+                    0
+                )
+                results = db.query(
+                    DownloadArchive.system,
+                    func.count(DownloadArchive.id).label('count'),
+                    func.sum(transferred).label('bytes')
+                ).filter(
+                    DownloadArchive.download_status == 'completed'
+                ).group_by(
+                    DownloadArchive.system
+                ).all()
+
+                for system_id, count, total_bytes in results:
+                    if system_id:
+                        stats[system_id] = {
+                            'count': count or 0,
+                            'bytes': int(total_bytes or 0)
+                        }
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Error aggregating live system download stats: {e}")
+
+        return stats
+
     def refresh_catalog(self) -> dict:
         """Refresh catalog cache and search index by clearing cache and reloading everything."""
         logger.info("Refreshing catalog cache and search index (WIP and Releases)...")
@@ -2735,19 +2783,28 @@ class GameService:
 
     def get_top_systems(self, limit: int = 100, catalog_type: str = 'releases', sort_by: str = 'download_count') -> List[Dict]:
         """Get top systems sorted by criteria (aggregated from games).
-        
+
+        Download counts are read live from the download_archive table, so they
+        include downloads made since the last catalog reload (P2P and direct
+        alike). They are deliberately catalog-agnostic: every completed download
+        of a system counts, whichever catalog it came from. catalog_type only
+        decides which systems are listed. playcount/gametime still come from the
+        merged catalog stats.
+
         Args:
             limit: Maximum number of systems to return
             catalog_type: 'wip' or 'releases'
-            sort_by: 'download_count', 'playcount', or 'gametime'
-            
+            sort_by: 'download_count', 'download_size', 'playcount', or 'gametime'
+
         Returns:
-            List of system dictionaries with aggregated stats
+            List of system dictionaries with aggregated stats. download_count
+            and download_size (bytes) are always included so the client can
+            re-sort the returned systems without another round trip.
         """
         # Ensure catalog is loaded
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
-            
+
         # Select appropriate catalog
         if catalog_type == 'wip':
             catalog = self.catalog_wip
@@ -2768,29 +2825,38 @@ class GameService:
                     return 0
             return val if isinstance(val, (int, float)) else 0
 
-        # Iterate over all systems and games
-        for system_id, system_games in catalog.items():
-            total_val = 0
-            for rompath, game_data in system_games.items():
-                val = get_value(game_data, sort_by)
-                total_val += val
-            
-            if total_val > 0:
-                system_stats[system_id] = total_val
-                
+        download_stats = self._live_system_download_stats()
+
+        if sort_by in ('download_count', 'download_size'):
+            key = 'count' if sort_by == 'download_count' else 'bytes'
+            for system_id, stats in download_stats.items():
+                if system_id in catalog and stats[key] > 0:
+                    system_stats[system_id] = stats[key]
+        else:
+            # Iterate over all systems and games
+            for system_id, system_games in catalog.items():
+                total_val = 0
+                for rompath, game_data in system_games.items():
+                    val = get_value(game_data, sort_by)
+                    total_val += val
+
+                if total_val > 0:
+                    system_stats[system_id] = total_val
+
         # Sort by total value (descending)
         sorted_systems = sorted(system_stats.items(), key=lambda x: x[1], reverse=True)
-        
+
         # Take top N
         top_systems = sorted_systems[:limit]
-        
+
         # Build results
         results = []
         for system_id, total_val in top_systems:
             # Get system info
             system_info = next((s for s in self.systems_list if s['id'] == system_id), None)
-            
+
             if system_info:
+                system_downloads = download_stats.get(system_id, {})
                 result = {
                     'id': system_id,
                     'name': system_info['name'],
