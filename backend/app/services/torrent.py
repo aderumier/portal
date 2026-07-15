@@ -13,6 +13,14 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# torf defaults MAX_TORRENT_FILE_SIZE to 10 MB and, when reading a file-like
+# object, *silently truncates* the read to that many bytes (torf _torrent.py
+# read_stream). Systems with very many files produce a large 'pieces' blob, so
+# the .torrent easily exceeds 10 MB — the truncated read then fails to bdecode
+# and raises BdecodeError. Raise the cap so large torrents read back and the
+# bytes-based read_stream in push_torrent_to_qbittorrent doesn't raise either.
+torf.Torrent.MAX_TORRENT_FILE_SIZE = int(200e6)  # 200 MB
+
 # Base torrent files are stored here: data/torrents/{system_id}.torrent
 TORRENTS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "torrents"
 
@@ -277,7 +285,15 @@ def build_user_torrent(system_id: str, passkey: str) -> Optional[bytes]:
 
     user_announce = f"{announce_base}/announce?passkey={passkey}"
 
-    t = torf.Torrent.read(str(path))
+    try:
+        t = torf.Torrent.read(str(path))
+    except torf.TorfError as exc:
+        # A corrupt/truncated/non-bencode base file must not surface as an
+        # unhandled 500 traceback — log it and let the caller report a clean
+        # error to the client.
+        logger.error(f"[torrent] {system_id}: base torrent is unreadable ({path}): {exc}")
+        return None
+
     t.trackers = [[user_announce]]
     t.private = True
 
