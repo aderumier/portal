@@ -4,6 +4,7 @@ import time
 import json
 import requests
 import threading
+import functools
 import socket
 import xml.etree.ElementTree as ET
 import subprocess
@@ -213,7 +214,18 @@ if config_ini_path.exists():
 
 # Custom handler for capturing startup logs
 class StartupLogHandler(logging.Handler):
-    """Custom logging handler that captures startup logs until WebSocket connection."""
+    """Captures startup logs so they can be uploaded to the server.
+
+    The first upload happens as soon as the WebSocket connects, which is before
+    background work such as port mapping has produced any output. So capturing
+    continues after that upload and each send takes only what has not been sent
+    yet - the backend appends, so the pieces join up into one session.
+    """
+
+    # Bounds memory if the final upload never happens (no port mapping, or the
+    # service dies first). Oldest records are dropped once this is exceeded.
+    MAX_PENDING = 5000
+
     def __init__(self):
         super().__init__()
         self.logs = []
@@ -222,28 +234,52 @@ class StartupLogHandler(logging.Handler):
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         ))
-        self.capturing = True  # Stop capturing after logs are sent
-    
+        self.capturing = True
+        # Records arrive from executor threads as well as the event loop.
+        self._buffer_lock = threading.Lock()
+
     def emit(self, record):
         """Capture log record."""
-        if self.capturing:
-            try:
-                msg = self.format(record)
-                self.logs.append(msg)
-            except Exception:
-                self.handleError(record)
-    
+        if not self.capturing:
+            return
+        try:
+            msg = self.format(record)
+        except Exception:
+            self.handleError(record)
+            return
+        with self._buffer_lock:
+            self.logs.append(msg)
+            overflow = len(self.logs) - self.MAX_PENDING
+            if overflow > 0:
+                del self.logs[:overflow]
+
     def get_logs(self):
-        """Get all captured logs as a string."""
-        return '\n'.join(self.logs)
-    
+        """Get all captured logs as a string, without consuming them."""
+        with self._buffer_lock:
+            return '\n'.join(self.logs)
+
+    def take_pending(self):
+        """Return everything captured since the last take, and clear it."""
+        with self._buffer_lock:
+            pending = self.logs
+            self.logs = []
+        return '\n'.join(pending)
+
+    def requeue(self, content):
+        """Put content back after a failed upload so it is not lost."""
+        if not content:
+            return
+        with self._buffer_lock:
+            self.logs.insert(0, content)
+
     def stop_capturing(self):
         """Stop capturing new logs."""
         self.capturing = False
-    
+
     def clear(self):
         """Clear captured logs."""
-        self.logs = []
+        with self._buffer_lock:
+            self.logs = []
 
 # Custom handler for capturing download task logs
 class DownloadLogHandler(logging.Handler):
@@ -1238,26 +1274,28 @@ def upload_p2p_inventory():
     except Exception as e:
         logger.error(f"Error preparing P2P inventory: {e}", exc_info=True)
 
-def send_startup_logs(token_id):
-    """Send startup logs to the backend for storage with gzip compression.
-    
+def send_startup_logs(token_id, final=False):
+    """Send captured logs to the backend for storage with gzip compression.
+
     Args:
         token_id: The token ID received from WebSocket connection
+        final: Stop capturing afterwards. Set on the last send of the startup
+            sequence, once port mapping has resolved.
     """
+    startup_logs = None
     try:
         import gzip
         import base64
-        
-        # Get startup logs
-        startup_logs = _startup_log_handler.get_logs()
-        
+
+        # Take only what has not been sent yet; the backend appends.
+        startup_logs = _startup_log_handler.take_pending()
+
         if not startup_logs:
-            logger.debug("No startup logs to send")
+            logger.debug("No new logs to send")
+            if final:
+                _startup_log_handler.stop_capturing()
             return
-        
-        # Stop capturing new logs after sending
-        _startup_log_handler.stop_capturing()
-        
+
         # Compress logs with gzip
         log_bytes = startup_logs.encode('utf-8')
         gzip_data = gzip.compress(log_bytes)
@@ -1280,10 +1318,16 @@ def send_startup_logs(token_id):
             logger.info(f"Successfully sent startup logs to backend (token_id: {token_id}, {len(log_bytes)} bytes uncompressed, {len(gzip_data)} bytes compressed)")
         else:
             logger.warning(f"Failed to send startup logs: {result.get('message', 'Unknown error')}")
-            
+
+        if final:
+            _startup_log_handler.stop_capturing()
+
     except requests.exceptions.RequestException as e:
+        # Put the batch back so the next send picks it up rather than losing it.
+        _startup_log_handler.requeue(startup_logs)
         logger.error(f"Error sending startup logs: {e}")
     except Exception as e:
+        _startup_log_handler.requeue(startup_logs)
         logger.error(f"Unexpected error sending startup logs: {e}", exc_info=True)
 
 def upload_all_gamelist_files():
@@ -5306,9 +5350,13 @@ async def websocket_client():
                                                     )
                                                     # Nothing awaits this task, and we hold a
                                                     # reference to it, so asyncio would never
-                                                    # report a failure inside it. Log it here.
+                                                    # report a failure inside it. Log it here,
+                                                    # and send the logs it produced.
                                                     _port_mapping_task.add_done_callback(
-                                                        _log_port_mapping_task_result
+                                                        functools.partial(
+                                                            _on_port_mapping_task_done,
+                                                            token_id=token_id
+                                                        )
                                                     )
                                         
                                         # Register P2P client connection info on each WebSocket connection
@@ -5801,14 +5849,28 @@ async def _on_port_mapping_changed(mapper):
 PORT_MAPPING_TIMEOUT = 180
 
 
-def _log_port_mapping_task_result(task):
-    """Report how the background port mapping task ended."""
+def _on_port_mapping_task_done(task, token_id=None):
+    """Report how the background port mapping task ended, and ship the logs.
+
+    The first log upload runs the moment the WebSocket connects, long before
+    discovery has produced anything, so the server's copy would otherwise stop
+    dead at "Discovering gateway" and never show the outcome.
+    """
     if task.cancelled():
         logger.info("Port mapping setup was cancelled")
+    else:
+        error = task.exception()
+        if error:
+            logger.error(f"Port mapping setup failed: {error}", exc_info=error)
+
+    if token_id is None:
         return
-    error = task.exception()
-    if error:
-        logger.error(f"Port mapping setup failed: {error}", exc_info=error)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop (interpreter shutting down); nothing more we can do.
+        return
+    loop.run_in_executor(None, send_startup_logs, token_id, True)
 
 
 async def setup_upnp_port_mapping(port: int):
