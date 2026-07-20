@@ -1093,6 +1093,26 @@ def update_bandwidth_update_interval(new_interval):
     else:
         logger.warning(f"Invalid bandwidth update interval received: {new_interval}, keeping current value: {BANDWIDTH_UPDATE_INTERVAL}")
 
+def parse_gamelist_xml(gamelist_path):
+    """Parse a gamelist.xml file, tolerating leading UTF-8 BOMs.
+
+    Some scrapers (ARRM) write gamelist.xml with one or several UTF-8 BOMs in
+    front of the XML declaration; ElementTree only accepts a single one, so
+    strip them all before parsing.
+
+    Args:
+        gamelist_path: Path to the gamelist.xml file
+
+    Returns:
+        ElementTree instance
+    """
+    UTF8_BOM = b'\xef\xbb\xbf'
+    with open(gamelist_path, 'rb') as f:
+        raw = f.read()
+    while raw.startswith(UTF8_BOM):
+        raw = raw[len(UTF8_BOM):]
+    return ET.parse(io.BytesIO(raw))
+
 def extract_rom_paths_from_gamelist(gamelist_path):
     """Extract ROM paths from all games in gamelist.xml.
     
@@ -1104,7 +1124,7 @@ def extract_rom_paths_from_gamelist(gamelist_path):
     """
     try:
         # Parse the original gamelist.xml
-        tree = ET.parse(gamelist_path)
+        tree = parse_gamelist_xml(gamelist_path)
         root = tree.getroot()
         
         # Find all game elements
@@ -1137,7 +1157,7 @@ def filter_gamelist_for_upload(gamelist_path):
     """
     try:
         # Parse the original gamelist.xml
-        tree = ET.parse(gamelist_path)
+        tree = parse_gamelist_xml(gamelist_path)
         root = tree.getroot()
         
         # Find all game elements
@@ -3033,7 +3053,7 @@ def _update_gamelist_xml_manually(batocera_system, game_id, xml_content):
         # Parse existing gamelist.xml or create new one
         if os.path.exists(gamelist_path):
             try:
-                tree = ET.parse(gamelist_path)
+                tree = parse_gamelist_xml(gamelist_path)
                 root = tree.getroot()
             except ET.ParseError as e:
                 logger.error(f"Error parsing existing gamelist.xml: {e}. Creating new file.")
