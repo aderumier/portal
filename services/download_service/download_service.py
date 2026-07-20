@@ -5304,6 +5304,12 @@ async def websocket_client():
                                                     _port_mapping_task = asyncio.create_task(
                                                         setup_upnp_port_mapping(P2P_PORT)
                                                     )
+                                                    # Nothing awaits this task, and we hold a
+                                                    # reference to it, so asyncio would never
+                                                    # report a failure inside it. Log it here.
+                                                    _port_mapping_task.add_done_callback(
+                                                        _log_port_mapping_task_result
+                                                    )
                                         
                                         # Register P2P client connection info on each WebSocket connection
                                         if P2P_CLIENT_AVAILABLE:
@@ -5789,6 +5795,22 @@ async def _on_port_mapping_changed(mapper):
     )
 
 
+# Upper bound on the whole discover-and-map sequence. Worst case is roughly
+# 90s (unicast probe, five multicast rounds with backoff, then NAT-PMP), so
+# this only trips if something is genuinely stuck rather than slow.
+PORT_MAPPING_TIMEOUT = 180
+
+
+def _log_port_mapping_task_result(task):
+    """Report how the background port mapping task ended."""
+    if task.cancelled():
+        logger.info("Port mapping setup was cancelled")
+        return
+    error = task.exception()
+    if error:
+        logger.error(f"Port mapping setup failed: {error}", exc_info=error)
+
+
 async def setup_upnp_port_mapping(port: int):
     """Set up a port mapping for the P2P server via UPnP IGD or NAT-PMP.
 
@@ -5812,8 +5834,20 @@ async def setup_upnp_port_mapping(port: int):
             logger.info("No port mapping backend available (miniupnpc not installed), skipping setup")
             return None
 
-        logger.info("Discovering gateway (UPnP IGD, then NAT-PMP)...")
-        if not await mapper.discover_router():
+        logger.info(
+            f"Discovering gateway (UPnP IGD, then NAT-PMP); "
+            f"this can take up to ~90s if there is nothing to find"
+        )
+        try:
+            discovered = await asyncio.wait_for(
+                mapper.discover_router(), timeout=PORT_MAPPING_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                f"Gateway discovery did not finish within {PORT_MAPPING_TIMEOUT}s, giving up"
+            )
+            return None
+        if not discovered:
             logger.warning("No gateway found, continuing without a port mapping")
             return None
 

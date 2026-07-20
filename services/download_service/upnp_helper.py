@@ -223,7 +223,9 @@ class PortMapper:
                 # selectigd() raises when devices answered SSDP but none of them
                 # is a usable IGD. Worth another round: on multi-interface hosts
                 # a later probe often reaches the real gateway.
-                logger.debug(
+                # Logged at INFO because this loop can run for a minute or more,
+                # and without it the log goes silent long enough to look hung.
+                logger.info(
                     f"UPnP discovery attempt {attempt}/{DISCOVERY_ATTEMPTS} failed: "
                     f"{type(e).__name__}: {e}"
                 )
@@ -242,7 +244,10 @@ class PortMapper:
             if attempt < DISCOVERY_ATTEMPTS:
                 # libtorrent's backoff: two seconds per elapsed round.
                 backoff = 2 * attempt
-                logger.debug(f"No IGD yet, retrying UPnP discovery in {backoff}s")
+                logger.info(
+                    f"No IGD on attempt {attempt}/{DISCOVERY_ATTEMPTS}, "
+                    f"retrying multicast discovery in {backoff}s"
+                )
                 await asyncio.sleep(backoff)
 
         logger.info(f"No UPnP IGD found after {DISCOVERY_ATTEMPTS} attempts")
@@ -259,11 +264,13 @@ class PortMapper:
 
         gateway = await asyncio.to_thread(discover_gateway)
         if not gateway:
+            logger.info("No default gateway found, skipping the direct query")
             return False
 
+        logger.info(f"Asking gateway {gateway} directly for an IGD...")
         location = await asyncio.to_thread(_unicast_msearch, gateway)
         if not location:
-            logger.debug(f"Gateway {gateway} did not answer a unicast M-SEARCH")
+            logger.info(f"Gateway {gateway} did not answer a unicast M-SEARCH")
             return False
 
         logger.info(f"Gateway {gateway} advertised an IGD at {location}")
