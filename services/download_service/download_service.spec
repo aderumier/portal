@@ -22,6 +22,9 @@ a = Analysis(
     ],
     hiddenimports=[
         'download_service',  # Explicitly include the download_service module
+        'upnp_helper',
+        'natpmp_helper',
+        'miniupnpc',
         'requests',
         'requests.adapters',
         'requests.packages',

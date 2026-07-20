@@ -157,6 +157,29 @@ async def require_download_role(
     
     return current_user
 
+async def require_download_role_session_only(
+    request: Request,
+    current_user: Optional[dict] = Depends(get_current_user)
+) -> dict:
+    """Require the download role, and reject API token authentication.
+
+    Enqueueing is a browser-only action: the download client consumes the queue
+    over WebSocket and never POSTs to it. Refusing API tokens here removes the
+    scripting path that needs no browser at all, without breaking any legitimate
+    caller.
+    """
+    if getattr(request.state, 'auth_method', None) == 'api_token':
+        logger.warning(
+            f"API token (user {current_user.get('id') if current_user else 'unknown'}) "
+            f"denied access to browser-only endpoint {request.url.path}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint requires a browser session; API tokens cannot queue downloads"
+        )
+
+    return await require_download_role(request, current_user)
+
 async def require_admin_role(
     request: Request,
     current_user: Optional[dict] = Depends(get_current_user)

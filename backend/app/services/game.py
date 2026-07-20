@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 import tarfile
 import shutil
+import threading
 from sqlalchemy import func
 from app.config import settings
 from app.services.game_utils import normalize_game_name
@@ -107,6 +108,11 @@ class GameService:
         # Track file modification times for auto-reload across workers
         self._catalog_file_mtime = None  # Modification time of catalog.pkl when last loaded
         self._index_file_mtime = None  # Modification time of search_index.pkl when last loaded
+
+        # A refresh fills the catalog from a background thread while this worker keeps serving
+        # requests, so readers must not touch the catalog structures while it runs.
+        self._generating = False
+        self._generation_lock = threading.Lock()
         
         # System name mapping
         self.system_names = {
@@ -655,36 +661,60 @@ class GameService:
         if self._gamelists_loaded and not force_reload:
             logger.info("Gamelists already loaded")
             return
-        
+
         # Try loading from cache first (unless force_reload is True)
         if not force_reload:
-            if self._load_catalog_from_cache():
-                logger.info("Catalog loaded from cache")
+            # Held across the cache load so a refresh can't start deleting the .pkl half way
+            # through it and leave us taking the cache-miss branch below.
+            with self._generation_lock:
+                if self._generating:
+                    # A refresh is filling the catalog right now. It cleared the .pkl and the
+                    # loaded flag itself, so the miss below is expected and means nothing — the
+                    # structures it is writing into are the ones we would be resetting.
+                    logger.debug("Catalog generation in progress, leaving catalog structures alone")
+                    return
+
+                if self._load_catalog_from_cache():
+                    logger.info("Catalog loaded from cache")
+                    return
+
+                # Cache doesn't exist - don't generate, just log warning
+                logger.warning("Catalog cache file not found - catalog will not be available")
+                logger.warning("Call /refresh endpoint to generate catalog and search index")
+                # Initialize empty structures to prevent errors
+                self.catalog_wip = {}
+                self.catalog_releases = {}
+                self.catalog_sorted_keys_wip = {}
+                self.catalog_sorted_keys_releases = {}
+                self.subdirectory_counts_wip = {}
+                self.subdirectory_counts_releases = {}
+                self.systems_list = []
+                self.system_versions = {}
+                self.system_snapshot_paths = {}
+                self._gamelists_loaded = False  # Keep as False since we don't have data
+                self._catalog_timestamp = None
                 return
-            
-            # Cache doesn't exist - don't generate, just log warning
-            logger.warning("Catalog cache file not found - catalog will not be available")
-            logger.warning("Call /refresh endpoint to generate catalog and search index")
-            # Initialize empty structures to prevent errors
-            self.catalog_wip = {}
-            self.catalog_releases = {}
-            self.catalog_sorted_keys_wip = {}
-            self.catalog_sorted_keys_releases = {}
-            self.subdirectory_counts_wip = {}
-            self.subdirectory_counts_releases = {}
-            self.systems_list = []
-            self.system_versions = {}
-            self.system_snapshot_paths = {}
-            self._gamelists_loaded = False  # Keep as False since we don't have data
-            self._catalog_timestamp = None
-            return
-        
+
         # force_reload=True: Generate catalog from scratch (skip cache)
         logger.info("Force reload requested - generating catalog from scratch (skipping cache)")
-        
+
+        with self._generation_lock:
+            self._generating = True
+        try:
+            self._generate_all_gamelists()
+        finally:
+            with self._generation_lock:
+                self._generating = False
+
+    def _generate_all_gamelists(self) -> None:
+        """Read every enabled system's gamelists off disk and rebuild the catalog structures.
+
+        Only ever called by preload_all_gamelists(force_reload=True), which flags the generation
+        so concurrent readers keep their hands off the structures being filled here.
+        """
         # Reset the loaded flag to allow generation
         self._gamelists_loaded = False
-        
+
         # Get enabled systems and their extensions from database
         enabled_systems = set()
         system_extensions = {}  # system_id -> {'batocera_extension': str, 'retrobat_extension': str}
@@ -1752,9 +1782,10 @@ class GameService:
             'favorite': game_data.get('favorite', ''),
             'publisher': game_data.get('publisher', ''),
             'releasedate': game_data.get('releasedate', ''),
-            'download_count': game_data.get('download_count', 0)
+            'download_count': game_data.get('download_count', 0),
+            'size_mb': game_data.get('size_mb')
         }
-    
+
     def _save_catalog_to_cache(self) -> None:
         """Save catalog to pickle file.
         
@@ -2560,6 +2591,14 @@ class GameService:
                     if 'topsis_score' in game_data:
                         del game_data['topsis_score']
         
+        # Size every Releases game, reusing the snapshots that didn't move since the last refresh
+        try:
+            from app.services.release_sizes import compute_and_merge_release_sizes
+            compute_and_merge_release_sizes(self)
+        except Exception as e:
+            # A missing size only blanks a label in the UI; it must not fail the whole refresh
+            logger.error(f"Could not compute release sizes: {e}", exc_info=True)
+
         # Drop archives from clients whose token was revoked or deleted before aggregating
         self.prune_orphan_user_gamelists()
 

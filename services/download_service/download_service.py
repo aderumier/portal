@@ -25,7 +25,7 @@ import random
 import struct
 
 # Client version
-CLIENT_VERSION = "0.12"
+CLIENT_VERSION = "0.13"
 
 # Configure stdout/stderr for Windows to handle non-ASCII characters gracefully
 # This prevents encoding errors when third-party libraries (like internetspeedtest) print emojis
@@ -302,8 +302,16 @@ _p2p_connection_info = {
     "external_ip": None,
     "external_port": None,
     "internal_port": None,
+    "local_ip": None,
     "upnp_enabled": False
 }
+
+# Active PortMapper, kept so the keepalive task survives WebSocket reconnects
+# and so the mapping can be torn down on shutdown.
+_port_mapper = None
+
+# Background task running the initial port mapping setup.
+_port_mapping_task = None
 
 async def download_directory_via_websocket_async(
     download_id, remaining_files_list, dest_base_path, system, 
@@ -5274,29 +5282,28 @@ async def websocket_client():
                                                     "external_ip": None,
                                                     "external_port": None,
                                                     "internal_port": P2P_PORT,
+                                                    "local_ip": None,
                                                     "upnp_enabled": False
                                                 }
                                             else:
-                                                # Set up UPnP port mapping
-                                                try:
-                                                    logger.info("Setting up UPnP port mapping for P2P server...")
-                                                    await setup_upnp_port_mapping(P2P_PORT)
-                                                    # setup_upnp_port_mapping updates _p2p_connection_info globally
-                                                    if _p2p_connection_info.get("upnp_enabled"):
-                                                        logger.info("UPnP port mapping setup completed successfully")
-                                                    else:
-                                                        logger.info("UPnP port mapping setup skipped or failed (service will continue without UPnP)")
-                                                except Exception as e:
-                                                    logger.error(f"Error setting up UPnP port mapping: {e}", exc_info=True)
-                                                    logger.info("Continuing without UPnP port mapping...")
-                                                    # Initialize P2P connection info without UPnP if not already set
-                                                    if not _p2p_connection_info.get("upnp_enabled"):
-                                                        _p2p_connection_info = {
-                                                            "external_ip": None,
-                                                            "external_port": None,
-                                                            "internal_port": P2P_PORT,
-                                                            "upnp_enabled": False
-                                                        }
+                                                # Map the port in the background. Discovery retries can take
+                                                # a minute or more on a network with no gateway to find, and
+                                                # blocking here would stall the WebSocket read loop. The
+                                                # mapping re-registers itself through _on_port_mapping_changed
+                                                # once it succeeds.
+                                                global _port_mapping_task
+                                                if _port_mapping_task is None or _port_mapping_task.done():
+                                                    logger.info("Setting up port mapping for P2P server in the background...")
+                                                    _p2p_connection_info = {
+                                                        "external_ip": None,
+                                                        "external_port": None,
+                                                        "internal_port": P2P_PORT,
+                                                        "local_ip": None,
+                                                        "upnp_enabled": False
+                                                    }
+                                                    _port_mapping_task = asyncio.create_task(
+                                                        setup_upnp_port_mapping(P2P_PORT)
+                                                    )
                                         
                                         # Register P2P client connection info on each WebSocket connection
                                         if P2P_CLIENT_AVAILABLE:
@@ -5307,6 +5314,7 @@ async def websocket_client():
                                                         external_ip=_p2p_connection_info.get("external_ip"),
                                                         external_port=_p2p_connection_info.get("external_port"),
                                                         internal_port=_p2p_connection_info.get("internal_port"),
+                                                        local_ip=_p2p_connection_info.get("local_ip"),
                                                         upnp_enabled=_p2p_connection_info.get("upnp_enabled", False)
                                                     )
                                             except Exception as e:
@@ -5703,7 +5711,7 @@ async def submit_bandwidth_test_results(upload_bandwidth: float, download_bandwi
     except Exception as e:
         logger.error(f"Error submitting bandwidth test results: {e}", exc_info=True)
 
-async def register_p2p_client(external_ip: str, external_port: int, internal_port: int, upnp_enabled: bool):
+async def register_p2p_client(external_ip: str, external_port: int, internal_port: int, upnp_enabled: bool, local_ip: str = None):
     """Register P2P client connection info with backend.
     
     Args:
@@ -5711,7 +5719,9 @@ async def register_p2p_client(external_ip: str, external_port: int, internal_por
         external_port: External port (same as internal for UPnP)
         internal_port: Internal port (P2P port)
         upnp_enabled: Whether UPnP is enabled
-    
+        local_ip: LAN address the gateway forwards to (UPnP lanaddr, or the
+            route to the NAT-PMP gateway); None when no mapping was made
+
     Returns:
         True if successful, False otherwise
     """
@@ -5728,10 +5738,11 @@ async def register_p2p_client(external_ip: str, external_port: int, internal_por
             'external_ip': external_ip,
             'external_port': external_port,
             'internal_port': internal_port,
+            'local_ip': local_ip,
             'upnp_enabled': upnp_enabled
         }
-        
-        logger.info(f"Registering P2P client with backend: {external_ip}:{external_port}, UPnP: {upnp_enabled}")
+
+        logger.info(f"Registering P2P client with backend: {external_ip}:{external_port} (local {local_ip}), UPnP: {upnp_enabled}")
         response = requests.post(url, json=data, headers=headers, timeout=10)
         response.raise_for_status()
         
@@ -5748,87 +5759,119 @@ async def register_p2p_client(external_ip: str, external_port: int, internal_por
         return False
 
 
+async def _on_port_mapping_changed(mapper):
+    """Re-advertise the P2P endpoint after the mapping was rebuilt.
+
+    The keepalive task calls this when the router handed us a different
+    external port (or dropped the mapping for good), so the backend stops
+    handing peers an address that no longer works.
+    """
+    global _p2p_connection_info
+    _p2p_connection_info = {
+        "external_ip": mapper.external_ip,
+        "external_port": mapper.external_port,
+        "internal_port": mapper.internal_port or P2P_PORT,
+        # LAN address the gateway maps to, as reported by UPnP lanaddr or
+        # derived from the route to the NAT-PMP gateway.
+        "local_ip": mapper.local_ip,
+        "upnp_enabled": mapper.port_mapped
+    }
+    if mapper.port_mapped:
+        logger.info(f"Port mapping changed, re-registering as {mapper.external_ip}:{mapper.external_port}")
+    else:
+        logger.warning("Port mapping lost, re-registering without a public port")
+    await register_p2p_client(
+        external_ip=_p2p_connection_info["external_ip"],
+        external_port=_p2p_connection_info["external_port"],
+        internal_port=_p2p_connection_info["internal_port"],
+        local_ip=_p2p_connection_info["local_ip"],
+        upnp_enabled=_p2p_connection_info["upnp_enabled"]
+    )
+
+
 async def setup_upnp_port_mapping(port: int):
-    """Set up UPnP port mapping for P2P server.
-    
+    """Set up a port mapping for the P2P server via UPnP IGD or NAT-PMP.
+
     Args:
         port: Port number to forward
-        
+
     Returns:
-        UPnPHelper instance if successful, None otherwise
+        PortMapper instance if successful, None otherwise
     """
+    global _port_mapper
+
     if not UPNP_HELPER_AVAILABLE:
-        logger.info("UPnP helper not available, skipping UPnP port mapping setup")
+        logger.info("Port mapping helper not available, skipping setup")
         return None
-    
+
     try:
-        logger.info(f"Starting UPnP port mapping setup for port {port}...")
-        upnp_helper = get_upnp_helper()
-        
-        # Check if UPnP is available
-        if not upnp_helper.is_available():
-            logger.info("UPnP library not available (miniupnpc not installed), skipping UPnP setup")
+        logger.info(f"Starting port mapping setup for port {port}...")
+        mapper = get_upnp_helper()
+
+        if not mapper.is_available():
+            logger.info("No port mapping backend available (miniupnpc not installed), skipping setup")
             return None
-        
-        # Discover router
-        logger.info("UPnP: Discovering router...")
-        router_discovered = await upnp_helper.discover_router()
-        if not router_discovered:
-            logger.warning("UPnP: Router discovery failed, continuing without UPnP port mapping")
+
+        logger.info("Discovering gateway (UPnP IGD, then NAT-PMP)...")
+        if not await mapper.discover_router():
+            logger.warning("No gateway found, continuing without a port mapping")
             return None
-        
-        logger.info("UPnP: Router discovered successfully")
-        
-        # Get external IP
-        logger.info("UPnP: Getting external IP address...")
-        external_ip = await upnp_helper.get_external_ip()
-        if external_ip:
-            logger.info(f"UPnP: External IP address: {external_ip}")
-        else:
-            logger.warning("UPnP: Could not get external IP address")
+
+        external_ip = await mapper.get_external_ip()
+        if not external_ip:
+            logger.warning("Gateway did not report an external IP, continuing without a port mapping")
             return None
-        
-        # Add port mapping with service name in description
+
         hostname = socket.gethostname()
         description = f"RGS-{hostname}"
-        logger.info(f"UPnP: Adding port mapping for port {port} with description: {description}")
-        mapping_success = await upnp_helper.add_port_mapping(
+        logger.info(f"Adding port mapping for port {port} with description: {description}")
+        mapping_success = await mapper.add_port_mapping(
             internal_port=port,
             external_port=port,
             description=description
         )
-        
-        if mapping_success:
-            # Get the actual external port (may differ from requested port if there was a conflict)
-            actual_external_port = upnp_helper.external_port or port
-            if actual_external_port != port:
-                logger.info(f"UPnP: Port mapping added successfully on port {actual_external_port} (requested {port} was in use)")
-            else:
-                logger.info(f"UPnP: Port mapping added successfully (port {port})")
-            
-            # Store UPnP connection info globally (will be used for each WebSocket connection)
-            global _p2p_connection_info
-            _p2p_connection_info = {
-                "external_ip": external_ip,
-                "external_port": actual_external_port,
-                "internal_port": port,
-                "upnp_enabled": True
-            }
-            
-            return upnp_helper
-        else:
-            logger.warning(f"UPnP: Failed to add port mapping for port {port}")
+
+        if not mapping_success:
+            logger.warning(f"Failed to map port {port}")
             return None
-            
+
+        if mapper.external_port != port:
+            logger.info(f"Port mapped on {mapper.external_port} (requested {port} was in use)")
+
+        # Routers routinely downgrade "permanent" leases and forget mappings
+        # across reboots, so keep checking rather than mapping once at startup.
+        mapper.start_keepalive(on_mapping_changed=_on_port_mapping_changed)
+        _port_mapper = mapper
+
+        # This runs in the background, well after the "connected" handler has
+        # already registered us without a public port, so publish the mapping.
+        await _on_port_mapping_changed(mapper)
+        return mapper
+
     except Exception as e:
-        logger.error(f"UPnP: Error during port mapping setup: {e}", exc_info=True)
+        logger.error(f"Error during port mapping setup: {e}", exc_info=True)
         return None
+
+
+async def _run_service():
+    """Run the WebSocket client, tearing the port mapping down on the way out."""
+    try:
+        await websocket_client()
+    finally:
+        if _port_mapper:
+            try:
+                logger.info("Removing port mapping...")
+                # close() stops the keepalive task and deletes the mapping.
+                await _port_mapper.close()
+                logger.info("Port mapping removed")
+            except Exception as e:
+                logger.error(f"Error removing port mapping: {e}", exc_info=True)
 
 
 def main():
     """Main function to run the download service."""
     global _p2p_connection_info
-    
+
     if not API_TOKEN:
         logger.error("API_TOKEN not set in environment variables")
         logger.error("Please set API_TOKEN in your .env file")
@@ -5839,7 +5882,6 @@ def main():
     
     # Start P2P server if available
     p2p_server_started = False
-    upnp_helper = None
     if P2P_CLIENT_AVAILABLE:
         try:
             logger.info(f"Starting P2P server on port {P2P_PORT}...")
@@ -5852,6 +5894,7 @@ def main():
                 "external_ip": None,
                 "external_port": None,
                 "internal_port": P2P_PORT,
+                "local_ip": None,
                 "upnp_enabled": False
             }
         except Exception as e:
@@ -5862,22 +5905,13 @@ def main():
     
     # Run WebSocket client
     try:
-        asyncio.run(websocket_client())
+        asyncio.run(_run_service())
     except KeyboardInterrupt:
         logger.info("Shutting down download service...")
     except Exception as e:
         logger.error(f"Fatal error in download service: {e}", exc_info=True)
         sys.exit(1)
     finally:
-        # Remove UPnP port mapping on shutdown
-        if upnp_helper and UPNP_HELPER_AVAILABLE:
-            try:
-                logger.info(f"UPnP: Removing port mapping for port {P2P_PORT}...")
-                asyncio.run(upnp_helper.delete_port_mapping(P2P_PORT))
-                logger.info(f"UPnP: Port mapping removed successfully (port {P2P_PORT})")
-            except Exception as e:
-                logger.error(f"UPnP: Error removing port mapping: {e}", exc_info=True)
-        
         # Stop P2P server on shutdown
         if p2p_server_started and P2P_CLIENT_AVAILABLE:
             try:

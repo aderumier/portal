@@ -54,6 +54,15 @@ const GameCard = ({ game, onDownload, onGameClick, showSystemName = true, catalo
     }
   }
 
+  // Format the download size, which the catalog gives us in MB (Releases only)
+  const formatSize = (sizeMb) => {
+    if (typeof sizeMb !== 'number') return null
+    if (sizeMb < 1024) {
+      return `${sizeMb.toFixed(2)} MB`
+    }
+    return `${(sizeMb / 1024).toFixed(2)} GB`
+  }
+
   // Handle both string and number types for playcount/gametime
   const getPlaycount = () => {
     if (game.playcount == null) return 0
@@ -72,6 +81,7 @@ const GameCard = ({ game, onDownload, onGameClick, showSystemName = true, catalo
   const playcount = getPlaycount()
   const gametime = getGametime()
   const formattedGametime = formatGametime(gametime)
+  const formattedSize = formatSize(game.size_mb)
 
   return (
     <div
@@ -85,6 +95,13 @@ const GameCard = ({ game, onDownload, onGameClick, showSystemName = true, catalo
         <h3 className="game-card-title">{game.name}</h3>
         {showSystemName && game.systemName && (
           <div className="game-card-system">{game.systemName}</div>
+        )}
+        {formattedSize && (
+          <div className="game-card-size">
+            <span className="game-card-stat">
+              <span className="stat-label">Size:</span> {formattedSize}
+            </span>
+          </div>
         )}
         <div className="game-card-stats">
           {playcount > 0 && (

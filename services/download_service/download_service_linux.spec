@@ -14,6 +14,7 @@ a = Analysis(
     hiddenimports=[
         'p2p_client',
         'upnp_helper',
+        'natpmp_helper',
         'requests',
         'requests.adapters',
         'requests.packages',

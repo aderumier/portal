@@ -113,6 +113,7 @@ const ConnectedClients = () => {
             <div className="grid-cell">Platform</div>
             <div className="grid-cell">Client Version</div>
             <div className="grid-cell">UPnP</div>
+            <div className="grid-cell">Local IP</div>
             <div className="grid-cell">Port</div>
             <div className="grid-cell">OPEN</div>
             <div className="grid-cell">Upload Bandwidth</div>
@@ -135,6 +136,13 @@ const ConnectedClients = () => {
                   <span title="UPnP enabled">ON</span>
                 ) : (
                   <span title="UPnP disabled">OFF</span>
+                )}
+              </div>
+              <div className="grid-cell">
+                {conn.local_ip ? (
+                  <span title="LAN address the gateway forwards to">{conn.local_ip}</span>
+                ) : (
+                  <span style={{ color: '#999' }} title="No port mapping, or client too old to report it">N/A</span>
                 )}
               </div>
               <div className="grid-cell">

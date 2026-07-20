@@ -9,6 +9,7 @@ from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.guild import require_guild_member
 from app.api.middleware.roles import get_catalog_viewer_roles, require_admin_role, require_catalog_viewer, require_media_contributor
 from app.services import torrent as torrent_service
+from app.services import catalog_refresh
 from app.config import settings
 import logging
 import orjson
@@ -282,15 +283,32 @@ async def get_game_details(
     
     return game
 
-@router.post("/refresh")
+@router.post("/refresh", status_code=status.HTTP_202_ACCEPTED)
 async def refresh_catalog(
     current_user: dict = Depends(require_admin_role),
     game_service: GameService = Depends(get_game_service)
 ):
-    """Refresh catalog cache and search index (admin only)."""
-    logger.info(f"Admin {current_user.get('username')} requested catalog refresh")
-    result = game_service.refresh_catalog()
-    return result
+    """Start a catalog refresh in the background (admin only).
+
+    Rebuilding takes minutes, so the request only starts the job: holding the connection open
+    for the whole rebuild means the proxy times out and the admin is told it failed while it is
+    still running. Poll /refresh/status for the outcome.
+    """
+    username = current_user.get('username')
+    current = await catalog_refresh.get_status()
+    if current.get('state') == 'running':
+        logger.info(f"Admin {username} requested catalog refresh, but one is already running")
+        return current
+
+    logger.info(f"Admin {username} requested catalog refresh")
+    return await catalog_refresh.start_refresh(game_service, username)
+
+@router.get("/refresh/status")
+async def get_refresh_status(
+    current_user: dict = Depends(require_admin_role)
+):
+    """Progress of the catalog refresh started by /refresh (admin only)."""
+    return await catalog_refresh.get_status()
 
 @router.get("/preference")
 async def get_catalog_preference(

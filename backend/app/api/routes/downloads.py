@@ -9,7 +9,8 @@ from app.database import get_db, DownloadQueue, User, ApiToken, System
 from app.services.download import DownloadService
 from app.services.websocket_manager import get_websocket_manager
 from app.api.middleware.api_token import require_auth_user
-from app.api.middleware.roles import require_download_role, require_admin_role
+from app.api.middleware.roles import require_download_role, require_download_role_session_only, require_admin_role
+from app.services.challenge import mint_challenge, verify_challenge
 from app.api.middleware.guild import require_guild_member
 from app.api.routes.catalog import get_game_service
 from app.config import settings
@@ -76,6 +77,8 @@ class AddToQueueRequest(BaseModel):
     system_id: str  # System identifier - required to prevent ambiguity
     token_name: Optional[str] = None  # Token name to associate with the download
     catalog_type: Optional[str] = 'releases'  # 'wip' or 'releases' - determines which catalog to use and whether to include snapshot path
+    challenge_nonce: Optional[str] = None  # Nonce from GET /challenge
+    challenge_solution: Optional[str] = None  # Counter solving the proof-of-work
 
 class RequestDownloadRequest(BaseModel):
     queue_type: Optional[str] = None  # 'fast', 'slow', or None for both
@@ -888,23 +891,48 @@ async def get_all_download_history(
     history = download_service.get_all_download_history(limit, offset)
     return {"history": history}
 
+@router.get("/challenge")
+async def get_download_challenge(
+    current_user: dict = Depends(require_download_role_session_only)
+):
+    """Mint a proof-of-work challenge to spend on a subsequent POST /queue."""
+    if not settings.DOWNLOAD_CHALLENGE_ENABLED:
+        return {"enabled": False}
+
+    return {"enabled": True, **mint_challenge(current_user['id'])}
+
 @router.post("/queue")
 async def add_to_queue(
     request: AddToQueueRequest,
-    current_user: dict = Depends(require_download_role),
+    current_user: dict = Depends(require_download_role_session_only),
     download_service: DownloadService = Depends(get_download_service),
     db: Session = Depends(get_db)
 ):
     """Add a game to the download queue."""
     user_id = current_user['id']
     game_id = request.game_id
-    
+
     if not game_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Game ID is required"
         )
-    
+
+    # Spend the proof-of-work before doing any real work, so a scripted caller
+    # pays the CPU cost on every attempt rather than only on successful ones.
+    if settings.DOWNLOAD_CHALLENGE_ENABLED:
+        ok, reason = await verify_challenge(
+            request.challenge_nonce,
+            request.challenge_solution,
+            user_id
+        )
+        if not ok:
+            logger.warning(f"Rejected enqueue for user {user_id}: {reason}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=reason
+            )
+
     # Get token_id - always required
     from app.services.token import ApiTokenService
     token_service = ApiTokenService(db)
@@ -3401,6 +3429,7 @@ async def get_connected_clients(
                 # Note: get_client_connection_info() already returns custom_public_port as external_port if set
                 p2p_info = await P2PInventoryService.get_client_connection_info(token_id)
                 upnp_enabled = p2p_info.get("upnp_enabled", False) if p2p_info else False
+                local_ip = p2p_info.get("local_ip") if p2p_info else None
                 # Use custom port if set, otherwise use external_port from Redis (UPnP), otherwise internal_port, otherwise default 8765
                 upnp_port = token.custom_public_port if token.custom_public_port is not None else (p2p_info.get("external_port") or p2p_info.get("internal_port") if p2p_info else None) or settings.P2P_PORT
                 
@@ -3424,6 +3453,7 @@ async def get_connected_clients(
                     "platform": conn.get("platform", "unknown"),
                     "connected_at": conn.get("connected_at"),
                     "upnp_enabled": upnp_enabled,
+                    "local_ip": local_ip,  # LAN address the gateway forwards to
                     "upnp_port": upnp_port,  # Already uses custom_public_port if set (line 2979)
                     "custom_public_port": token.custom_public_port,  # Include for frontend to show indicator
                     "p2p_port_accessible": conn.get("p2p_port_accessible"),
@@ -3948,6 +3978,9 @@ class P2PRegisterRequest(BaseModel):
     external_ip: Optional[str] = None
     external_port: Optional[int] = None
     internal_port: int
+    # LAN address the gateway forwards to, as reported by UPnP/NAT-PMP.
+    # Absent for older clients that predate the field.
+    local_ip: Optional[str] = None
     upnp_enabled: bool = False
 
 class P2PRequestPeerRequest(BaseModel):
@@ -4012,6 +4045,7 @@ async def register_p2p_client(
             "external_ip": external_ip,
             "external_port": external_port_to_use,
             "internal_port": body.internal_port,
+            "local_ip": body.local_ip,
             "upnp_enabled": body.upnp_enabled,
             "registered_at": datetime.now(timezone.utc).isoformat()
         }

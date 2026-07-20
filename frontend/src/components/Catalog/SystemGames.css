@@ -428,6 +428,12 @@
   font-size: 0.95rem;
 }
 
+.game-size-cell {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
 .game-playcount-cell {
   color: var(--text-secondary);
   font-size: 0.95rem;

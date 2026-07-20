@@ -6,7 +6,7 @@ import client from '../../api/client'
 
 import './Layout.css'
 import HeaderSearch from './HeaderSearch'
-import { refreshCatalog } from '../../api/catalog'
+import { refreshCatalog, getRefreshStatus } from '../../api/catalog'
 
 const Layout = () => {
   const { user, isAuthenticated, isAdmin, isDownload, isFastDownload, logout } = useAuth()
@@ -25,15 +25,44 @@ const Layout = () => {
     setAccountMenuOpen(false)
   }
 
+  // The rebuild takes minutes, so the request only starts it and we poll for the outcome.
+  // Waiting on the request itself just means the proxy times out and reports a failure for a
+  // refresh that is still running perfectly well.
   const handleRefreshCatalog = async () => {
     setIsRefreshing(true)
+    setAccountMenuOpen(false)
     try {
-      const result = await refreshCatalog()
-      alert(`Catalog refreshed successfully!\nSystems: ${result.systems_count} \nTotal games: ${result.total_games} `)
-      setAccountMenuOpen(false)
+      await refreshCatalog()
+
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, 5000))
+
+        let status
+        try {
+          status = await getRefreshStatus()
+        } catch (error) {
+          // A blip while polling says nothing about the refresh itself; keep waiting.
+          console.error('Error polling catalog refresh status:', error)
+          continue
+        }
+
+        if (status.state === 'completed') {
+          const result = status.result || {}
+          alert(`Catalog refreshed successfully!\nSystems: ${result.systems_count}\nTotal games: ${result.total_games}`)
+          return
+        }
+        if (status.state === 'failed') {
+          console.error('Catalog refresh failed:', status.error)
+          alert(`Failed to refresh catalog: ${status.error || 'unknown error'}`)
+          return
+        }
+        if (status.state !== 'running') {
+          return
+        }
+      }
     } catch (error) {
-      console.error('Error refreshing catalog:', error)
-      alert('Failed to refresh catalog. Please try again.')
+      console.error('Error starting catalog refresh:', error)
+      alert('Failed to start catalog refresh. Please try again.')
     } finally {
       setIsRefreshing(false)
     }

@@ -1,6 +1,17 @@
 import { useState } from 'react'
 import client from '../api/client'
 import { useCatalog } from '../context/CatalogContext'
+import { solveChallenge } from '../utils/pow'
+
+// Each enqueue spends a fresh proof-of-work challenge. Challenges are
+// single-use, so this runs per attempt rather than being cached.
+const solveDownloadChallenge = async () => {
+  const { data } = await client.get('/api/download/challenge')
+  if (!data?.enabled) return {}
+
+  const solution = await solveChallenge(data.nonce, data.difficulty)
+  return { challenge_nonce: data.nonce, challenge_solution: solution }
+}
 
 export const useDownloadWithToken = () => {
   const { catalogType } = useCatalog()
@@ -15,12 +26,15 @@ export const useDownloadWithToken = () => {
     const effectiveCatalogType = catalog_type || catalogType || 'releases'
 
     try {
+      const challenge = await solveDownloadChallenge()
+
       // First, try to add without token_name (backend will handle single token or require selection)
       const response = await client.post('/api/download/queue', {
         game_id: gameId,
         system_id: systemId,
         token_name: tokenName,
-        catalog_type: effectiveCatalogType
+        catalog_type: effectiveCatalogType,
+        ...challenge
       })
       return { success: true, data: response.data }
     } catch (error) {
@@ -55,11 +69,14 @@ export const useDownloadWithToken = () => {
     if (!pendingGameId) return
 
     try {
+      const challenge = await solveDownloadChallenge()
+
       const response = await client.post('/api/download/queue', {
         game_id: pendingGameId,
         system_id: pendingSystemId,
         token_name: selectedTokenName,
-        catalog_type: pendingCatalogType || catalogType || 'releases'
+        catalog_type: pendingCatalogType || catalogType || 'releases',
+        ...challenge
       })
       setShowTokenSelector(false)
       setPendingGameId(null)

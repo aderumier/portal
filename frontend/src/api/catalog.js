@@ -1,13 +1,20 @@
 import client from './client'
 import { setMediaVersion, setMediaVersions, getMediaVersion } from '../utils/constants'
 
+// Only starts the rebuild; it runs for minutes on the server. Poll getRefreshStatus for the result.
 export const refreshCatalog = async () => {
   const response = await client.post('/api/catalog/refresh')
-  const data = response.data
-  if (data != null && data.media_version != null) {
-    setMediaVersion(data.media_version)
+  return response.data
+}
+
+export const getRefreshStatus = async () => {
+  const response = await client.get('/api/catalog/refresh/status')
+  const status = response.data
+  const result = status && status.result
+  if (result != null && result.media_version != null) {
+    setMediaVersion(result.media_version)
   }
-  return data
+  return status
 }
 
 export const getSystems = async (catalogType = 'releases') => {

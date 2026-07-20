@@ -417,6 +417,15 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
     }
   }
 
+  // Format the download size, which the catalog gives us in MB (Releases only)
+  const formatSize = (sizeMb) => {
+    if (typeof sizeMb !== 'number') return null
+    if (sizeMb < 1024) {
+      return `${sizeMb.toFixed(2)} MB`
+    }
+    return `${(sizeMb / 1024).toFixed(2)} GB`
+  }
+
   // Handle both string and number types for playcount/gametime
   const getPlaycount = (game) => {
     if (game.playcount == null) return 0
@@ -468,6 +477,19 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
           } else {
             compareResult = dateA.localeCompare(dateB)
           }
+        }
+      } else if (tableSortColumn === 'size') {
+        // Games with no size (WIP catalog, or no file in the snapshot) sort last
+        const sizeA = typeof a.size_mb === 'number' ? a.size_mb : -1
+        const sizeB = typeof b.size_mb === 'number' ? b.size_mb : -1
+        if (sizeA === -1 && sizeB === -1) {
+          compareResult = 0
+        } else if (sizeA === -1) {
+          compareResult = 1
+        } else if (sizeB === -1) {
+          compareResult = -1
+        } else {
+          compareResult = sizeA - sizeB
         }
       } else if (tableSortColumn === 'playcount') {
         const playcountA = getPlaycount(a)
@@ -803,6 +825,13 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                     </th>
                     <th
                       className="sortable"
+                      onClick={() => handleTableSort('size')}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      Size {tableSortColumn === 'size' && (tableSortDirection === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th
+                      className="sortable"
                       onClick={() => handleTableSort('playcount')}
                       style={{ cursor: 'pointer' }}
                     >
@@ -857,6 +886,9 @@ const SystemGames = ({ systemId, systemName: propSystemName, searchQuery = '', s
                         </td>
                         <td className="game-releaseyear-cell">
                           {formatReleaseYear(game.releasedate) || '-'}
+                        </td>
+                        <td className="game-size-cell">
+                          {formatSize(game.size_mb) || '-'}
                         </td>
                         <td className="game-playcount-cell">
                           {getPlaycount(game) > 0 ? getPlaycount(game) : '-'}
