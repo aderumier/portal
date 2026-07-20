@@ -1093,12 +1093,24 @@ def update_bandwidth_update_interval(new_interval):
     else:
         logger.warning(f"Invalid bandwidth update interval received: {new_interval}, keeping current value: {BANDWIDTH_UPDATE_INTERVAL}")
 
-def parse_gamelist_xml(gamelist_path):
-    """Parse a gamelist.xml file, tolerating leading UTF-8 BOMs.
+UTF8_BOM = b'\xef\xbb\xbf'
+XML_DECLARATION_RE = re.compile(rb'<\?xml[^>]*\?>')
+# Only the start of the file is repaired, so a stray BOM inside game data
+# (which may be meaningful in a non-UTF-8 gamelist) is never touched.
+XML_PROLOG_SCAN = 4096
 
-    Some scrapers (ARRM) write gamelist.xml with one or several UTF-8 BOMs in
-    front of the XML declaration; ElementTree only accepts a single one, so
-    strip them all before parsing.
+def parse_gamelist_xml(gamelist_path):
+    """Parse a gamelist.xml file, repairing the prolog scrapers get wrong.
+
+    ARRM writes gamelist.xml with several UTF-8 BOMs, and sometimes puts them
+    plus the XML declaration after a leading comment:
+
+        <!-- Shortname Fixed -->
+        <BOM><BOM><?xml version="1.0" encoding="utf-8"?>
+
+    ElementTree accepts at most one BOM and requires the declaration to come
+    first, so drop the BOMs and move the declaration back to the front before
+    parsing.
 
     Args:
         gamelist_path: Path to the gamelist.xml file
@@ -1106,12 +1118,17 @@ def parse_gamelist_xml(gamelist_path):
     Returns:
         ElementTree instance
     """
-    UTF8_BOM = b'\xef\xbb\xbf'
     with open(gamelist_path, 'rb') as f:
         raw = f.read()
-    while raw.startswith(UTF8_BOM):
-        raw = raw[len(UTF8_BOM):]
-    return ET.parse(io.BytesIO(raw))
+
+    head, tail = raw[:XML_PROLOG_SCAN], raw[XML_PROLOG_SCAN:]
+    head = head.replace(UTF8_BOM, b'')
+
+    match = XML_DECLARATION_RE.search(head)
+    if match and match.start() != 0:
+        head = match.group(0) + head[:match.start()] + head[match.end():]
+
+    return ET.parse(io.BytesIO(head + tail))
 
 def extract_rom_paths_from_gamelist(gamelist_path):
     """Extract ROM paths from all games in gamelist.xml.
