@@ -274,6 +274,51 @@ def parse_psn_file(psn_file_path: str) -> str:
         return None
 
 
+def parse_acgame_file(acgame_file_path: str) -> Optional[str]:
+    """Parse an .acgame file and return the subdirectory holding the game's data.
+
+    The file is an ini-like descriptor; the data it points at lives in the directory named by
+    the "subdir=" line, next to the .acgame file itself.
+
+    Args:
+        acgame_file_path: Full path to the .acgame file
+
+    Returns:
+        Directory name (e.g., "NM00027") or None if not found
+    """
+    try:
+        if not os.path.exists(acgame_file_path):
+            logger.warning(f".acgame file not found: {acgame_file_path}")
+            return None
+
+        with open(acgame_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines, comments and section headers ([game], [data])
+                if not line or line.startswith((';', '#', '[')):
+                    continue
+
+                key, sep, value = line.partition('=')
+                if not sep or key.strip().lower() != 'subdir':
+                    continue
+
+                # Keep the directory name only: never let the descriptor point outside its own directory
+                directory_name = value.strip().strip('"').replace('\\', '/').strip('/')
+                if not directory_name or '/' in directory_name or directory_name in ('.', '..'):
+                    logger.warning(f"Invalid subdir '{value.strip()}' in .acgame file: {acgame_file_path}")
+                    return None
+
+                logger.info(f"Parsed .acgame file {acgame_file_path}: found directory '{directory_name}'")
+                return directory_name
+
+        logger.warning(f"No subdir found in .acgame file: {acgame_file_path}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error parsing .acgame file {acgame_file_path}: {e}", exc_info=True)
+        return None
+
+
 def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) -> Optional[Dict]:
     """Detect and parse special file types that require additional files to be downloaded.
     
@@ -391,6 +436,40 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
                 'base_path_type': 'file',
                 'source_file': source_filename
             }
+
+    # Check for .acgame files: the descriptor plus the data directory it names, both in the same directory
+    if file_lower.endswith('.acgame'):
+        directory_name = parse_acgame_file(file_path)
+        if directory_name:
+            source_dir = os.path.dirname(file_path)
+            dir_full_path = os.path.join(source_dir, directory_name)
+            if os.path.exists(dir_full_path) and os.path.isdir(dir_full_path):
+                try:
+                    from app.config import settings
+                    # Security check: ensure directory is within GAMES_PATH
+                    if os.path.commonpath([os.path.abspath(settings.GAMES_PATH), os.path.abspath(dir_full_path)]) == os.path.abspath(settings.GAMES_PATH):
+                        # Paths relative to the .acgame file's own directory, so they keep the subdir level.
+                        # The .acgame file itself is added by the callers, as for .m3u/.cue.
+                        files = []
+                        for root, dirs, filenames in os.walk(dir_full_path):
+                            for filename in filenames:
+                                file_full_path = os.path.join(root, filename)
+                                rel_path = os.path.relpath(file_full_path, source_dir).replace('\\', '/')
+                                files.append(rel_path)
+
+                        logger.info(f".acgame: Found {len(files)} files in directory {directory_name}")
+
+                        return {
+                            'files': files,
+                            'base_path_type': 'file',
+                            'source_file': source_filename
+                        }
+                except ValueError:
+                    logger.warning(f".acgame: Security check failed for directory {dir_full_path}")
+                except Exception as e:
+                    logger.error(f".acgame: Error scanning directory {directory_name}: {e}", exc_info=True)
+            else:
+                logger.warning(f".acgame: Directory listed in {source_filename} does not exist: {dir_full_path}")
 
     # Check for namco2x6 system with .zip extension
     # For this system, we check if there is a directory with the same name as the zip file

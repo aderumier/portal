@@ -20,6 +20,7 @@ import re
 from typing import Dict, Optional, Set
 
 from app.services.download import (
+    parse_acgame_file,
     parse_cue_file,
     parse_m3u_file,
     parse_m3u_ps3_directory,
@@ -237,6 +238,13 @@ def _game_size_bytes(
 
     if lower.endswith('.xbox360'):
         directory_name = parse_xbox360_file(full_path)
+        if directory_name:
+            return own_size + tree.dir_total.get(_join_rel(rel_dir, directory_name), 0)
+        return own_size
+
+    if lower.endswith('.acgame'):
+        # The descriptor names a data directory sitting next to it
+        directory_name = parse_acgame_file(full_path)
         if directory_name:
             return own_size + tree.dir_total.get(_join_rel(rel_dir, directory_name), 0)
         return own_size
