@@ -573,6 +573,53 @@ def detect_and_parse_special_file(file_path: str, system: Optional[str] = None) 
 
     return None
 
+
+def compute_client_locations(resolved_game_id: str, file_path: str, system: Optional[str],
+                             is_windows: bool) -> Tuple[Optional[str], Optional[str]]:
+    """Compute the client-side destination for games whose saves live outside the ROM directory.
+
+    Returns (save_location, config_location) as forward-slash relative paths. save_location is
+    joined with the client's SAVEDIR, config_location with its CONFIGDIR; at most one is set.
+    """
+    save_location = None
+    config_location = None
+    game_id_lower = resolved_game_id.lower()
+
+    # .psvita files: saves live under the Vita3K ux0 tree
+    if game_id_lower.endswith('.psvita'):
+        directory_name = parse_psvita_file(file_path)
+        if directory_name:
+            # Linux: psvita/ux0/app/{directory_name}
+            # Windows: psvita/vita3k/ux0/app/{directory_name}
+            if is_windows:
+                save_location = f"psvita/vita3k/ux0/app/{directory_name}"
+            else:
+                save_location = f"psvita/ux0/app/{directory_name}"
+            logger.info(f"Detected .psvita file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
+
+    # PS3 descriptors: .psn and PS3 .m3u both name the same RPCS3 title directory; only the
+    # parser differs (.psn holds the title ID, the .m3u holds a path containing it). The
+    # directory lives under SAVEDIR on both platforms — Batocera's configgen resolves a .psn to
+    # SAVES/ps3/rpcs3/dev_hdd0/game/{id}/USRDIR/EBOOT.BIN (rpcs3Paths.RPCS3_DEV_HDD0_DIR =
+    # /userdata/saves/ps3/rpcs3/dev_hdd0), and Retrobat uses the same layout under its own
+    # saves root. CONFIGS/rpcs3 holds only config.yml, vfs.yml and the other dev_* trees.
+    ps3_source = None
+    if game_id_lower.endswith('.psn'):
+        ps3_source, ps3_directory_name = '.psn', parse_psn_file(file_path)
+    elif game_id_lower.endswith('.m3u') and system and system.lower() == 'ps3':
+        ps3_source, ps3_directory_name = 'PS3 .m3u', parse_m3u_ps3_directory(file_path)
+    if ps3_source and ps3_directory_name:
+        save_location = f"ps3/rpcs3/dev_hdd0/game/{ps3_directory_name}"
+        logger.info(f"Detected {ps3_source} file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
+
+    # win98 .zip files: saves go to SAVEDIR/win98/
+    if system and system.lower() == 'win98' and game_id_lower.endswith('.zip'):
+        save_location = "win98"
+        logger.info(f"Detected win98 .zip file, save_location: {save_location}")
+
+    return save_location, config_location
+
+
 class DownloadService:
     """Service for managing download queue."""
     
@@ -2253,51 +2300,10 @@ class DownloadService:
                 # Keep resolved game_id and add normalized rom_path for destination
                 normalized_game_id = self._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
                 
-                # Check if this is a .psvita file and calculate save_location
-                save_location = None
-                if resolved_game_id.lower().endswith('.psvita'):
-                    # Parse the .psvita file to get directory name (TITLE ID)
-                    directory_name = parse_psvita_file(file_path)
-                    if directory_name:
-                        # Build save_location path based on platform
-                        # Linux: psvita/ux0/app/{directory_name}
-                        # Windows: psvita/vita3k/app/{directory_name}
-                        if is_windows:
-                            save_location = f"psvita/vita3k/ux0/app/{directory_name}"
-                        else:
-                            save_location = f"psvita/ux0/app/{directory_name}"
-                        logger.info(f"Detected .psvita file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
-                
-                # Check if this is a .psn file and calculate config_location/save_location
-                config_location = None
-                if resolved_game_id.lower().endswith('.psn'):
-                    # Parse the .psn file to get directory name
-                    directory_name = parse_psn_file(file_path)
-                    if directory_name:
-                        # Build location path based on platform
-                        # Linux: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses config_location)
-                        # Windows: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses save_location)
-                        if is_windows:
-                            save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
-                            logger.info(f"Detected .psn file, save_location: {save_location} (platform: windows)")
-                        else:
-                            config_location = f"rpcs3/dev_hdd0/game/{directory_name}"
-                            logger.info(f"Detected .psn file, config_location: {config_location} (platform: linux)")
-                
-                # Check if this is a PS3 .m3u file and calculate save_location
-                if resolved_game_id.lower().endswith('.m3u') and system and system.lower() == 'ps3':
-                    # Parse the PS3 .m3u file to get directory name
-                    directory_name = parse_m3u_ps3_directory(file_path)
-                    if directory_name:
-                        # Build save_location path (same for both Linux and Windows, uses SAVEDIR)
-                        save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
-                        logger.info(f"Detected PS3 .m3u file, save_location: {save_location} (platform: {'windows' if is_windows else 'linux'})")
-                
-                # Check if this is a win98 .zip file and calculate save_location
-                if system and system.lower() == 'win98' and resolved_game_id.lower().endswith('.zip'):
-                    # For win98 .zip files, save files go to SAVEDIR/win98/
-                    save_location = "win98"
-                    logger.info(f"Detected win98 .zip file, save_location: {save_location}")
+                # Destination for games whose saves live outside the ROM directory
+                save_location, config_location = compute_client_locations(
+                    resolved_game_id, file_path, system, is_windows
+                )
                 
                 download_info = {
                     'download_id': resumable_download.id,
@@ -2536,53 +2542,10 @@ class DownloadService:
             # Keep resolved game_id and add normalized rom_path for destination
             normalized_game_id = self._remove_snapshot_path_from_game_id(resolved_game_id, catalog_version)
             
-            # Check if this is a .psvita file and calculate save_location
-            save_location = None
-            if resolved_game_id.lower().endswith('.psvita'):
-                # Parse the .psvita file to get directory name (TITLE ID)
-                directory_name = parse_psvita_file(file_path)
-                if directory_name:
-                    # Build save_location path based on platform
-                    # Linux: psvita/ux0/app/{directory_name}
-                    # Windows: psvita/vita3k/app/{directory_name}
-                    is_windows_platform = is_windows
-                    if is_windows_platform:
-                        save_location = f"psvita/vita3k/app/{directory_name}"
-                    else:
-                        save_location = f"psvita/ux0/app/{directory_name}"
-                    logger.info(f"Detected .psvita file, save_location: {save_location} (platform: {'windows' if is_windows_platform else 'linux'})")
-            
-            # Check if this is a .psn file and calculate config_location/save_location
-            config_location = None
-            if resolved_game_id.lower().endswith('.psn'):
-                # Parse the .psn file to get directory name
-                directory_name = parse_psn_file(file_path)
-                if directory_name:
-                    # Build location path based on platform
-                    # Linux: rpcs3/dev_hdd0/game/{directory_name} (uses config_location, joined with CONFIGDIR)
-                    # Windows: ps3/rpcs3/dev_hdd0/game/{directory_name} (uses save_location, joined with SAVEDIR)
-                    if is_windows:
-                        save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
-                        logger.info(f"Detected .psn file, save_location: {save_location} (platform: windows)")
-                    else:
-                        config_location = f"rpcs3/dev_hdd0/game/{directory_name}"
-                        logger.info(f"Detected .psn file, config_location: {config_location} (platform: linux)")
-            
-            # Check if this is a PS3 .m3u file and calculate save_location
-            if resolved_game_id.lower().endswith('.m3u') and system and system.lower() == 'ps3':
-                # Parse the PS3 .m3u file to get directory name
-                directory_name = parse_m3u_ps3_directory(file_path)
-                if directory_name:
-                    # Build save_location path (same for both Linux and Windows, uses SAVEDIR)
-                    save_location = f"ps3/rpcs3/dev_hdd0/game/{directory_name}"
-                    is_windows_platform = is_windows
-                    logger.info(f"Detected PS3 .m3u file, save_location: {save_location} (platform: {'windows' if is_windows_platform else 'linux'})")
-            
-            # Check if this is a win98 .zip file and calculate save_location
-            if system and system.lower() == 'win98' and resolved_game_id.lower().endswith('.zip'):
-                # For win98 .zip files, save files go to SAVEDIR/win98/
-                save_location = "win98"
-                logger.info(f"Detected win98 .zip file, save_location: {save_location}")
+            # Destination for games whose saves live outside the ROM directory
+            save_location, config_location = compute_client_locations(
+                resolved_game_id, file_path, system, is_windows
+            )
             
             download_info = {
                 'download_id': pending_download.id,
