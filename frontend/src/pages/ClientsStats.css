@@ -74,6 +74,78 @@
   font-size: 0.9rem;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.clients-table th.sortable {
+  cursor: pointer;
+}
+
+.clients-table th.sortable:hover {
+  color: var(--accent);
+}
+
+.clients-table .sort-icon {
+  margin-left: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--accent);
+}
+
+.clients-table .sort-icon--idle {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
+.clients-table-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.clients-count {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.clear-filters-btn {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.clear-filters-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.clients-table thead .filter-row th {
+  padding: 0 1.5rem 0.75rem;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.clients-table .column-filter {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: normal;
+}
+
+.clients-table .column-filter:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .clients-table tbody tr {

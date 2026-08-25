@@ -47,6 +47,7 @@
 .download-history-toolbar {
   display: flex;
   align-items: center;
+  gap: 1rem;
   margin-bottom: 0.75rem;
 }
 
@@ -89,6 +90,71 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   white-space: nowrap;
+  user-select: none;
+}
+
+.history-table th.sortable {
+  cursor: pointer;
+}
+
+.history-table th.sortable:hover {
+  color: var(--accent);
+}
+
+.history-table .sort-icon {
+  margin-left: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--accent);
+}
+
+.history-table .sort-icon--idle {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
+.history-table thead .filter-row th {
+  padding: 0 1rem 0.65rem;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.history-table .column-filter {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: normal;
+}
+
+.history-table .column-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.history-table .no-matches {
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.clear-filters-btn {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.clear-filters-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .history-table tbody tr {

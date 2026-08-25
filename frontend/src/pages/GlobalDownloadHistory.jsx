@@ -1,9 +1,39 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import client from '../api/client'
+import {
+  useTableSortFilter, SortIcon, ColumnFilter,
+  cmpText, cmpNum, cmpAuto, cmpDate,
+} from '../utils/tableSort'
 import './DownloadHistory.css'
 
 const PAGE_SIZE = 100
+
+const formatDate = (dateString) => {
+  if (!dateString) return 'Unknown'
+  return new Date(dateString).toLocaleString()
+}
+
+const formatBytes = (bytes) => {
+  if (!bytes) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+const COLUMNS = [
+  { key: 'username',        label: 'Username', sortFn: (a, b) => cmpText(a.username || a.user_id, b.username || b.user_id),        filterValue: i => i.username || i.user_id || '-' },
+  { key: 'device',          label: 'Device',   sortFn: (a, b) => cmpText(a.device, b.device),                                      filterValue: i => i.device || '-' },
+  { key: 'game_name',       label: 'Game',     sortFn: (a, b) => cmpText(a.game_name, b.game_name),                                filterValue: i => i.game_name },
+  { key: 'system',          label: 'System',   sortFn: (a, b) => cmpText(a.system_name || a.system, b.system_name || b.system),    filterValue: i => i.system_name || i.system },
+  { key: 'catalog_version', label: 'Version',  sortFn: (a, b) => cmpAuto(a.catalog_version || 'WIP', b.catalog_version || 'WIP'),  filterValue: i => i.catalog_version || 'WIP' },
+  { key: 'client_version',  label: 'Client',   sortFn: (a, b) => cmpAuto(a.client_version, b.client_version),                      filterValue: i => i.client_version || '-' },
+  { key: 'status',          label: 'Status',   sortFn: (a, b) => cmpText(a.status, b.status),                                      filterValue: i => i.status },
+  { key: 'file_size',       label: 'Size',     sortFn: (a, b) => cmpNum(a.file_size, b.file_size),                                 filterValue: i => (i.file_size ? formatBytes(i.file_size) : 'Unknown') },
+  { key: 'timestamp',       label: 'Date',     sortFn: (a, b) => cmpDate(a.timestamp, b.timestamp),                                filterValue: i => formatDate(i.timestamp) },
+  { key: 'actions',         label: 'Actions',  sortFn: null,                                                                       filterValue: null },
+]
 
 const GlobalDownloadHistory = () => {
   const [history, setHistory] = useState([])
@@ -17,6 +47,14 @@ const GlobalDownloadHistory = () => {
 
   const sentinelRef = useRef(null)
   const offsetRef = useRef(0)
+
+  // Sorting and filtering apply to the entries already loaded, not to the whole
+  // server-side history, since the endpoint only paginates.
+  const {
+    sortKey, sortDir, handleSort,
+    filters, setFilter, clearFilters, activeFilterCount,
+    displayedRows,
+  } = useTableSortFilter(history, COLUMNS)
 
   const loadPage = useCallback(async (offset, append) => {
     try {
@@ -60,19 +98,6 @@ const GlobalDownloadHistory = () => {
     observer.observe(sentinelRef.current)
     return () => observer.disconnect()
   }, [hasMore, loadingMore, loading, loadPage])
-
-  const formatDate = (dateString) => {
-    if (!dateString) return 'Unknown'
-    return new Date(dateString).toLocaleString()
-  }
-
-  const formatBytes = (bytes) => {
-    if (!bytes) return '0 B'
-    if (bytes < 1024) return `${bytes} B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
-  }
 
   const getStatusBadgeClass = (status) => {
     switch (status) {
@@ -132,27 +157,47 @@ const GlobalDownloadHistory = () => {
       ) : (
         <>
           <div className="download-history-toolbar">
-            <span className="download-history-count">{history.length} entries loaded</span>
+            <span className="download-history-count">
+              {activeFilterCount > 0
+                ? `${displayedRows.length} / ${history.length} entries loaded`
+                : `${history.length} entries loaded`}
+            </span>
+            {activeFilterCount > 0 && (
+              <button className="clear-filters-btn" onClick={clearFilters}>Clear filters</button>
+            )}
           </div>
 
           <div className="download-history-table-container">
             <table className="history-table">
               <thead>
                 <tr>
-                  <th>Username</th>
-                  <th>Device</th>
-                  <th>Game</th>
-                  <th>System</th>
-                  <th>Version</th>
-                  <th>Client</th>
-                  <th>Status</th>
-                  <th>Size</th>
-                  <th>Date</th>
-                  <th>Actions</th>
+                  {COLUMNS.map(col => (
+                    <th
+                      key={col.key}
+                      className={col.sortFn ? 'sortable' : ''}
+                      onClick={() => handleSort(col.key)}
+                    >
+                      {col.label}<SortIcon col={col} sortKey={sortKey} sortDir={sortDir} />
+                    </th>
+                  ))}
+                </tr>
+                <tr className="filter-row">
+                  {COLUMNS.map(col => (
+                    <th key={col.key}>
+                      <ColumnFilter col={col} filters={filters} setFilter={setFilter} />
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {history.map((item) => (
+                {displayedRows.length === 0 && (
+                  <tr>
+                    <td colSpan={COLUMNS.length} className="no-matches">
+                      No loaded entries match the current filters
+                    </td>
+                  </tr>
+                )}
+                {displayedRows.map((item) => (
                   <tr key={item.id}>
                     <td className="username-cell">{item.username || item.user_id || '-'}</td>
                     <td className="device-cell">{item.device || '-'}</td>

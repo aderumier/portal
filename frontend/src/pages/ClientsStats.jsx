@@ -1,7 +1,29 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import client from '../api/client'
+import {
+  useTableSortFilter, SortIcon, ColumnFilter,
+  cmpText, cmpNum, cmpAuto,
+} from '../utils/tableSort'
 import './ClientsStats.css'
+
+const formatMB = (mb) => {
+  if (mb === 0) return '0 MB'
+  if (mb < 1024) {
+    return `${mb.toFixed(2)} MB`
+  }
+  return `${(mb / 1024).toFixed(2)} GB`
+}
+
+const COLUMNS = [
+  { key: 'token_id',               label: 'Token ID',     sortFn: (a, b) => cmpAuto(a.token_id, b.token_id),                              filterValue: t => t.token_id },
+  { key: 'token_name',             label: 'Token Name',   sortFn: (a, b) => cmpText(a.token_name, b.token_name),                          filterValue: t => t.token_name },
+  { key: 'username',               label: 'Username',     sortFn: (a, b) => cmpText(a.username, b.username),                              filterValue: t => t.username || '-' },
+  { key: 'p2p_total_download_mb',  label: 'P2P Download', sortFn: (a, b) => cmpNum(a.p2p_total_download_mb, b.p2p_total_download_mb),     filterValue: t => formatMB(t.p2p_total_download_mb || 0) },
+  { key: 'p2p_total_upload_mb',    label: 'P2P Upload',   sortFn: (a, b) => cmpNum(a.p2p_total_upload_mb, b.p2p_total_upload_mb),         filterValue: t => formatMB(t.p2p_total_upload_mb || 0) },
+  { key: 'p2p_game_count',         label: 'Games',        sortFn: (a, b) => cmpNum(a.p2p_game_count, b.p2p_game_count),                   filterValue: t => String(t.p2p_game_count || 0) },
+  { key: 'action',                 label: 'Action',       sortFn: null,                                                                   filterValue: null },
+]
 
 const ClientsStats = () => {
   const { isAdmin } = useAuth()
@@ -13,6 +35,12 @@ const ClientsStats = () => {
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [catalogTokenId, setCatalogTokenId] = useState(null)
   const [catalogTokenName, setCatalogTokenName] = useState('')
+
+  const {
+    sortKey, sortDir, handleSort,
+    filters, setFilter, clearFilters, activeFilterCount,
+    displayedRows,
+  } = useTableSortFilter(tokens, COLUMNS)
 
   useEffect(() => {
     if (isAdmin) {
@@ -32,14 +60,6 @@ const ClientsStats = () => {
     } finally {
       setLoading(false)
     }
-  }
-
-  const formatMB = (mb) => {
-    if (mb === 0) return '0 MB'
-    if (mb < 1024) {
-      return `${mb.toFixed(2)} MB`
-    }
-    return `${(mb / 1024).toFixed(2)} GB`
   }
 
   const handleDisplayCatalog = async (tokenId, tokenName) => {
@@ -112,28 +132,44 @@ const ClientsStats = () => {
         </div>
       </div>
 
+      <div className="clients-table-toolbar">
+        <span className="clients-count">{displayedRows.length} / {tokens.length} tokens</span>
+        {activeFilterCount > 0 && (
+          <button className="clear-filters-btn" onClick={clearFilters}>Clear filters</button>
+        )}
+      </div>
+
       <div className="clients-table-container">
         <table className="clients-table">
           <thead>
             <tr>
-              <th>Token ID</th>
-              <th>Token Name</th>
-              <th>Username</th>
-              <th>P2P Download</th>
-              <th>P2P Upload</th>
-              <th>Games</th>
-              <th>Action</th>
+              {COLUMNS.map(col => (
+                <th
+                  key={col.key}
+                  className={col.sortFn ? 'sortable' : ''}
+                  onClick={() => handleSort(col.key)}
+                >
+                  {col.label}<SortIcon col={col} sortKey={sortKey} sortDir={sortDir} />
+                </th>
+              ))}
+            </tr>
+            <tr className="filter-row">
+              {COLUMNS.map(col => (
+                <th key={col.key}>
+                  <ColumnFilter col={col} filters={filters} setFilter={setFilter} />
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {tokens.length === 0 ? (
+            {displayedRows.length === 0 ? (
               <tr>
-                <td colSpan="7" className="no-tokens">
-                  No tokens found
+                <td colSpan={COLUMNS.length} className="no-tokens">
+                  {tokens.length === 0 ? 'No tokens found' : 'No tokens match the current filters'}
                 </td>
               </tr>
             ) : (
-              tokens.map((token) => (
+              displayedRows.map((token) => (
                 <tr key={token.token_id}>
                   <td className="token-id-cell">
                     <span className="token-id">{token.token_id}</span>
