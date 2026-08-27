@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from app.database import get_db, DownloadQueue, User, ApiToken, System
-from app.services.download import DownloadService
+from app.services.download import DownloadService, win98_saves_dir_for_rom
 from app.services.websocket_manager import get_websocket_manager
 from app.api.middleware.api_token import require_auth_user
 from app.api.middleware.roles import require_download_role, require_download_role_session_only, require_admin_role
@@ -278,8 +278,8 @@ async def discover_download_files(
             rom_name_without_ext = os.path.splitext(rom_filename)[0]
             source_dir = os.path.dirname(base_path)
             
-            # Build path to save directory (_saves_/win98/)
-            save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'win98')
+            # Build path to save directory (win98/_saves_/, or the ROM's own snapshot)
+            save_dir_path = win98_saves_dir_for_rom(settings.GAMES_PATH, base_path)
             dir_full_path = os.path.normpath(save_dir_path)
             
             # Find files matching specific patterns
@@ -2272,8 +2272,8 @@ async def download_file(
             rom_name_without_ext = os.path.splitext(rom_filename)[0]
             source_dir = os.path.dirname(base_path)
             
-            # Build path to save directory (_saves_/win98/)
-            save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'win98')
+            # Build path to save directory (win98/_saves_/, or the ROM's own snapshot)
+            save_dir_path = win98_saves_dir_for_rom(settings.GAMES_PATH, base_path)
             dir_full_path = os.path.normpath(save_dir_path)
             
             files_list = []
@@ -2746,7 +2746,7 @@ async def download_file(
             
             # Check if this is a win98 .zip file (needs special handling for save files)
             if os.path.isfile(base_path) and system and system.lower() == 'win98' and base_path.lower().endswith('.zip'):
-                # For win98 .zip files: serve save files from _saves_/win98/
+                # For win98 .zip files: serve save files from win98/_saves_/
                 # Extract ROM filename
                 rom_filename = os.path.basename(base_path)
                 
@@ -2755,9 +2755,9 @@ async def download_file(
                     # Serve ROM zip from normal location
                     file_path = base_path
                 else:
-                    # Serve save file from _saves_/win98/ directory
-                    # Save files are directly in _saves_/win98/, not in a subdirectory
-                    save_dir_path = os.path.join(settings.GAMES_PATH, '_saves_', 'win98')
+                    # Serve save file from the ROM's save directory (its own snapshot for a
+                    # Releases ROM). Save files are directly in it, not in a subdirectory.
+                    save_dir_path = win98_saves_dir_for_rom(settings.GAMES_PATH, base_path)
                     file_path = os.path.normpath(os.path.join(save_dir_path, relative_path))
                 
                 # Ensure the file is within the games directory (security check)

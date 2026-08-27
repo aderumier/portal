@@ -27,6 +27,8 @@ from app.services.download import (
     parse_psn_file,
     parse_psvita_file,
     parse_xbox360_file,
+    WIN98_SAVES_DIRNAME,
+    win98_saves_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,7 +45,6 @@ SINGE_FRAMEWORK_DIRS = ('Framework', 'FrameworkCustom_1', 'FrameworkKimmy', 'Kim
 
 PS3_SAVES_SUBPATH = ('_saves_', 'ps3', 'rpcs3', 'dev_hdd0', 'game')
 PSVITA_SAVES_SUBPATH = ('_saves_', 'psvita', 'vita3k', 'ux0', 'app')
-WIN98_SAVES_SUBPATH = ('_saves_', 'win98')
 
 _UNIFIED_KEY_RE = re.compile(r'^(.*?)\.\(([^|]+)\|([^)]+)\)$')
 
@@ -112,8 +113,9 @@ def _scan_tree(root: str, skip_root_dirs: frozenset = frozenset()) -> Optional[_
 class _SaveTrees:
     """The save directories games pull in, scanned at most once each per refresh.
 
-    Saves live outside the snapshot, under GAMES_PATH/_saves_/, and downloads read them live — so
-    they are scanned lazily and only for the systems that actually reference them.
+    Saves live outside the snapshot — under GAMES_PATH/_saves_/, except win98's, which sit in the
+    system directory — and downloads read them live, so they are scanned lazily and only for the
+    systems that actually reference them.
     """
 
     def __init__(self, games_path: str) -> None:
@@ -133,7 +135,11 @@ class _SaveTrees:
         return self._get(PSVITA_SAVES_SUBPATH)
 
     def win98(self) -> Optional[_Tree]:
-        return self._get(WIN98_SAVES_SUBPATH)
+        # Not a fixed subpath: the directory moved into the system, with a fallback while the
+        # files are being moved, so downloads.py resolves it and the size has to follow.
+        if 'win98' not in self._cache:
+            self._cache['win98'] = _scan_tree(win98_saves_dir(self._games_path))
+        return self._cache['win98']
 
 
 def _parent_dir(rel: str) -> str:
@@ -172,18 +178,31 @@ def _save_dir_bytes(tree: Optional[_Tree], directory_name: Optional[str]) -> int
     return tree.dir_total.get(directory_name, 0)
 
 
-def _win98_saves_bytes(saves: _SaveTrees, rom_rel: str) -> int:
-    """The .pure.zip and -*.sav files win98 downloads alongside the ROM."""
-    tree = saves.win98()
-    if not tree:
-        return 0
-    stem = os.path.splitext(os.path.basename(rom_rel))[0]
-    total = tree.files.get(f"{stem}.pure.zip", 0)
+def _win98_stem_bytes(tree: _Tree, prefix: str, stem: str) -> int:
+    """The saves matching one ROM, among the files sitting directly in prefix."""
+    total = tree.files.get(f"{prefix}{stem}.pure.zip", 0)
     sav_re = re.compile(f"^{re.escape(stem)}-\\S+\\.sav$")
     for name, size in tree.files.items():
-        if '/' not in name and sav_re.match(name):
+        if not name.startswith(prefix):
+            continue
+        rest = name[len(prefix):]
+        if '/' not in rest and sav_re.match(rest):
             total += size
     return total
+
+
+def _win98_saves_bytes(tree: _Tree, saves: _SaveTrees, rom_rel: str) -> int:
+    """The .pure.zip and -*.sav files win98 downloads alongside the ROM.
+
+    A snapshot taken since the saves moved into the system directory carries its own _saves_/ and
+    the download reads the release's saves from there; older snapshots have none and fall back to
+    the live directory, so the size falls back with it.
+    """
+    stem = os.path.splitext(os.path.basename(rom_rel))[0]
+    if WIN98_SAVES_DIRNAME in tree.dirs:
+        return _win98_stem_bytes(tree, f"{WIN98_SAVES_DIRNAME}/", stem)
+    live = saves.win98()
+    return _win98_stem_bytes(live, '', stem) if live else 0
 
 
 def _sum_listed_files(tree: _Tree, rel_dir: str, rel_files) -> int:
@@ -225,7 +244,7 @@ def _game_size_bytes(
     full_path = os.path.join(snapshot_root, rom_rel)
 
     if system == 'win98' and lower.endswith('.zip'):
-        return own_size + _win98_saves_bytes(saves, rom_rel)
+        return own_size + _win98_saves_bytes(tree, saves, rom_rel)
 
     if lower.endswith('.m3u'):
         if system == 'ps3':

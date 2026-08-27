@@ -24,6 +24,51 @@ def _get_download_lock() -> asyncio.Lock:
         _get_next_download_lock = asyncio.Lock()
     return _get_next_download_lock
 
+# win98 ROMs download their companion .pure.zip / -*.sav files from a save directory that sits
+# beside the ROMs, inside the system directory: GAMES_PATH/win98/_saves_. It used to live in the
+# shared GAMES_PATH/_saves_/win98 tree, so the old location is still honoured while the files are
+# being moved — whichever directory exists wins, new one first.
+WIN98_SAVES_DIRNAME = '_saves_'
+WIN98_SAVES_SUBPATH = ('win98', WIN98_SAVES_DIRNAME)
+WIN98_SAVES_LEGACY_SUBPATH = (WIN98_SAVES_DIRNAME, 'win98')
+
+
+def win98_saves_dir(games_path: str) -> str:
+    """Directory holding the save files a win98 .zip download pulls in alongside the ROM."""
+    saves_dir = os.path.join(games_path, *WIN98_SAVES_SUBPATH)
+    if os.path.isdir(saves_dir):
+        return saves_dir
+    legacy_dir = os.path.join(games_path, *WIN98_SAVES_LEGACY_SUBPATH)
+    if os.path.isdir(legacy_dir):
+        return legacy_dir
+    return saves_dir
+
+
+def zfs_snapshot_root(rom_path: str) -> Optional[str]:
+    """The '<system>/.zfs/snapshot/<version>' prefix a Releases ROM sits under, if any."""
+    parts = rom_path.replace('\\', '/').split('/')
+    for i, part in enumerate(parts):
+        if part == '.zfs' and i + 2 < len(parts) and parts[i + 1] == 'snapshot':
+            return '/'.join(parts[:i + 3])
+    return None
+
+
+def win98_saves_dir_for_rom(games_path: str, rom_path: str) -> str:
+    """Where to read the saves for one win98 ROM.
+
+    A Releases ROM is read out of a read-only ZFS snapshot, and now that the saves live inside
+    the system directory they are snapshotted with it — so they come from the same snapshot as
+    the ROM, keeping a release self-consistent. Snapshots taken before the move have no _saves_
+    of their own; those, and WIP downloads, fall back to the live directory.
+    """
+    snapshot_root = zfs_snapshot_root(rom_path)
+    if snapshot_root:
+        snapshot_saves = os.path.join(snapshot_root, WIN98_SAVES_DIRNAME)
+        if os.path.isdir(snapshot_saves):
+            return snapshot_saves
+    return win98_saves_dir(games_path)
+
+
 def parse_m3u_file(m3u_file_path: str) -> List[str]:
     """Parse a .m3u file and return list of file paths (relative to m3u file location).
     
