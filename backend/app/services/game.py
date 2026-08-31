@@ -986,14 +986,19 @@ class GameService:
         """
         logger.info(f"Getting games for system: {system}, page: {page}, limit: {limit}, catalog_type: {catalog_type}")
         
-        cache_key = f"games_{system}_{page}_{limit}_{search}_{catalog_type}"
-        if cache_key in self.cache:
-            logger.info(f"Returning cached games for: {cache_key}")
-            return self.cache[cache_key]
-        
-        # Ensure catalog is loaded
+        # Load the catalog first: the cache key carries the catalog generation, and
+        # loading is what sets it.
         if not self._gamelists_loaded:
             self.preload_all_gamelists()
+        
+        # Keyed by catalog generation so a memo built before a reload can never be
+        # served under the ETag of the catalog that replaced it.
+        cache_key = f"games_{self._catalog_generation()}_{system}_{page}_{limit}_{search}_{catalog_type}"
+        # Single lookup: a concurrent reload swaps self.cache out from under us.
+        cached_games = self.cache.get(cache_key)
+        if cached_games is not None:
+            logger.info(f"Returning cached games for: {cache_key}")
+            return cached_games
         
         # Select appropriate catalog structures based on catalog_type
         if catalog_type == 'wip':
@@ -1096,6 +1101,11 @@ class GameService:
             logger.error(f"Error checking for more games: {e}")
             return False
     
+    def _catalog_generation(self) -> int:
+        """Marker for the currently loaded catalog, shared by the ETags and the
+        per-request memos so the two can never fall out of step."""
+        return int(self._catalog_timestamp) if self._catalog_timestamp else 0
+    
     def get_catalog_etag(self, system: str, search: str = '', catalog_type: str = 'wip') -> str:
         """Generate ETag for a system's games list.
         
@@ -1112,7 +1122,7 @@ class GameService:
         """
         # Use weak ETag (W/) to allow byte-range requests
         # Use timestamp (converted to int) for catalog version
-        catalog_version = int(self._catalog_timestamp) if self._catalog_timestamp else 0
+        catalog_version = self._catalog_generation()
         search_hash = hashlib.md5(search.encode()).hexdigest()[:8] if search else 'all'
         return f'W/"{system}-t{catalog_version}-{search_hash}-{catalog_type}"'
     
@@ -1126,7 +1136,7 @@ class GameService:
         """
         # Use weak ETag (W/) to allow byte-range requests
         # Use timestamp (converted to int) for catalog version
-        catalog_version = int(self._catalog_timestamp) if self._catalog_timestamp else 0
+        catalog_version = self._catalog_generation()
         return f'W/"systems-t{catalog_version}"'
 
     def get_media_versions(self, catalog_type: str) -> Dict[str, str]:
@@ -1165,9 +1175,15 @@ class GameService:
         if not query:
             return []
         
-        cache_key = f"search_{query}_{page}_{limit}"
-        if cache_key in self.cache:
-            return self.cache[cache_key]
+        # Load the catalog before keying the memo by catalog generation (see
+        # get_games_by_system).
+        if not self._gamelists_loaded:
+            self.preload_all_gamelists()
+        
+        cache_key = f"search_{self._catalog_generation()}_{query}_{page}_{limit}"
+        cached_results = self.cache.get(cache_key)
+        if cached_results is not None:
+            return cached_results
         
         # Get enabled systems from database
         enabled_systems = self._get_enabled_systems_set()
@@ -1646,6 +1662,12 @@ class GameService:
             # catalog_responses removed - responses built on-demand to save memory
             
             self._gamelists_loaded = True
+            
+            # The memos built from the catalog we just replaced can no longer be
+            # reached (their key holds the previous generation), so drop them rather
+            # than let them accumulate across reloads. The search index entries are
+            # reloaded separately and stay valid.
+            self.cache = {k: v for k, v in self.cache.items() if k.startswith('search_index_')}
             
             # Store file modification time after successful load
             self._catalog_file_mtime = current_mtime
